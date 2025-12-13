@@ -356,9 +356,7 @@ def publish():
     if conflicts:
         console.print("[bold yellow]🔥 Conflicts detected![/bold yellow]")
         console.print("")
-        console.print(
-            "[dim]The following files already exist in the target directory:[/dim]"
-        )
+        console.print("The following files already exist in the target directory:")
         console.print("")
 
         conflict_table = Table(
