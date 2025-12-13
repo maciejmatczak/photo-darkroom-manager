@@ -213,7 +213,7 @@ def archive(path: Path | None = None):
     console.print(f"Target directory: {cli_render_path(target_dir)}")
     console.print("")
 
-    if not typer.confirm("Ready to move directory?", default=True):
+    if not typer.confirm("Ready to move directory?", default=False):
         console.print("  [dim]Aborted.[/dim]")
         raise typer.Exit(0)
 
@@ -337,7 +337,7 @@ def publish():
     if not target_dir.exists():
         console.print(f"  [yellow]Target directory does not exist[/yellow]")
         console.print("")
-        if not typer.confirm("  Create target directory?", default=True):
+        if not typer.confirm("  Create target directory?", default=False):
             console.print("  [dim]Aborted.[/dim]")
             raise typer.Exit(0)
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -382,14 +382,14 @@ def publish():
 
         if not typer.confirm(
             "Ready to continue (and *overwrite* existing files)?",
-            default=True,
+            default=False,
         ):
             console.print("  [dim]Aborted.[/dim]")
             raise typer.Exit(0)
 
     else:
         if not typer.confirm(
-            f"Ready to move {len(files_in_publish_dir)} files?", default=True
+            f"Ready to move {len(files_in_publish_dir)} files?", default=False
         ):
             console.print("  [dim]Aborted.[/dim]")
             raise typer.Exit(0)
