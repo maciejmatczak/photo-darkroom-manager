@@ -11,4 +11,4 @@ dependencies = [
 ]
 
 [project.scripts]
-photo-darkroom-manager = "photo_darkdroom_manager.cli:app"
+photo-darkroom-manager = "photo_darkroom_manager.cli:app"

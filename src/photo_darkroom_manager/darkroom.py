@@ -7,8 +7,18 @@ from pydantic import BaseModel, field_validator
 class DarkroomYearAlbum(BaseModel):
     year: str
     album: str
-    path: Path
+    album_path: Path
     device: str | None = None
+
+    @property
+    def publish_dir(self) -> Path:
+        return self.album_path / "PUBLISH"
+
+    @property
+    def device_dir(self) -> Path | None:
+        if self.device is None:
+            return None
+        return self.album_path / self.device
 
     @field_validator("year")
     @classmethod
@@ -32,7 +42,9 @@ class DarkroomYearAlbum(BaseModel):
         return v
 
 
-def recognize_darkroom_album(darkroom_path: Path, path: Path) -> DarkroomYearAlbum:
+def recognize_darkroom_album(
+    darkroom_path: Path, path: Path
+) -> DarkroomYearAlbum | None:
     """Recognize the darkroom album from the path."""
     try:
         relative_path = path.relative_to(darkroom_path)
@@ -43,10 +55,15 @@ def recognize_darkroom_album(darkroom_path: Path, path: Path) -> DarkroomYearAlb
     parts = relative_path.parts
 
     if len(parts) == 2:
-        return DarkroomYearAlbum(year=parts[0], album=parts[1], path=path)
+        return DarkroomYearAlbum(
+            year=parts[0], album=parts[1], album_path=path.resolve()
+        )
     elif len(parts) == 3:
         return DarkroomYearAlbum(
-            year=parts[0], album=parts[1], device=parts[2], path=path
+            year=parts[0],
+            album=parts[1],
+            device=parts[2],
+            album_path=path.resolve().parent,
         )
     else:
-        raise ValueError(f"Invalid path: {path}")
+        return None

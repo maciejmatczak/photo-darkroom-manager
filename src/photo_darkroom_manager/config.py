@@ -32,13 +32,14 @@ def find_darkroom_yaml(start_path: Path | None = None) -> Path | None:
 
 class Settings(BaseSettings):
     darkroom: Path
+    showroom: Path
+    archive: Path
 
     model_config = SettingsConfigDict(yaml_file=["darkroom.yaml"])
 
-    @field_validator("darkroom")
+    @field_validator("darkroom", "showroom", "archive")
     @classmethod
-    def validate_darkroom_exists(cls, v: Path) -> Path:
-        """Validate that the darkroom path exists."""
+    def validate_existing_directory(cls, v: Path) -> Path:
         if not v.exists():
             raise ValueError(f"path does not exist: {v}")
         if not v.is_dir():
