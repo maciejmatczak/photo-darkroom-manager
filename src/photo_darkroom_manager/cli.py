@@ -62,7 +62,7 @@ def cli_print_pydantic_error(e: ValidationError):
             error_table,
             title="[bold red]Validation Errors[/bold red]",
             border_style="red",
-            padding=(1, 2),
+            padding=(1, 4),
         )
     )
     console.print(
@@ -112,6 +112,20 @@ def cli_print_album(album: DarkroomYearAlbum):
     console.print("")
 
 
+def cli_print_header(text: str):
+    """Print a formatted header panel."""
+    console.print()
+    console.print(
+        Panel(
+            f"[bold cyan]{text}[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+            padding=(1, 4),
+        )
+    )
+    console.print()
+
+
 def version_callback(value: bool):
     """Display version information."""
     if value:
@@ -140,7 +154,7 @@ def status():
     """Show the current status of your darkroom."""
     settings = cli_load_settings()
 
-    console.print("\n[bold cyan]📸 Darkroom Status[/bold cyan]\n")
+    cli_print_header("📸 Darkroom Status")
     cwd = Path.cwd()
 
     console.print(f"[blue]Darkroom:[/blue] {settings.darkroom}")
@@ -165,7 +179,7 @@ def move_dir_safely(source_dir: Path, target_dir: Path):
 def archive(path: Path | None = None):
     """Show the current status of your darkroom."""
 
-    console.print("\n[bold cyan]📸 Archiving[/bold cyan]\n")
+    cli_print_header("📸 Archiving")
 
     settings = cli_load_settings()
     if path is None:
@@ -234,7 +248,7 @@ def cli_render_path(path: Path) -> str:
     return f"[green]{existing_part_str}{escape(os.path.sep)}[/green][white dim]{not_existing_parts_str}[/white dim]"
 
 
-def move_file_under_dir(file_path: Path, target_dir: Path):
+def move_file_under_dir(file_path: Path, target_dir: Path, overwrite: bool = False):
     if not target_dir.exists():
         raise ValueError(f"Target directory does not exist: {target_dir}")
     if not target_dir.is_dir():
@@ -243,7 +257,11 @@ def move_file_under_dir(file_path: Path, target_dir: Path):
     target_file = target_dir / file_path.name
 
     if target_file.exists():
-        raise ValueError(f"Target file already exists: {target_file}")
+        if not target_file.is_file():
+            raise ValueError(f"Cannot overwrite non-file: {target_file}")
+
+    # if target_file.exists():
+    #     raise ValueError(f"Target file already exists: {target_file}")
 
     shutil.move(file_path, target_file)
 
@@ -251,10 +269,10 @@ def move_file_under_dir(file_path: Path, target_dir: Path):
 @app.command()
 def publish():
     """Publish the album to the internet."""
-    console.print("\n[bold cyan]📸 Publishing album[/bold cyan]\n")
+    cli_print_header("📸 Publishing album")
 
     settings = cli_load_settings()
-    cwd = Path.cwd()
+    cwd = Path.cwd().resolve()
     album = cli_recognize_darkroom_album(settings.darkroom, cwd)
 
     if album is None:
@@ -291,18 +309,34 @@ def publish():
         console.print("[yellow]Publish directory is empty[/yellow]")
         raise typer.Exit(1)
 
-    console.print(
-        f"  [dim]Files in publish directory:[/dim] {len(files_in_publish_dir)}\n"
-    )
-
     # we now have the files to publish
 
     # we need to double check target directory before copying
     target_dir = settings.showroom / album.year / album.album
 
-    console.print(f"Target directory: {cli_render_path(target_dir)}")
+    info_table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+    )
+    info_table.add_column(style="white", no_wrap=True)
+    info_table.add_column()
+
+    info_table.add_row(
+        "Files in publish directory:",
+        str(len(files_in_publish_dir)),
+    )
+    info_table.add_row(
+        "Target directory:",
+        cli_render_path(target_dir),
+    )
+
+    console.print(info_table)
+    console.print("")
+
     if not target_dir.exists():
         console.print(f"  [yellow]Target directory does not exist[/yellow]")
+        console.print("")
         if not typer.confirm("  Create target directory?", default=True):
             console.print("  [dim]Aborted.[/dim]")
             raise typer.Exit(0)
@@ -311,18 +345,60 @@ def publish():
             f"  [green]Created target directory[/green]: {cli_render_path(target_dir)}"
         )
 
+    # first, find potential conflicts
+
+    conflicts = []
+    for file in files_in_publish_dir:
+        target_file = target_dir / file.name
+        if target_file.exists():
+            conflicts.append((file, target_file))
+
+    if conflicts:
+        console.print("[bold yellow]🔥 Conflicts detected![/bold yellow]")
+        console.print("")
+        console.print(
+            "[dim]The following files already exist in the target directory:[/dim]"
+        )
+        console.print("")
+
+        conflict_table = Table(
+            show_header=True,
+            header_style="bold yellow",
+            box=None,
+            padding=(0, 1),
+        )
+        conflict_table.add_column("File", style="yellow", no_wrap=True)
+        conflict_table.add_column("Source/Target", style="dim")
+
+        for source_file, target_file in conflicts:
+            conflict_table.add_row(
+                escape(source_file.name),
+                escape(str(source_file)) + "\n" + escape(str(target_file)),
+            )
+
+        console.print(conflict_table)
+        console.print("")
+        console.print(f"  Total files to publish: {len(files_in_publish_dir)}")
+        console.print(f"  Total conflicts: {len(conflicts)}")
+        console.print("")
+
+        if not typer.confirm(
+            "Ready to continue (and *overwrite* existing files)?",
+            default=True,
+        ):
+            console.print("  [dim]Aborted.[/dim]")
+            raise typer.Exit(0)
+
+    else:
+        if not typer.confirm(
+            f"Ready to move {len(files_in_publish_dir)} files?", default=True
+        ):
+            console.print("  [dim]Aborted.[/dim]")
+            raise typer.Exit(0)
+
     # we are ready to move files to the target directory
-
-    console.print("")
-    if not typer.confirm(
-        f"Ready to move {len(files_in_publish_dir)} files?", default=True
-    ):
-        console.print("  [dim]Aborted.[/dim]")
-        raise typer.Exit(0)
-
     console.print("")
     console.print(f"[green]Moving files...[/green]")
-
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -337,7 +413,7 @@ def publish():
             move_file_under_dir(file, target_dir)
             progress.update(task, advance=1)
 
-    console.print(f"[green]Done![/green]")
+    console.print("[green]Done![/green]")
 
 
 if __name__ == "__main__":
