@@ -99,7 +99,6 @@ def cli_print_album(album: DarkroomYearAlbum):
     table.add_row("Path", str(album.album_path))
     table.add_row("Year", album.year)
     table.add_row("Album", album.album)
-    table.add_row("Device", str(album.device) if album.device else "[dim]None[/dim]")
 
     console.print(
         Panel(
@@ -195,17 +194,9 @@ def archive(path: Path | None = None):
 
     cli_print_album(album)
 
-    source_dir: Path
-    if album.device is None:
-        console.print(f"Archiving *whole* album: [white]{album.album_path}[/white]")
-        source_dir = album.album_path
-        target_dir = settings.archive / album.year / album.album
-    else:
-        console.print(
-            f"Archiving album's *device folder*: [white]{album.device}[/white]"
-        )
-        source_dir = album.album_path / album.device
-        target_dir = settings.archive / album.year / album.album / album.device
+    console.print(f"Archiving album: [white]{album.album_path}[/white]")
+    source_dir = album.album_path
+    target_dir = settings.archive / album.year / album.album
 
     console.print("")
 

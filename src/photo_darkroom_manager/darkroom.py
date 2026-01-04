@@ -8,17 +8,10 @@ class DarkroomYearAlbum(BaseModel):
     year: str
     album: str
     album_path: Path
-    device: str | None = None
 
     @property
     def publish_dir(self) -> Path:
         return self.album_path / "PUBLISH"
-
-    @property
-    def device_dir(self) -> Path | None:
-        if self.device is None:
-            return None
-        return self.album_path / self.device
 
     @field_validator("year")
     @classmethod
@@ -54,16 +47,11 @@ def recognize_darkroom_album(
         )
     parts = relative_path.parts
 
+    year = parts[0]
+    album = parts[1]
+    album_path = darkroom_path / year / album
+
     if len(parts) == 2:
-        return DarkroomYearAlbum(
-            year=parts[0], album=parts[1], album_path=path.resolve()
-        )
-    elif len(parts) == 3:
-        return DarkroomYearAlbum(
-            year=parts[0],
-            album=parts[1],
-            device=parts[2],
-            album_path=path.resolve().parent,
-        )
+        return DarkroomYearAlbum(year=year, album=album, album_path=album_path)
     else:
         return None
