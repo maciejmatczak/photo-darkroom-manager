@@ -92,17 +92,21 @@ def cli_recognize_darkroom_album(
 
 
 def cli_print_album(album: DarkroomYearAlbum):
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style="cyan", no_wrap=True)
-    table.add_column()
+    items = [
+        ("Path", str(album.album_path)),
+        ("Year", album.year),
+        ("Album", album.album),
+    ]
 
-    table.add_row("Path", str(album.album_path))
-    table.add_row("Year", album.year)
-    table.add_row("Album", album.album)
+    info_table = Table(show_header=False, box=None, padding=(0, 1))
+    info_table.add_column(style="cyan", no_wrap=True)
+    info_table.add_column()
+    for item in items:
+        info_table.add_row(item[0], item[1])
 
     console.print(
         Panel(
-            table,
+            info_table,
             title=f"[blue]Album '{escape(album.album)}'[/blue]",
             border_style="blue",
             expand=False,
@@ -123,6 +127,30 @@ def cli_print_header(text: str):
         )
     )
     console.print()
+
+
+def info_table(items: list[tuple[str, str]]) -> Table:
+    table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+    )
+    table.add_column(style="cyan", no_wrap=True)
+    table.add_column()
+    for item in items:
+        table.add_row(item[0], item[1])
+    return table
+
+
+def cli_print_info_table(
+    items: list[tuple[str, str]], title: str = "Info", in_panel=False
+):
+    if in_panel:
+        console.print(
+            Panel(info_table(items), title=title, border_style="cyan", expand=False)
+        )
+    else:
+        console.print(info_table(items))
 
 
 def version_callback(value: bool):
@@ -156,11 +184,18 @@ def status():
     cli_print_header("📸 Darkroom Status")
     cwd = Path.cwd()
 
-    console.print(f"[blue]Darkroom:[/blue] {settings.darkroom}")
-    console.print(f"[blue]Current directory:[/blue] {cwd}")
+    cli_print_info_table(
+        [
+            ("Darkroom:", str(settings.darkroom)),
+            ("Current directory:", str(cwd)),
+        ],
+        title="Darkroom Status",
+        in_panel=True,
+    )
 
     album = cli_recognize_darkroom_album(settings.darkroom, cwd)
     if album:
+        console.print("")
         cli_print_album(album)
 
 
@@ -195,12 +230,12 @@ def archive(path: Path | None = None):
     cli_print_album(album)
 
     console.print(f"Archiving album: [white]{album.album_path}[/white]")
-    source_dir = album.album_path
-    target_dir = settings.archive / album.year / album.album
+    source_dir = cwd
+    target_dir = settings.archive / album.relative_subpath
 
     console.print("")
 
-    console.print(f"Source directory: {escape(str(source_dir))}")
+    console.print(f"Source directory: [green]{escape(str(source_dir))}[/green]")
     console.print(f"Target directory: {cli_render_path(target_dir)}")
     console.print("")
 
@@ -259,7 +294,7 @@ def move_file_under_dir(file_path: Path, target_dir: Path, overwrite: bool = Fal
 
 @app.command()
 def publish():
-    """Publish the album to the internet."""
+    """Publish the album to the showroom."""
     cli_print_header("📸 Publishing album")
 
     settings = cli_load_settings()
@@ -305,24 +340,12 @@ def publish():
     # we need to double check target directory before copying
     target_dir = settings.showroom / album.year / album.album
 
-    info_table = Table(
-        show_header=False,
-        box=None,
-        padding=(0, 1),
+    cli_print_info_table(
+        [
+            ("Files in publish directory:", str(len(files_in_publish_dir))),
+            ("Target directory:", cli_render_path(target_dir)),
+        ],
     )
-    info_table.add_column(style="white", no_wrap=True)
-    info_table.add_column()
-
-    info_table.add_row(
-        "Files in publish directory:",
-        str(len(files_in_publish_dir)),
-    )
-    info_table.add_row(
-        "Target directory:",
-        cli_render_path(target_dir),
-    )
-
-    console.print(info_table)
     console.print("")
 
     if not target_dir.exists():
@@ -403,6 +426,128 @@ def publish():
             progress.update(task, advance=1)
 
     console.print("[green]Done![/green]")
+
+
+@app.command()
+def organize():
+    """Organize the files: seperate photos and videos into separate directories."""
+    cli_print_header("📸 Organizing files")
+
+    settings = cli_load_settings()
+    cwd = Path.cwd().resolve()
+    album = cli_recognize_darkroom_album(settings.darkroom, cwd)
+
+    if album is None:
+        console.print(f"[red]Album not recognized for path: {cwd}[/red]")
+        raise typer.Exit(0)
+
+    cli_print_album(album)
+
+    files_data = {}
+    for item in cwd.iterdir():
+        if item.is_dir():
+            continue
+
+        # Get filename without any suffixes (e.g., "IMG_1234.jpg.xmp" -> "IMG_1234")
+        file_id = item.name.split(".")[0]
+
+        if file_id in files_data:
+            continue
+        else:
+            files_data[file_id] = {
+                "paths": [],
+                "suffixes": [],
+                "is_photo": False,
+                "is_video": False,
+            }
+
+        all_related_files = list(cwd.glob(f"{file_id}.*", case_sensitive=False))
+        files_data[file_id]["paths"] = all_related_files
+        files_data[file_id]["suffixes"] = [
+            f.name.split(".", 1)[-1] for f in all_related_files
+        ]
+
+        files_data[file_id]["is_photo"] = is_file_a_photo(
+            files_data[file_id]["suffixes"]
+        )
+        files_data[file_id]["is_video"] = is_file_a_video(
+            files_data[file_id]["suffixes"]
+        )
+
+    photo_paths = []
+    video_paths = []
+
+    for file_id, d in files_data.items():
+        is_photo = d["is_photo"]
+        is_video = d["is_video"]
+
+        if is_photo and is_video:
+            console.print(
+                f"[yellow]File {file_id} is both a photo and a video, skipping...[/yellow]"
+            )
+            console.print(f"  Suffixes: {d['suffixes']}")
+        if not (is_photo or is_video):
+            console.print(
+                f"[yellow]File {file_id} is not a photo or a video, skipping...[/yellow]"
+            )
+            console.print(f"  Suffixes: {d['suffixes']}")
+        if is_photo:
+            photo_paths.extend(d["paths"])
+        if is_video:
+            video_paths.extend(d["paths"])
+
+    cli_print_info_table(
+        [
+            ("Photos:", str(len(photo_paths))),
+            ("Videos:", str(len(video_paths))),
+        ]
+    )
+    console.print("")
+
+    if not typer.confirm("Ready to move files?", default=False):
+        console.print("  [dim]Aborted.[/dim]")
+        raise typer.Exit(0)
+
+    video_dir = cwd / "VIDEOS"
+    if video_paths:
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+    photos_dir = cwd / "PHOTOS"
+    if photo_paths:
+        photos_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print("")
+    console.print(f"[green]Moving files...[/green]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            "[cyan]Moving files...", total=len(photo_paths) + len(video_paths)
+        )
+        for path in photo_paths:
+            move_file_under_dir(path, photos_dir)
+            progress.update(task, advance=1)
+        for path in video_paths:
+            move_file_under_dir(path, video_dir)
+            progress.update(task, advance=1)
+
+    console.print("[green]Done![/green]")
+
+
+def is_file_a_photo(suffixes: list[str]) -> bool:
+    return any(
+        suffix.lower() in {"jpg", "jpeg", "png", "heic", "heif"} for suffix in suffixes
+    )
+
+
+def is_file_a_video(suffixes: list[str]) -> bool:
+    return any(
+        suffix.lower() in {"mp4", "mov", "avi", "mkv", "webm"} for suffix in suffixes
+    )
 
 
 if __name__ == "__main__":

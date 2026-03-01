@@ -8,6 +8,7 @@ class DarkroomYearAlbum(BaseModel):
     year: str
     album: str
     album_path: Path
+    relative_subpath: Path
 
     @property
     def publish_dir(self) -> Path:
@@ -51,7 +52,6 @@ def recognize_darkroom_album(
     album = parts[1]
     album_path = darkroom_path / year / album
 
-    if len(parts) == 2:
-        return DarkroomYearAlbum(year=year, album=album, album_path=album_path)
-    else:
-        return None
+    return DarkroomYearAlbum(
+        year=year, album=album, album_path=album_path, relative_subpath=relative_path
+    )
