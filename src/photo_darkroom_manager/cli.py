@@ -565,9 +565,9 @@ def publish():
 
 
 @app.command()
-def organize():
-    """Organize the files: seperate photos and videos into separate directories."""
-    cli_print_header("📸 Organizing files")
+def tidy():
+    """Tidy the files: seperate photos and videos into separate directories."""
+    cli_print_header("📸 Tidying files")
 
     settings = cli_load_settings()
     cwd = Path.cwd().resolve()

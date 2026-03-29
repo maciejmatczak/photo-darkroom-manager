@@ -44,4 +44,4 @@ GitHub Actions runs `uv sync --group dev` and `pre-commit run --all-files` on pu
 
 ## Project notes
 
-- organize: organize all photos recurrently into parent folders based on relative image file
+- tidy: organize all photos recurrently into parent folders based on relative image file
