@@ -7,7 +7,7 @@ name = "photo-darkroom-manager"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = "~=3.13.0"
+requires-python = "==3.13.0"
 dependencies = [
     "nicegui>=2.18.0",
     "platformdirs>=4.0.0",
