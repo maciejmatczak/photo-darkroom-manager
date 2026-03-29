@@ -1,12 +1,12 @@
 """Photo Darkroom Manager - A modern CLI for managing your photo darkroom workflow."""
 
 import os
-from pathlib import Path
 import shutil
 import stat
 import sys
-from typing import Optional
+from pathlib import Path
 
+import typer
 from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
@@ -19,11 +19,9 @@ from rich.progress import (
     TextColumn,
 )
 from rich.table import Table
-import typer
 
 from photo_darkroom_manager.config import Settings
 from photo_darkroom_manager.darkroom import DarkroomYearAlbum, recognize_darkroom_album
-
 
 app = typer.Typer(
     name="photo-darkroom-manager",
@@ -77,7 +75,7 @@ def cli_load_settings():
         settings = Settings()
     except ValidationError as e:
         cli_print_pydantic_error(e)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     return settings
 
@@ -89,7 +87,7 @@ def cli_recognize_darkroom_album(
         album = recognize_darkroom_album(darkroom_path, path)
     except ValueError as e:
         console.print(f"[bold red]Error: {e}[/bold red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     return album
 
 
@@ -164,7 +162,7 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "--version",
         "-v",
@@ -246,7 +244,7 @@ def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
         real_dst = os.path.join(dst, shutil._basename(src))
 
         if os.path.exists(real_dst):
-            raise shutil.Error("Destination path '%s' already exists" % real_dst)
+            raise shutil.Error(f"Destination path {real_dst!r} already exists")
     try:
         os.rename(src, real_dst)
     except OSError:
@@ -257,8 +255,8 @@ def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
         elif os.path.isdir(src):
             if shutil._destinsrc(src, dst):
                 raise shutil.Error(
-                    "Cannot move a directory '%s' into itself '%s'." % (src, dst)
-                )
+                    f"Cannot move a directory {src!r} into itself {dst!r}."
+                ) from None
             if shutil._is_immutable(src) or (
                 not os.access(src, os.W_OK)
                 and os.listdir(src)
@@ -266,8 +264,8 @@ def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
             ):
                 raise PermissionError(
                     "Cannot move the non-empty directory "
-                    "'%s': Lacking write permission to '%s'." % (src, src)
-                )
+                    f"{src!r}: Lacking write permission to {src!r}."
+                ) from None
             shutil.copytree(src, real_dst, copy_function=copy_function, symlinks=True)
             shutil.rmtree(src, onexc=onexc)
         else:
@@ -293,10 +291,7 @@ def archive(path: Path | None = None):
     cli_print_header("📸 Archiving")
 
     settings = cli_load_settings()
-    if path is None:
-        cwd = Path.cwd()
-    else:
-        cwd = path.resolve()
+    cwd = Path.cwd() if path is None else path.resolve()
 
     album = cli_recognize_darkroom_album(settings.darkroom, cwd)
 
@@ -347,8 +342,12 @@ def cli_render_path(path: Path) -> str:
 
     existing_part_str = escape(str(existing_part))
     not_existing_parts_str = escape(str(not_existing_parts))
+    sep = escape(os.path.sep)
 
-    return f"[green]{existing_part_str}{escape(os.path.sep)}[/green][white dim]{not_existing_parts_str}[/white dim]"
+    return (
+        f"[green]{existing_part_str}{sep}[/green]"
+        f"[white dim]{not_existing_parts_str}[/white dim]"
+    )
 
 
 def move_file_under_dir(file_path: Path, target_dir: Path, overwrite: bool = False):
@@ -359,9 +358,8 @@ def move_file_under_dir(file_path: Path, target_dir: Path, overwrite: bool = Fal
 
     target_file = target_dir / file_path.name
 
-    if target_file.exists():
-        if not target_file.is_file():
-            raise ValueError(f"Cannot overwrite non-file: {target_file}")
+    if target_file.exists() and not target_file.is_file():
+        raise ValueError(f"Cannot overwrite non-file: {target_file}")
 
     # if target_file.exists():
     #     raise ValueError(f"Target file already exists: {target_file}")
@@ -559,14 +557,18 @@ def organize():
         is_video = d["is_video"]
 
         if is_photo and is_video:
-            console.print(
-                f"[yellow]File {file_id} is both a photo and a video, skipping...[/yellow]"
+            msg = (
+                f"[yellow]File {file_id} is both a photo and a video, "
+                "skipping...[/yellow]"
             )
+            console.print(msg)
             console.print(f"  Suffixes: {d['suffixes']}")
         if not (is_photo or is_video):
-            console.print(
-                f"[yellow]File {file_id} is not a photo or a video, skipping...[/yellow]"
+            msg = (
+                f"[yellow]File {file_id} is not a photo or a video, "
+                "skipping...[/yellow]"
             )
+            console.print(msg)
             console.print(f"  Suffixes: {d['suffixes']}")
         if is_photo:
             photo_paths.extend(d["paths"])

@@ -1,11 +1,12 @@
+from pathlib import Path
+
 from pydantic import field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
-    YamlConfigSettingsSource,
     SettingsConfigDict,
+    YamlConfigSettingsSource,
 )
-from pathlib import Path
 
 
 def find_darkroom_yaml(start_path: Path | None = None) -> Path | None:

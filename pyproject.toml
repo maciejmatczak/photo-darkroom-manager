@@ -32,16 +32,16 @@ target-version = "py314"
 line-length = 88
 src = ["src"]
 
-# Ruff lint rules (uncomment when enabling the ruff hooks in `.pre-commit-config.yaml`).
-# [tool.ruff.lint]
-# select = [
-#     "E",   # pycodestyle errors
-#     "W",   # pycodestyle warnings
-#     "F",   # pyflakes
-#     "I",   # isort
-#     "UP",  # pyupgrade
-#     "B",   # flake8-bugbear
-#     "SIM", # flake8-simplify
-# ]
-# [tool.ruff.lint.isort]
-# known-first-party = ["photo_darkroom_manager"]
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["photo_darkroom_manager"]

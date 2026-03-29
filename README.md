@@ -2,6 +2,10 @@
 
 Micro helper for moving photo files around.
 
+## Development
+
+Install [uv](https://docs.astral.sh/uv/), then `uv sync --group dev` and install pre-commit hooks (including `commit-msg` for conventional commits). See [DEV.md](DEV.md) for the full workflow and CI notes.
+
 ## Concepts
 
 Configuration is managed via a `darkroom.yaml` file that defines the paths for darkroom, showroom, and archive directories.

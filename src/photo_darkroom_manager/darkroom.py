@@ -31,7 +31,8 @@ class DarkroomYearAlbum(BaseModel):
         pattern = r"^\d{4}-\d{2}.*"
         if not re.match(pattern, v):
             raise ValueError(
-                f"album must follow format 'YYYY-MM[ <something>]' (e.g., '2024-01 Album Name' or '2024-01'), got: {v}"
+                "album must follow format 'YYYY-MM[ <something>]' "
+                f"(e.g., '2024-01 Album Name' or '2024-01'), got: {v}"
             )
         return v
 
@@ -45,7 +46,7 @@ def recognize_darkroom_album(
     except ValueError:
         raise ValueError(
             f"Path {path} is not a subpath of darkroom path: {darkroom_path}"
-        )
+        ) from None
     parts = relative_path.parts
 
     try:

@@ -14,7 +14,6 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=1024"]
 
-  # Ruff (uncomment together with `[tool.ruff.lint]` in pyproject.toml).
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.8
     hooks:
