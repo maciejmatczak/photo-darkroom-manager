@@ -7,9 +7,12 @@ name = "photo-darkroom-manager"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = "~=3.13"
 dependencies = [
+    "nicegui>=2.18.0",
+    "platformdirs>=4.0.0",
     "pydantic-settings[yaml]>=2.12.0",
+    "pywebview>=6.1",
     "rich>=14.2.0",
     "typer[all]>=0.20.0",
 ]
@@ -17,12 +20,10 @@ dependencies = [
 [project.scripts]
 photo-darkroom-manager = "photo_darkroom_manager.cli:app"
 dr-mng = "photo_darkroom_manager.cli:app"
+dr-mng-gui = "photo_darkroom_manager.gui.app:main"
 
 [dependency-groups]
-dev = [
-    "pre-commit>=4.5.1",
-    "ruff>=0.15.8",
-]
+dev = ["pre-commit>=4.5.1", "ruff>=0.15.8"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/photo_darkroom_manager"]
