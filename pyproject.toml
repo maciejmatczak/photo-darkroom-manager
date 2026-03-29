@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "photo-darkroom-manager"
 version = "0.1.0"
@@ -13,3 +17,31 @@ dependencies = [
 [project.scripts]
 photo-darkroom-manager = "photo_darkroom_manager.cli:app"
 dr-mng = "photo_darkroom_manager.cli:app"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "ruff>=0.15.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/photo_darkroom_manager"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+src = ["src"]
+
+# Ruff lint rules (uncomment when enabling the ruff hooks in `.pre-commit-config.yaml`).
+# [tool.ruff.lint]
+# select = [
+#     "E",   # pycodestyle errors
+#     "W",   # pycodestyle warnings
+#     "F",   # pyflakes
+#     "I",   # isort
+#     "UP",  # pyupgrade
+#     "B",   # flake8-bugbear
+#     "SIM", # flake8-simplify
+# ]
+# [tool.ruff.lint.isort]
+# known-first-party = ["photo_darkroom_manager"]

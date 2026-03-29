@@ -50,4 +50,3 @@ If `PATH` is not provided, uses the current directory. Archives the entire album
 **Examples:**
 - From `/.../darkroom/2024/2024-01 Vacation/`: archives entire album to `/.../archive/2024/2024-01 Vacation/`
 - From `/.../darkroom/2024/2024-01 Vacation/iPhone/`: archives only device folder to `/.../archive/2024/2024-01 Vacation/iPhone/`
-
