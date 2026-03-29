@@ -4,6 +4,8 @@ import os
 import shutil
 import stat
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -329,13 +331,48 @@ def new_album(
     console.print(f"[green]Created album folder:[/green] {cli_render_path(target_dir)}")
 
 
-def remove_readonly(func, path, _):
-    "Clear the readonly bit and reattempt the removal"
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
+@dataclass(frozen=True, slots=True)
+class MoveIssue:
+    """One problem encountered during a directory move."""
+
+    stage: str
+    operation: str
+    path: Path
+    error: BaseException
+    recovered: bool = False
 
 
-def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
+def make_remove_readonly_onexc(
+    issues: list[MoveIssue],
+) -> Callable[[Callable[..., object], str, BaseException], None]:
+    """Build an ``onexc`` handler for ``shutil.rmtree`` that clears read-only bits.
+
+    Records each initial failure and whether ``chmod`` + retry fixed it, or the
+    retry error if not.
+    """
+
+    def onexc(func: Callable[..., object], path: str, exc: BaseException) -> None:
+        p = Path(path)
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError as exc2:
+            issues.append(MoveIssue("rmtree", func.__name__, p, exc, recovered=False))
+            issues.append(MoveIssue("rmtree", func.__name__, p, exc2, recovered=False))
+            raise exc2
+        else:
+            issues.append(MoveIssue("rmtree", func.__name__, p, exc, recovered=True))
+
+    return onexc
+
+
+def cstm_shutil_move(
+    src,
+    dst,
+    copy_function=shutil.copy2,
+    onexc=None,
+    issues: list[MoveIssue] | None = None,
+):
     """Recursively move a file or directory to another location. This is
     similar to the Unix "mv" command. Return the file or directory's
     destination.
@@ -367,7 +404,7 @@ def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
             # We might be on a case insensitive filesystem,
             # perform the rename anyway.
             os.rename(src, dst)
-            return
+            return real_dst
 
         # Using _basename instead of os.path.basename is important, as we must
         # ignore any trailing slash to avoid the basename returning ''
@@ -396,7 +433,22 @@ def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
                     "Cannot move the non-empty directory "
                     f"{src!r}: Lacking write permission to {src!r}."
                 ) from None
-            shutil.copytree(src, real_dst, copy_function=copy_function, symlinks=True)
+            try:
+                shutil.copytree(
+                    src, real_dst, copy_function=copy_function, symlinks=True
+                )
+            except (OSError, shutil.Error) as e:
+                if issues is not None:
+                    issues.append(
+                        MoveIssue(
+                            "copytree",
+                            "copytree",
+                            Path(src),
+                            e,
+                            recovered=False,
+                        )
+                    )
+                raise
             shutil.rmtree(src, onexc=onexc)
         else:
             copy_function(src, real_dst)
@@ -404,14 +456,21 @@ def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
     return real_dst
 
 
-def move_dir_safely(source_dir: Path, target_dir: Path):
+def move_dir_safely(source_dir: Path, target_dir: Path) -> tuple[Path, list[MoveIssue]]:
     if not source_dir.exists():
         raise ValueError(f"Source directory does not exist: {source_dir}")
     if not source_dir.is_dir():
         raise ValueError(f"Source directory is not a directory: {source_dir}")
     if target_dir.exists():
         raise ValueError(f"Target directory already exists: {target_dir}")
-    move_dir(source_dir, target_dir, onexc=remove_readonly)
+    move_issues: list[MoveIssue] = []
+    dest = cstm_shutil_move(
+        source_dir,
+        target_dir,
+        onexc=make_remove_readonly_onexc(move_issues),
+        issues=move_issues,
+    )
+    return Path(dest), move_issues
 
 
 @app.command()
@@ -448,7 +507,24 @@ def archive(path: Annotated[Path | None, typer.Argument()] = None):
     console.print("")
     console.print("[green]Moving directory...[/green]")
 
-    move_dir_safely(source_dir, target_dir)
+    _dest, move_issues = move_dir_safely(source_dir, target_dir)
+
+    if move_issues:
+        console.print("")
+        console.print("Issues during move:")
+        recovered = [i for i in move_issues if i.recovered]
+        unrecovered = [i for i in move_issues if not i.recovered]
+        for issue in recovered:
+            console.print(
+                f"[yellow]  [dim]{issue.stage}[/dim] {issue.operation} "
+                f"{escape(str(issue.path))}: {issue.error!r} "
+                f"(recovered after chmod + retry)[/yellow]"
+            )
+        for issue in unrecovered:
+            console.print(
+                f"[red]  [dim]{issue.stage}[/dim] {issue.operation} "
+                f"{escape(str(issue.path))}: {issue.error!r}[/red]"
+            )
 
     console.print("[green]Done![/green]")
 
