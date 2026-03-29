@@ -201,16 +201,19 @@ def _show_new_album_dialog(model: App, rebuild_fn):
 
 def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> None:
     has_children = bool(node.children)
-    icon = "folder_open" if node.node_type == "root" else "folder"
+    icon = "folder" if node.node_type == "root" else "folder"
     bg = _depth_class(depth)
 
     if has_children:
-        exp = ui.expansion(icon=icon).classes(f"w-full {bg}").props("dense")
+        exp = ui.expansion().classes(f"w-full {bg}").props("dense")
         _all_expansions.append(exp)
 
         with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES):
+            ui.icon(icon, size="sm").classes("text-grey-7")
             ui.label(node.name).classes("font-medium")
+            ui.space()
             _stat_badges(node)
+            ui.space()
             _open_folder_button(node)
             _action_buttons(node, model, rebuild_fn)
 
@@ -218,10 +221,15 @@ def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> 
             for child in node.children:
                 _render_node(child, model, rebuild_fn, depth + 1)
     else:
-        with ui.row().classes(f"{NODE_ROW_CLASSES} pl-10 py-0.5 w-full {bg}"):
+        with (
+            ui.element("div").classes(f"w-full py-0.5 pl-2 {bg}"),
+            ui.row().classes(NODE_ROW_CLASSES),
+        ):
             ui.icon(icon, size="sm").classes("text-grey-7")
             ui.label(node.name).classes("font-medium")
+            ui.space()
             _stat_badges(node)
+            ui.space()
             _open_folder_button(node)
             _action_buttons(node, model, rebuild_fn)
 
