@@ -21,8 +21,10 @@ from rich.progress import (
 from rich.table import Table
 
 from photo_darkroom_manager.config import Settings
+from photo_darkroom_manager.constants import PHOTOS_FOLDER, VIDEOS_FOLDER
 from photo_darkroom_manager.darkroom import DarkroomYearAlbum, recognize_darkroom_album
 from photo_darkroom_manager.file_utils import move_dir_safely
+from photo_darkroom_manager.media import is_file_a_photo, is_file_a_video
 
 app = typer.Typer(
     name="photo-darkroom-manager",
@@ -565,9 +567,9 @@ def publish():
 
 
 @app.command()
-def organize():
-    """Organize the files: seperate photos and videos into separate directories."""
-    cli_print_header("📸 Organizing files")
+def tidy():
+    """Tidy the files: seperate photos and videos into separate directories."""
+    cli_print_header("📸 Tidying files")
 
     settings = cli_load_settings()
     cwd = Path.cwd().resolve()
@@ -648,11 +650,11 @@ def organize():
         console.print("  [dim]Aborted.[/dim]")
         raise typer.Exit(0)
 
-    video_dir = cwd / "VIDEOS"
+    video_dir = cwd / VIDEOS_FOLDER
     if video_paths:
         video_dir.mkdir(parents=True, exist_ok=True)
 
-    photos_dir = cwd / "PHOTOS"
+    photos_dir = cwd / PHOTOS_FOLDER
     if photo_paths:
         photos_dir.mkdir(parents=True, exist_ok=True)
 
@@ -676,18 +678,6 @@ def organize():
             progress.update(task, advance=1)
 
     console.print("[green]Done![/green]")
-
-
-def is_file_a_photo(suffixes: list[str]) -> bool:
-    return any(
-        suffix.lower() in {"jpg", "jpeg", "png", "heic", "heif"} for suffix in suffixes
-    )
-
-
-def is_file_a_video(suffixes: list[str]) -> bool:
-    return any(
-        suffix.lower() in {"mp4", "mov", "avi", "mkv", "webm"} for suffix in suffixes
-    )
 
 
 if __name__ == "__main__":

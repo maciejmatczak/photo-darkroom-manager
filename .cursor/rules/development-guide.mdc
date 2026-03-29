@@ -8,6 +8,16 @@ After every change, run:
 - `uv run ruff format .`
 - `uv run ruff check .`
 
+# Running the GUI (dev mode)
+
+Start the GUI in-browser with hot reload:
+```
+uv run python -m photo_darkroom_manager.gui.app
+```
+
+This runs the app at `http://localhost:8090`, with hot reload enabled. You can
+use Cursor Browser to open it.
+
 # Commit messages
 
 Always use conventional commits for commit messages: https://www.conventionalcommits.org/en/v1.0.0/#specification.
