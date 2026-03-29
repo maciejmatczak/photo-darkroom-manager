@@ -294,7 +294,7 @@ def new_album(
     target_dir = settings.darkroom / year_norm / album_folder_name
 
     try:
-        DarkroomYearAlbum(
+        darkroom_album = DarkroomYearAlbum(
             year=year_norm,
             album=album_folder_name,
             album_path=target_dir,
@@ -324,9 +324,7 @@ def new_album(
         raise typer.Exit(1)
 
     target_dir.mkdir(parents=True, exist_ok=False)
-
-    publish_dir = target_dir / "PUBLISH"
-    publish_dir.mkdir(parents=True, exist_ok=True)
+    darkroom_album.publish_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(f"[green]Created album folder:[/green] {cli_render_path(target_dir)}")
 
@@ -510,7 +508,7 @@ def publish():
 
     if album is None:
         console.print(f"[red]Album not recognized for path: {cwd}[/red]")
-        raise typer.Exit(0)
+        raise typer.Exit(1)
 
     cli_print_album(album)
 
