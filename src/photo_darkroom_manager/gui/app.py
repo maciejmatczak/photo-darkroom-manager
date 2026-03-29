@@ -36,7 +36,7 @@ def _build_setup_page() -> None:
         ui.button("Save & Start", icon="check", on_click=do_save).classes("mt-4")
 
 
-def main() -> None:
+def _register_pages() -> None:
     @ui.page("/")
     def index():
         settings = load_settings()
@@ -45,6 +45,9 @@ def main() -> None:
         else:
             build_ui(App(settings))
 
+
+def main() -> None:
+    _register_pages()
     ui.run(
         title="Photo Darkroom Manager",
         native=True,
@@ -53,5 +56,16 @@ def main() -> None:
     )
 
 
-if __name__ == "__main__":
-    main()
+def dev() -> None:
+    """Dev server: opens in browser with hot reload."""
+    _register_pages()
+    ui.run(
+        title="Photo Darkroom Manager [DEV]",
+        native=False,
+        reload=True,
+        port=8090,
+    )
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    dev()

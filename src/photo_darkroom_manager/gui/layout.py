@@ -19,6 +19,7 @@ from photo_darkroom_manager.gui.scanner import DarkroomNode
 # ---------------------------------------------------------------------------
 TREE_BTN_PROPS = "dense size=sm"
 NODE_ROW_CLASSES = "items-center gap-2 flex-nowrap"
+SECTION_GAP = "w-3"
 
 _DEPTH_BG = [
     "bg-white/[3%]",
@@ -211,9 +212,9 @@ def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> 
         with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES):
             ui.icon(icon, size="sm").classes("text-grey-7")
             ui.label(node.name).classes("font-medium")
-            ui.space()
+            ui.element("div").classes(SECTION_GAP)
             _stat_badges(node)
-            ui.space()
+            ui.element("div").classes(SECTION_GAP)
             _open_folder_button(node)
             _action_buttons(node, model, rebuild_fn)
 
@@ -222,14 +223,14 @@ def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> 
                 _render_node(child, model, rebuild_fn, depth + 1)
     else:
         with (
-            ui.element("div").classes(f"w-full py-0.5 pl-2 {bg}"),
+            ui.element("div").classes(f"w-full py-0.5 pl-3 {bg}"),
             ui.row().classes(NODE_ROW_CLASSES),
         ):
             ui.icon(icon, size="sm").classes("text-grey-7")
             ui.label(node.name).classes("font-medium")
-            ui.space()
+            ui.element("div").classes(SECTION_GAP)
             _stat_badges(node)
-            ui.space()
+            ui.element("div").classes(SECTION_GAP)
             _open_folder_button(node)
             _action_buttons(node, model, rebuild_fn)
 
