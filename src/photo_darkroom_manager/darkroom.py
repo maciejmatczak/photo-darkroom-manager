@@ -48,8 +48,12 @@ def recognize_darkroom_album(
         )
     parts = relative_path.parts
 
-    year = parts[0]
-    album = parts[1]
+    try:
+        year = parts[0]
+        album = parts[1]
+    except IndexError:
+        return None
+
     album_path = darkroom_path / year / album
 
     return DarkroomYearAlbum(
