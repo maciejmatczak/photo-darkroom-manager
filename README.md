@@ -2,9 +2,11 @@
 
 Micro helper for moving photo files around.
 
-## Development
+## Installation
 
-Install [uv](https://docs.astral.sh/uv/), then `uv sync --group dev` and install pre-commit hooks (including `commit-msg` for conventional commits). See [DEV.md](DEV.md) for the full workflow and CI notes.
+```bash
+uv tool install git+https://github.com/maciejmatczak/photo-darkroom-manager
+```
 
 ## Concepts
 
@@ -54,3 +56,7 @@ If `PATH` is not provided, uses the current directory. Archives the entire album
 **Examples:**
 - From `/.../darkroom/2024/2024-01 Vacation/`: archives entire album to `/.../archive/2024/2024-01 Vacation/`
 - From `/.../darkroom/2024/2024-01 Vacation/iPhone/`: archives only device folder to `/.../archive/2024/2024-01 Vacation/iPhone/`
+
+## Development
+
+Install [uv](https://docs.astral.sh/uv/), then `uv sync --group dev` and install pre-commit hooks (including `commit-msg` for conventional commits). See [DEV.md](DEV.md) for the full workflow and CI notes.

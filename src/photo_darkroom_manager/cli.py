@@ -2,9 +2,9 @@
 
 import os
 import shutil
-import stat
-import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from pydantic import ValidationError
@@ -22,10 +22,11 @@ from rich.table import Table
 
 from photo_darkroom_manager.config import Settings
 from photo_darkroom_manager.darkroom import DarkroomYearAlbum, recognize_darkroom_album
+from photo_darkroom_manager.file_utils import move_dir_safely
 
 app = typer.Typer(
     name="photo-darkroom-manager",
-    help="A modern CLI tool for managing your photo darkroom workflow",
+    help="A CLI tool for managing your photo darkroom workflow",
     add_completion=False,
 )
 console = Console()
@@ -160,6 +161,62 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
+def _default_year_str() -> str:
+    return str(datetime.now().year)
+
+
+def _default_month_str() -> str:
+    return f"{datetime.now().month:02d}"
+
+
+def _normalize_and_validate_month(month_str: str) -> str:
+    s = month_str.strip()
+    if not s.isdigit():
+        console.print("[bold red]Error: month must be numeric (01-12)[/bold red]")
+        raise typer.Exit(1)
+    m = int(s)
+    if not 1 <= m <= 12:
+        console.print("[bold red]Error: month must be between 01 and 12[/bold red]")
+        raise typer.Exit(1)
+    return f"{m:02d}"
+
+
+def _normalize_and_validate_day(day_str: str) -> str | None:
+    s = day_str.strip()
+    if not s:
+        return None
+    if not s.isdigit():
+        console.print("[bold red]Error: day must be numeric (01-31)[/bold red]")
+        raise typer.Exit(1)
+    d = int(s)
+    if not 1 <= d <= 31:
+        console.print("[bold red]Error: day must be between 01 and 31[/bold red]")
+        raise typer.Exit(1)
+    return f"{d:02d}"
+
+
+def _normalize_and_validate_year(year_str: str) -> str:
+    s = year_str.strip()
+    if not s.isdigit() or len(s) != 4:
+        console.print("[bold red]Error: year must be exactly 4 digits[/bold red]")
+        raise typer.Exit(1)
+    y = int(s)
+    if not 1900 <= y <= 2100:
+        console.print("[bold red]Error: year must be between 1900 and 2100[/bold red]")
+        raise typer.Exit(1)
+    return s
+
+
+def _build_album_folder_name(year: str, month: str, day: str | None, name: str) -> str:
+    date_part = f"{year}-{month}"
+    if day is not None:
+        date_part = f"{date_part}-{day}"
+    trimmed = name.strip()
+    if trimmed:
+        return f"{date_part} {trimmed}"
+    return date_part
+
+
 @app.callback()
 def main(
     version: bool | None = typer.Option(
@@ -199,93 +256,80 @@ def status():
         cli_print_album(album)
 
 
-def remove_readonly(func, path, _):
-    "Clear the readonly bit and reattempt the removal"
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
+@app.command(name="new-album")
+def new_album(
+    year: str = typer.Option(
+        default_factory=_default_year_str,
+        prompt=True,
+        help="Album year (4 digits)",
+    ),
+    month: str = typer.Option(
+        default_factory=_default_month_str,
+        prompt=True,
+        help="Album month (01-12)",
+    ),
+    day: str = typer.Option(
+        "",
+        prompt="Day (optional, press Enter to skip)",
+        help="Optional day (01-31)",
+    ),
+    name: str = typer.Option(
+        "",
+        prompt="Album name (optional, press Enter to skip)",
+        help="Optional album name suffix",
+    ),
+):
+    """Create a new album folder under the darkroom."""
+    cli_print_header("📸 New Album")
 
+    settings = cli_load_settings()
 
-def move_dir(src, dst, copy_function=shutil.copy2, onexc=None):
-    """Recursively move a file or directory to another location. This is
-    similar to the Unix "mv" command. Return the file or directory's
-    destination.
+    year_norm = _normalize_and_validate_year(year)
+    month_norm = _normalize_and_validate_month(month)
+    day_norm = _normalize_and_validate_day(day)
 
-    If dst is an existing directory or a symlink to a directory, then src is
-    moved inside that directory. The destination path in that directory must
-    not already exist.
+    album_folder_name = _build_album_folder_name(year_norm, month_norm, day_norm, name)
 
-    If dst already exists but is not a directory, it may be overwritten
-    depending on os.rename() semantics.
+    target_dir = settings.darkroom / year_norm / album_folder_name
 
-    If the destination is on our current filesystem, then rename() is used.
-    Otherwise, src is copied to the destination and then removed. Symlinks are
-    recreated under the new name if os.rename() fails because of cross
-    filesystem renames.
-
-    The optional `copy_function` argument is a callable that will be used
-    to copy the source or it will be delegated to `copytree`.
-    By default, copy2() is used, but any function that supports the same
-    signature (like copy()) can be used.
-
-    A lot more could be done here...  A look at a mv.c shows a lot of
-    the issues this implementation glosses over.
-
-    """
-    real_dst = dst
-    if os.path.isdir(dst):
-        if shutil._samefile(src, dst) and not os.path.islink(src):
-            # We might be on a case insensitive filesystem,
-            # perform the rename anyway.
-            os.rename(src, dst)
-            return
-
-        # Using _basename instead of os.path.basename is important, as we must
-        # ignore any trailing slash to avoid the basename returning ''
-        real_dst = os.path.join(dst, shutil._basename(src))
-
-        if os.path.exists(real_dst):
-            raise shutil.Error(f"Destination path {real_dst!r} already exists")
     try:
-        os.rename(src, real_dst)
-    except OSError:
-        if os.path.islink(src):
-            linkto = os.readlink(src)
-            os.symlink(linkto, real_dst)
-            os.unlink(src)
-        elif os.path.isdir(src):
-            if shutil._destinsrc(src, dst):
-                raise shutil.Error(
-                    f"Cannot move a directory {src!r} into itself {dst!r}."
-                ) from None
-            if shutil._is_immutable(src) or (
-                not os.access(src, os.W_OK)
-                and os.listdir(src)
-                and sys.platform == "darwin"
-            ):
-                raise PermissionError(
-                    "Cannot move the non-empty directory "
-                    f"{src!r}: Lacking write permission to {src!r}."
-                ) from None
-            shutil.copytree(src, real_dst, copy_function=copy_function, symlinks=True)
-            shutil.rmtree(src, onexc=onexc)
-        else:
-            copy_function(src, real_dst)
-            os.unlink(src)
-    return real_dst
+        darkroom_album = DarkroomYearAlbum(
+            year=year_norm,
+            album=album_folder_name,
+            album_path=target_dir,
+            relative_subpath=Path(year_norm) / album_folder_name,
+        )
+    except ValidationError as e:
+        cli_print_pydantic_error(e)
+        raise typer.Exit(1) from None
 
+    info_rows: list[tuple[str, str]] = [
+        ("Darkroom:", str(settings.darkroom)),
+        ("Year:", year_norm),
+        ("Month:", month_norm),
+    ]
+    info_rows.append(("Day:", str(day_norm)))
+    info_rows.append(("Album name:", name.strip()))
+    info_rows.append(("Target:", cli_render_path(target_dir)))
 
-def move_dir_safely(source_dir: Path, target_dir: Path):
-    if not source_dir.exists():
-        raise ValueError(f"Source directory does not exist: {source_dir}")
-    if not source_dir.is_dir():
-        raise ValueError(f"Source directory is not a directory: {source_dir}")
+    cli_print_info_table(info_rows, title="New album", in_panel=True)
+    console.print("")
+
     if target_dir.exists():
-        raise ValueError(f"Target directory already exists: {target_dir}")
-    move_dir(source_dir, target_dir, onexc=remove_readonly)
+        console.print(
+            f"[bold red]Error: album folder already exists:[/bold red] "
+            f"{cli_render_path(target_dir)}"
+        )
+        raise typer.Exit(1)
+
+    target_dir.mkdir(parents=True, exist_ok=False)
+    darkroom_album.publish_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print(f"[green]Created album folder:[/green] {cli_render_path(target_dir)}")
 
 
 @app.command()
-def archive(path: Path | None = None):
+def archive(path: Annotated[Path | None, typer.Argument()] = None):
     """Show the current status of your darkroom."""
 
     cli_print_header("📸 Archiving")
@@ -318,7 +362,24 @@ def archive(path: Path | None = None):
     console.print("")
     console.print("[green]Moving directory...[/green]")
 
-    move_dir_safely(source_dir, target_dir)
+    _dest, move_issues = move_dir_safely(source_dir, target_dir)
+
+    if move_issues:
+        console.print("")
+        console.print("Issues during move:")
+        recovered = [i for i in move_issues if i.recovered]
+        unrecovered = [i for i in move_issues if not i.recovered]
+        for issue in recovered:
+            console.print(
+                f"[yellow]  [dim]{issue.stage}[/dim] {issue.operation} "
+                f"{escape(str(issue.path))}: {issue.error!r} "
+                f"(recovered after chmod + retry)[/yellow]"
+            )
+        for issue in unrecovered:
+            console.print(
+                f"[red]  [dim]{issue.stage}[/dim] {issue.operation} "
+                f"{escape(str(issue.path))}: {issue.error!r}[/red]"
+            )
 
     console.print("[green]Done![/green]")
 
@@ -378,7 +439,7 @@ def publish():
 
     if album is None:
         console.print(f"[red]Album not recognized for path: {cwd}[/red]")
-        raise typer.Exit(0)
+        raise typer.Exit(1)
 
     cli_print_album(album)
 
