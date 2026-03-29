@@ -223,7 +223,7 @@ def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> 
 
         exp.on_value_change(_on_toggle)
 
-        with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES):
+        with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES + "  py-2"):
             ui.icon(icon, size="sm").classes("text-grey-7")
             ui.label(node.name).classes("font-medium")
             ui.element("div").classes(SECTION_GAP)
@@ -237,7 +237,7 @@ def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> 
                 _render_node(child, model, rebuild_fn, depth + 1)
     else:
         with (
-            ui.element("div").classes(f"w-full py-0.5 pl-3 {bg}"),
+            ui.element("div").classes(f"w-full py-2 pl-4 {bg}"),
             ui.row().classes(NODE_ROW_CLASSES),
         ):
             ui.icon(icon, size="sm").classes("text-grey-7")
