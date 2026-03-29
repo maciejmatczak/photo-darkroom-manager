@@ -29,7 +29,8 @@ _DEPTH_BG = [
     "bg-white/[15%]",
 ]
 
-_all_expansions: list[ui.expansion] = []
+_all_expansions: dict[str, ui.expansion] = {}
+_expanded_paths: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +207,21 @@ def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> 
     bg = _depth_class(depth)
 
     if has_children:
-        exp = ui.expansion().classes(f"w-full {bg}").props("dense")
-        _all_expansions.append(exp)
+        path_key = str(node.path)
+        exp = (
+            ui.expansion(value=path_key in _expanded_paths)
+            .classes(f"w-full {bg}")
+            .props("dense")
+        )
+        _all_expansions[path_key] = exp
+
+        def _on_toggle(e, key=path_key):
+            if e.value:
+                _expanded_paths.add(key)
+            else:
+                _expanded_paths.discard(key)
+
+        exp.on_value_change(_on_toggle)
 
         with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES):
             ui.icon(icon, size="sm").classes("text-grey-7")
@@ -248,7 +262,7 @@ def build_ui(model: App) -> None:
         if container is None:
             return
         _all_expansions.clear()
-        container.clear()
+        container.clear()  # _expanded_paths is intentionally preserved
         if model.tree is None:
             return
         with container:
@@ -256,12 +270,14 @@ def build_ui(model: App) -> None:
                 _render_node(year_node, model, rebuild_tree)
 
     def expand_all():
-        for exp in _all_expansions:
+        for key, exp in _all_expansions.items():
             exp.open()
+            _expanded_paths.add(key)
 
     def collapse_all():
-        for exp in _all_expansions:
+        for exp in _all_expansions.values():
             exp.close()
+        _expanded_paths.clear()
 
     async def refresh():
         ui.notify("Scanning darkroom...", type="info", timeout=2000)

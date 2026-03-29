@@ -129,6 +129,15 @@ def _scan_album(path: Path) -> DarkroomNode:
     return node
 
 
+def _propagate_issues(node: DarkroomNode) -> set[str]:
+    """Recursively propagate issues up: a parent inherits all child issues."""
+    all_issues = set(node.issues)
+    for child in node.children:
+        all_issues |= _propagate_issues(child)
+    node.issues = all_issues
+    return all_issues
+
+
 def _scan_year(path: Path) -> DarkroomNode:
     """Scan a year directory."""
     node = DarkroomNode(
@@ -172,4 +181,5 @@ def scan_darkroom(darkroom_path: Path) -> DarkroomNode:
         pass
 
     root.stats = _aggregate_stats(root)
+    _propagate_issues(root)
     return root
