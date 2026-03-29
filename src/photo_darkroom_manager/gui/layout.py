@@ -69,10 +69,8 @@ def _tree_btn(label: str, icon: str, *, on_click, color: str = "primary"):
 
 
 def _stat_badges(node: DarkroomNode) -> None:
-    if node.stats.image_count > 0:
-        ui.badge(f"{node.stats.image_count} img", color="blue-4").props("outline")
-    if node.stats.video_count > 0:
-        ui.badge(f"{node.stats.video_count} vid", color="teal-4").props("outline")
+    ui.badge(f"{node.stats.image_count} img", color="blue-4").props("outline")
+    ui.badge(f"{node.stats.video_count} vid", color="teal-4").props("outline")
 
 
 def _open_folder_button(node: DarkroomNode) -> None:
