@@ -2,4 +2,10 @@
 alwaysApply: true
 ---
 
-- commits: use conventional commits
+# Linting
+
+Always run `uv run ruff check .` and `uv run ruff format .` before committing.
+
+# Commit messages
+
+Always use conventional commits for commit messages: https://www.conventionalcommits.org/en/v1.0.0/#specification.
