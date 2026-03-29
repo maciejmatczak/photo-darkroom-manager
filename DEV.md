@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) (installs and manages Python)
-- Python **3.14+** (see `requires-python` in `pyproject.toml`; uv can install it for you)
+- Python **3.13** (see `requires-python` in `pyproject.toml`; uv can install it for you)
 
 ## One-time setup
 
