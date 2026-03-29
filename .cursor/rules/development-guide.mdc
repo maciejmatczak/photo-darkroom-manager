@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+- commits: use conventional commits

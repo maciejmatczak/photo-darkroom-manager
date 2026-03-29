@@ -321,11 +321,11 @@ def archive(path: Path | None = None):
         raise typer.Exit(0)
 
     console.print("")
-    console.print(f"[green]Moving directory...[/green]")
+    console.print("[green]Moving directory...[/green]")
 
     move_dir_safely(source_dir, target_dir)
 
-    console.print(f"[green]Done![/green]")
+    console.print("[green]Done![/green]")
 
 
 def cli_render_path(path: Path) -> str:
@@ -426,7 +426,7 @@ def publish():
     console.print("")
 
     if not target_dir.exists():
-        console.print(f"  [yellow]Target directory does not exist[/yellow]")
+        console.print("  [yellow]Target directory does not exist[/yellow]")
         console.print("")
         if not typer.confirm("  Create target directory?", default=False):
             console.print("  [dim]Aborted.[/dim]")
@@ -487,7 +487,7 @@ def publish():
 
     # we are ready to move files to the target directory
     console.print("")
-    console.print(f"[green]Moving files...[/green]")
+    console.print("[green]Moving files...[/green]")
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -594,7 +594,7 @@ def organize():
         photos_dir.mkdir(parents=True, exist_ok=True)
 
     console.print("")
-    console.print(f"[green]Moving files...[/green]")
+    console.print("[green]Moving files...[/green]")
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
