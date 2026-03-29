@@ -5,6 +5,7 @@ import shutil
 import stat
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from pydantic import ValidationError
@@ -25,7 +26,7 @@ from photo_darkroom_manager.darkroom import DarkroomYearAlbum, recognize_darkroo
 
 app = typer.Typer(
     name="photo-darkroom-manager",
-    help="A modern CLI tool for managing your photo darkroom workflow",
+    help="A CLI tool for managing your photo darkroom workflow",
     add_completion=False,
 )
 console = Console()
@@ -285,7 +286,7 @@ def move_dir_safely(source_dir: Path, target_dir: Path):
 
 
 @app.command()
-def archive(path: Path | None = None):
+def archive(path: Annotated[Path | None, typer.Argument()] = None):
     """Show the current status of your darkroom."""
 
     cli_print_header("📸 Archiving")
