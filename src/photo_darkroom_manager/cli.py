@@ -4,6 +4,7 @@ import os
 import shutil
 import stat
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -161,6 +162,62 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
+def _default_year_str() -> str:
+    return str(datetime.now().year)
+
+
+def _default_month_str() -> str:
+    return f"{datetime.now().month:02d}"
+
+
+def _normalize_and_validate_month(month_str: str) -> str:
+    s = month_str.strip()
+    if not s.isdigit():
+        console.print("[bold red]Error: month must be numeric (01-12)[/bold red]")
+        raise typer.Exit(1)
+    m = int(s)
+    if not 1 <= m <= 12:
+        console.print("[bold red]Error: month must be between 01 and 12[/bold red]")
+        raise typer.Exit(1)
+    return f"{m:02d}"
+
+
+def _normalize_and_validate_day(day_str: str) -> str | None:
+    s = day_str.strip()
+    if not s:
+        return None
+    if not s.isdigit():
+        console.print("[bold red]Error: day must be numeric (01-31)[/bold red]")
+        raise typer.Exit(1)
+    d = int(s)
+    if not 1 <= d <= 31:
+        console.print("[bold red]Error: day must be between 01 and 31[/bold red]")
+        raise typer.Exit(1)
+    return f"{d:02d}"
+
+
+def _normalize_and_validate_year(year_str: str) -> str:
+    s = year_str.strip()
+    if not s.isdigit() or len(s) != 4:
+        console.print("[bold red]Error: year must be exactly 4 digits[/bold red]")
+        raise typer.Exit(1)
+    y = int(s)
+    if not 1900 <= y <= 2100:
+        console.print("[bold red]Error: year must be between 1900 and 2100[/bold red]")
+        raise typer.Exit(1)
+    return s
+
+
+def _build_album_folder_name(year: str, month: str, day: str | None, name: str) -> str:
+    date_part = f"{year}-{month}"
+    if day is not None:
+        date_part = f"{date_part}-{day}"
+    trimmed = name.strip()
+    if trimmed:
+        return f"{date_part} {trimmed}"
+    return date_part
+
+
 @app.callback()
 def main(
     version: bool | None = typer.Option(
@@ -198,6 +255,80 @@ def status():
     if album:
         console.print("")
         cli_print_album(album)
+
+
+@app.command(name="new-album")
+def new_album(
+    year: str = typer.Option(
+        default_factory=_default_year_str,
+        prompt=True,
+        help="Album year (4 digits)",
+    ),
+    month: str = typer.Option(
+        default_factory=_default_month_str,
+        prompt=True,
+        help="Album month (01-12)",
+    ),
+    day: str = typer.Option(
+        "",
+        prompt="Day (optional, press Enter to skip)",
+        help="Optional day (01-31)",
+    ),
+    name: str = typer.Option(
+        "",
+        prompt="Album name (optional, press Enter to skip)",
+        help="Optional album name suffix",
+    ),
+):
+    """Create a new album folder under the darkroom."""
+    cli_print_header("📸 New Album")
+
+    settings = cli_load_settings()
+
+    year_norm = _normalize_and_validate_year(year)
+    month_norm = _normalize_and_validate_month(month)
+    day_norm = _normalize_and_validate_day(day)
+
+    album_folder_name = _build_album_folder_name(year_norm, month_norm, day_norm, name)
+
+    target_dir = settings.darkroom / year_norm / album_folder_name
+
+    try:
+        DarkroomYearAlbum(
+            year=year_norm,
+            album=album_folder_name,
+            album_path=target_dir,
+            relative_subpath=Path(year_norm) / album_folder_name,
+        )
+    except ValidationError as e:
+        cli_print_pydantic_error(e)
+        raise typer.Exit(1) from None
+
+    info_rows: list[tuple[str, str]] = [
+        ("Darkroom:", str(settings.darkroom)),
+        ("Year:", year_norm),
+        ("Month:", month_norm),
+    ]
+    info_rows.append(("Day:", str(day_norm)))
+    info_rows.append(("Album name:", name.strip()))
+    info_rows.append(("Target:", cli_render_path(target_dir)))
+
+    cli_print_info_table(info_rows, title="New album", in_panel=True)
+    console.print("")
+
+    if target_dir.exists():
+        console.print(
+            f"[bold red]Error: album folder already exists:[/bold red] "
+            f"{cli_render_path(target_dir)}"
+        )
+        raise typer.Exit(1)
+
+    target_dir.mkdir(parents=True, exist_ok=False)
+
+    publish_dir = target_dir / "PUBLISH"
+    publish_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print(f"[green]Created album folder:[/green] {cli_render_path(target_dir)}")
 
 
 def remove_readonly(func, path, _):

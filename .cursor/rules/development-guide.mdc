@@ -4,7 +4,9 @@ alwaysApply: true
 
 # Linting
 
-Always run `uv run ruff check .` and `uv run ruff format .` before committing.
+After every change, run:
+- `uv run ruff format .`
+- `uv run ruff check .`
 
 # Commit messages
 
