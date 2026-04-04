@@ -187,11 +187,20 @@ def make_remove_readonly_onexc(
             os.chmod(path, stat.S_IWRITE)
             func(path)
         except OSError as exc2:
-            issues.append(MoveIssue("rmtree", func.__name__, p, exc, recovered=False))
-            issues.append(MoveIssue("rmtree", func.__name__, p, exc2, recovered=False))
+            op = getattr(func, "__name__", "<callable>")
+            issues.append(MoveIssue("rmtree", op, p, exc, recovered=False))
+            issues.append(MoveIssue("rmtree", op, p, exc2, recovered=False))
             raise exc2
         else:
-            issues.append(MoveIssue("rmtree", func.__name__, p, exc, recovered=True))
+            issues.append(
+                MoveIssue(
+                    "rmtree",
+                    getattr(func, "__name__", "<callable>"),
+                    p,
+                    exc,
+                    recovered=True,
+                )
+            )
 
     return onexc
 
@@ -230,7 +239,7 @@ def cstm_shutil_move(
     """
     real_dst = dst
     if os.path.isdir(dst):
-        if shutil._samefile(src, dst) and not os.path.islink(src):
+        if shutil._samefile(src, dst) and not os.path.islink(src):  # ty: ignore[unresolved-attribute]
             # We might be on a case insensitive filesystem,
             # perform the rename anyway.
             os.rename(src, dst)
@@ -238,7 +247,7 @@ def cstm_shutil_move(
 
         # Using _basename instead of os.path.basename is important, as we must
         # ignore any trailing slash to avoid the basename returning ''
-        real_dst = os.path.join(dst, shutil._basename(src))
+        real_dst = os.path.join(dst, shutil._basename(src))  # ty: ignore[unresolved-attribute]
 
         if os.path.exists(real_dst):
             raise shutil.Error(f"Destination path {real_dst!r} already exists")
@@ -250,11 +259,11 @@ def cstm_shutil_move(
             os.symlink(linkto, real_dst)
             os.unlink(src)
         elif os.path.isdir(src):
-            if shutil._destinsrc(src, dst):
+            if shutil._destinsrc(src, dst):  # ty: ignore[unresolved-attribute]
                 raise shutil.Error(
                     f"Cannot move a directory {src!r} into itself {dst!r}."
                 ) from None
-            if shutil._is_immutable(src) or (
+            if shutil._is_immutable(src) or (  # ty: ignore[unresolved-attribute]
                 not os.access(src, os.W_OK)
                 and os.listdir(src)
                 and sys.platform == "darwin"

@@ -5,8 +5,9 @@ alwaysApply: true
 # Linting
 
 After every change, run, **in this order**:
-- `uv run ruff format .`
-- `uv run ruff check .`
+- `uv run ruff format --fix`
+- `uv run ruff check --fix`
+- `uv run ty check`
 
 # Running the GUI (dev mode)
 
