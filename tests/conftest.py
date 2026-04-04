@@ -1,11 +1,29 @@
 """Shared pytest fixtures."""
 
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from photo_darkroom_manager.settings import Settings
+
+
+@dataclass(frozen=True, slots=True)
+class PhotoSetup:
+    """Writable three-root layout (darkroom / showroom / archive) plus helpers."""
+
+    settings: Settings
+
+    def darkroom_has_dir(self, relative: Path) -> Path:
+        """Resolve ``relative`` under darkroom; assert it exists as a directory."""
+        path = self.settings.darkroom / relative
+        assert path.is_dir(), (
+            "Missing tests/data darkroom fixtures; run "
+            "`uv run python tests/data/create_test_data_fixtures.py` "
+            "from the repo root."
+        )
+        return path
 
 
 @pytest.fixture
@@ -15,18 +33,20 @@ def data_dir() -> Path:
 
 
 @pytest.fixture
-def photographer_workspace(tmp_path: Path, data_dir: Path) -> Settings:
-    """Copy ``tests/data`` into ``tmp_path``; return ``Settings`` for the three roots.
+def photo_setup(tmp_path: Path, data_dir: Path) -> PhotoSetup:
+    """Copy ``tests/data`` into ``tmp_path``; return a :class:`PhotoSetup` wrapper.
 
     Mirrors a real install: writable darkroom, showroom, and archive trees built
     from the shared fixture scaffold.
     """
     root = tmp_path / "workspace"
     shutil.copytree(data_dir, root)
-    return Settings(
-        darkroom=root / "darkroom",
-        showroom=root / "showroom",
-        archive=root / "archive",
+    return PhotoSetup(
+        settings=Settings(
+            darkroom=root / "darkroom",
+            showroom=root / "showroom",
+            archive=root / "archive",
+        )
     )
 
 

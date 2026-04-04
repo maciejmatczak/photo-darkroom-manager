@@ -11,25 +11,9 @@ from photo_darkroom_manager.actions import (
     _collect_files_to_tidy,
     collect_files_to_tidy,
 )
-from photo_darkroom_manager.settings import (
-    PHOTOS_FOLDER,
-    PUBLISH_FOLDER,
-    VIDEOS_FOLDER,
-    Settings,
-)
+from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
 
-
-@pytest.fixture
-def tidy_basic_album_from_workspace(photographer_workspace: Settings) -> Path:
-    """Album path under :func:`photographer_workspace` from committed ``tests/data``."""
-    album = (
-        photographer_workspace.darkroom / "2026/2026-03 tidy basic moves jpg and xmp"
-    )
-    assert album.is_dir(), (
-        "Missing tests/data darkroom fixtures; run "
-        "`uv run python tests/data/create_test_data_fixtures.py` from the repo root."
-    )
-    return album
+TIDY_BASIC_ALBUM_REL = Path("2026") / "2026-03 tidy basic moves jpg and xmp"
 
 
 def test_collect_misplaced_photos_and_sidecar(tmp_path: Path) -> None:
@@ -164,13 +148,12 @@ def test_tidy_prepare_wraps_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "RuntimeError" in out.details
 
 
-def test_tidy_executes_on_copied_data_fixture(
-    tidy_basic_album_from_workspace: Path,
-) -> None:
-    act = TidyAction(tidy_basic_album_from_workspace)
+def test_tidy_executes_on_copied_data_fixture(photo_setup) -> None:
+    album = photo_setup.darkroom_has_dir(TIDY_BASIC_ALBUM_REL)
+    act = TidyAction(album)
     plan = act._prepare()
     assert isinstance(plan, TidyPlan)
     assert len(plan.photo_paths) >= 1
     ex = act._execute(plan)
     assert ex.success
-    assert (tidy_basic_album_from_workspace / PHOTOS_FOLDER).is_dir()
+    assert (album / PHOTOS_FOLDER).is_dir()
