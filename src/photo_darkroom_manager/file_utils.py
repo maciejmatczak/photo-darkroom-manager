@@ -15,7 +15,6 @@ __all__ = [
     "cstm_shutil_move",
     "make_remove_readonly_onexc",
     "merge_tree_into_archive",
-    "move_dir_safely",
     "preview_merge_into_archive",
 ]
 
@@ -293,20 +292,3 @@ def cstm_shutil_move(
             copy_function(src, real_dst)
             os.unlink(src)
     return real_dst
-
-
-def move_dir_safely(source_dir: Path, target_dir: Path) -> tuple[Path, list[MoveIssue]]:
-    if not source_dir.exists():
-        raise ValueError(f"Source directory does not exist: {source_dir}")
-    if not source_dir.is_dir():
-        raise ValueError(f"Source directory is not a directory: {source_dir}")
-    if target_dir.exists():
-        raise ValueError(f"Target directory already exists: {target_dir}")
-    move_issues: list[MoveIssue] = []
-    dest = cstm_shutil_move(
-        source_dir,
-        target_dir,
-        onexc=make_remove_readonly_onexc(move_issues),
-        issues=move_issues,
-    )
-    return Path(dest), move_issues
