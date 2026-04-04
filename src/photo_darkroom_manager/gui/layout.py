@@ -25,11 +25,15 @@ from photo_darkroom_manager.settings import PUBLISH_FOLDER
 # ---------------------------------------------------------------------------
 # Shared style tokens -- single source of truth for recurring props/classes
 # ---------------------------------------------------------------------------
-TREE_BTN_PROPS = "dense size=sm"
-NODE_ROW_CLASSES = "items-center gap-2 flex-nowrap"
-SECTION_GAP = "w-3"
+CSS_TREE_BTN_PROPS = "dense size=sm"
+CSS_NODE_ROW_CLASSES = "items-center gap-2 flex-nowrap"
+CSS_SECTION_GAP = "w-3"
 
-_DEPTH_BG = [
+# Modal cards: shared width/layout; scroll variants add max height.
+CSS_DIALOG_CARD = "w-full !max-w-5xl"
+CSS_DIALOG_SCROLL_AREA = "w-full !max-h-96"
+
+CSS_DEPTH_BG = [
     "bg-white/[3%]",
     "bg-white/[6%]",
     "bg-white/[9%]",
@@ -56,14 +60,14 @@ def _open_directory(path: Path) -> None:
 
 
 def _depth_class(depth: int) -> str:
-    return _DEPTH_BG[min(depth, len(_DEPTH_BG) - 1)]
+    return CSS_DEPTH_BG[min(depth, len(CSS_DEPTH_BG) - 1)]
 
 
 def _tree_btn(label: str, icon: str, *, on_click, color: str = "primary"):
     """Create a consistently-styled tree-row action button."""
     return (
-        ui.button(label, icon=icon, color=color, on_click=on_click)
-        .props(TREE_BTN_PROPS)
+        ui.button("", icon=icon, color=color, on_click=on_click)
+        .props(CSS_TREE_BTN_PROPS)
         .on("click.stop", lambda: None)
     )
 
@@ -79,12 +83,6 @@ def _stat_badges(node: DarkroomNode) -> None:
     ui.badge(f"{node.stats.other_file_count} other", color="grey-6").props("outline")
 
 
-def _open_folder_button(node: DarkroomNode) -> None:
-    _tree_btn(
-        "Open", "folder_open", on_click=lambda _n=node: _open_directory(_n.path)
-    ).tooltip("Open in file manager")
-
-
 def _present_action_details(
     result: ActionResult,
     *,
@@ -93,11 +91,11 @@ def _present_action_details(
     """Show details dialog. If *after_close* is set, it runs after OK (e.g. rescan)."""
     if not result.details:
         return
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+    with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
         title = "Details" if result.success else "Error"
         ui.label(title).classes("text-lg font-bold")
         ui.label(result.message).classes("text-base font-bold")
-        with ui.scroll_area().classes("w-full max-h-96"):
+        with ui.scroll_area().classes(CSS_DIALOG_SCROLL_AREA):
             ui.label(result.details).classes(
                 "font-mono text-xs whitespace-pre-wrap break-all w-full"
             )
@@ -168,9 +166,9 @@ class DarkroomUI:
         if not isinstance(plan, ActionPlan):
             raise AssertionError(f"Unhandled plan type: {type(plan)!r}")
 
-        with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+        with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
             ui.label("Review action").classes("text-lg font-bold")
-            with ui.scroll_area().classes("w-full max-h-96"):
+            with ui.scroll_area().classes(CSS_DIALOG_SCROLL_AREA):
                 ui.label(plan.preview_text()).classes(
                     "font-mono text-xs whitespace-pre-wrap break-all w-full"
                 )
@@ -197,7 +195,7 @@ class DarkroomUI:
                 f"Renaming {node.name}",
             )
 
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
             ui.label("Rename Album").classes("text-lg font-bold")
             name_input = ui.input("Album name", value=node.name).classes("w-full")
             with ui.row().classes("w-full justify-end gap-2"):
@@ -219,7 +217,7 @@ class DarkroomUI:
                 "Creating album",
             )
 
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
             ui.label("New Album").classes("text-lg font-bold")
             year_input = ui.input("Year", value=str(now.year)).classes("w-full")
             month_input = ui.input("Month", value=f"{now.month:02d}").classes("w-full")
@@ -231,10 +229,25 @@ class DarkroomUI:
         dialog.open()
 
     def _action_buttons(self, node: DarkroomNode) -> None:
+        # Darkroom section
+        ui.icon("camera_roll", size="sm").classes("text-grey-7")
+        _tree_btn(
+            "Open",
+            "folder_open",
+            on_click=lambda _n=node: _open_directory(_n.path),
+        ).tooltip("Open in file manager")
+
         if node.node_type == "year":
             return
         if node.name == PUBLISH_FOLDER:
             return
+
+        if node.node_type == "album":
+            _tree_btn(
+                "Rename",
+                "edit",
+                on_click=lambda _n=node: self._show_rename_dialog(_n),
+            ).tooltip("Rename album")
 
         if node.node_type in ("album", "subfolder"):
             tidy_color = "red" if "untidy" in node.issues else "primary"
@@ -246,15 +259,7 @@ class DarkroomUI:
                     self.manager.tidy_action(_n.path),
                     f"Tidying {_n.name}",
                 ),
-            )
-            _tree_btn(
-                "Archive",
-                "archive",
-                on_click=lambda _n=node: self.run_action(
-                    self.manager.archive_action(_n.path),
-                    f"Archiving {_n.name}",
-                ),
-            )
+            ).tooltip("Tidy folder")
 
         if node.node_type == "album":
             _tree_btn(
@@ -264,12 +269,35 @@ class DarkroomUI:
                     self.manager.publish_action(_n.path),
                     f"Publishing {_n.name}",
                 ),
-            )
+            ).tooltip("Publish album")
+
+        if node.node_type in ("album", "subfolder"):
             _tree_btn(
-                "Rename",
-                "edit",
-                on_click=lambda _n=node: self._show_rename_dialog(_n),
-            )
+                "Archive",
+                "archive",
+                on_click=lambda _n=node: self.run_action(
+                    self.manager.archive_action(_n.path),
+                    f"Archiving {_n.name}",
+                ),
+            ).tooltip("Archive folder")
+
+        # Showroom section
+        ui.splitter()
+        ui.icon("photo_library", size="sm").classes("text-grey-7")
+        _tree_btn(
+            "Open",
+            "folder_open",
+            on_click=lambda _n=node: _open_directory(_n.path),
+        ).tooltip("Open in file manager")
+
+        # Archive section
+        ui.splitter()
+        ui.icon("archive", size="sm").classes("text-grey-7")
+        _tree_btn(
+            "Open",
+            "folder_open",
+            on_click=lambda _n=node: _open_directory(_n.path),
+        ).tooltip("Open in file manager")
 
     def _render_node(self, node: DarkroomNode, depth: int = 0) -> None:
         has_children = bool(node.children)
@@ -293,13 +321,15 @@ class DarkroomUI:
 
             exp.on_value_change(_on_toggle)
 
-            with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES + "  py-2"):
+            with (
+                exp.add_slot("header"),
+                ui.row().classes(CSS_NODE_ROW_CLASSES + "  py-2"),
+            ):
                 ui.icon(icon, size="sm").classes("text-grey-7")
                 ui.label(node.name).classes("font-medium")
-                ui.element("div").classes(SECTION_GAP)
+                ui.element("div").classes(CSS_SECTION_GAP)
                 _stat_badges(node)
-                ui.element("div").classes(SECTION_GAP)
-                _open_folder_button(node)
+                ui.element("div").classes(CSS_SECTION_GAP)
                 self._action_buttons(node)
 
             with exp:
@@ -308,14 +338,13 @@ class DarkroomUI:
         else:
             with (
                 ui.element("div").classes(f"w-full py-2 pl-4 {bg}"),
-                ui.row().classes(NODE_ROW_CLASSES),
+                ui.row().classes(CSS_NODE_ROW_CLASSES),
             ):
                 ui.icon(icon, size="sm").classes("text-grey-7")
                 ui.label(node.name).classes("font-medium")
-                ui.element("div").classes(SECTION_GAP)
+                ui.element("div").classes(CSS_SECTION_GAP)
                 _stat_badges(node)
-                ui.element("div").classes(SECTION_GAP)
-                _open_folder_button(node)
+                ui.element("div").classes(CSS_SECTION_GAP)
                 self._action_buttons(node)
 
     @ui.refreshable_method

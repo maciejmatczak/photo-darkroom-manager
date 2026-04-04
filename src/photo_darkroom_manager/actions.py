@@ -130,7 +130,7 @@ def _collect_files_to_tidy(folder: Path) -> tuple[list[Path], list[Path]]:
     return photo_paths, video_paths
 
 
-def collect_tidy_paths(
+def collect_files_to_tidy(
     folder_path: Path, *, recursive: bool = False
 ) -> tuple[list[Path], list[Path]]:
     """Collect misplaced photos and videos under folder_path.
@@ -149,7 +149,7 @@ def collect_tidy_paths(
             return photo_paths, video_paths
         for child in children:
             if child.is_dir() and child.name != PUBLISH_FOLDER:
-                p, v = collect_tidy_paths(child, recursive=True)
+                p, v = collect_files_to_tidy(child, recursive=True)
                 photo_paths.extend(p)
                 video_paths.extend(v)
 
@@ -198,7 +198,7 @@ class TidyAction(Action):
         if not folder_path.is_dir():
             return PrepareError(False, f"Not a directory: {folder_path}")
 
-        photo_paths, video_paths = collect_tidy_paths(folder_path, recursive=True)
+        photo_paths, video_paths = collect_files_to_tidy(folder_path, recursive=True)
         if not photo_paths and not video_paths:
             details = "\n".join(
                 [

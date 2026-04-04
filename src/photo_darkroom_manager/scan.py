@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from photo_darkroom_manager.actions import collect_tidy_paths
+from photo_darkroom_manager.actions import collect_files_to_tidy
 from photo_darkroom_manager.media import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 
 ALBUM_PATTERN = re.compile(r"^\d{4}-\d{2}")
@@ -67,7 +67,7 @@ def _aggregate_stats(node: DarkroomNode) -> FolderStats:
 def _detect_untidy(directory: Path) -> bool:
     """True if this folder has misplaced photos or videos (see collect_tidy_paths)."""
     try:
-        photos, videos = collect_tidy_paths(directory)
+        photos, videos = collect_files_to_tidy(directory)
     except PermissionError:
         return False
     return bool(photos or videos)
