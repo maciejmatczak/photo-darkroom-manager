@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from photo_darkroom_manager.constants import FOLDERS_EXEMPT_FROM_TIDY
+from photo_darkroom_manager.actions import collect_tidy_paths
 from photo_darkroom_manager.media import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 
 ALBUM_PATTERN = re.compile(r"^\d{4}-\d{2}")
@@ -65,24 +65,12 @@ def _aggregate_stats(node: DarkroomNode) -> FolderStats:
 
 
 def _detect_untidy(directory: Path) -> bool:
-    """A folder is untidy when photos are not under PHOTOS/ or videos not under VIDEOS/.
-
-    Specifically, any media file sitting directly in the folder (rather than
-    inside a PHOTOS or VIDEOS subdirectory) makes it untidy.  PHOTOS, VIDEOS,
-    and PUBLISH folders themselves are exempt -- media files there are expected.
-    """
-    if directory.name in FOLDERS_EXEMPT_FROM_TIDY:
-        return False
+    """True if this folder has misplaced photos or videos (see collect_tidy_paths)."""
     try:
-        for item in directory.iterdir():
-            if not item.is_file():
-                continue
-            ext = item.suffix.lstrip(".").lower()
-            if ext in PHOTO_EXTENSIONS or ext in VIDEO_EXTENSIONS:
-                return True
+        photos, videos = collect_tidy_paths(directory)
     except PermissionError:
-        pass
-    return False
+        return False
+    return bool(photos or videos)
 
 
 def _scan_subfolder(path: Path) -> DarkroomNode:

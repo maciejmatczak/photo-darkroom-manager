@@ -4,7 +4,7 @@ alwaysApply: true
 
 # Linting
 
-After every change, run:
+After every change, run, **in this order**:
 - `uv run ruff format .`
 - `uv run ruff check .`
 
@@ -12,7 +12,7 @@ After every change, run:
 
 Start the GUI in-browser with hot reload:
 ```
-uv run python -m photo_darkroom_manager.gui.app
+uv run python -m photo_darkroom_manager.gui.gui_app
 ```
 
 This runs the app at `http://localhost:8090`, with hot reload enabled. You can

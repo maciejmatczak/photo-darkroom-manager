@@ -1,5 +1,6 @@
-"""GUI configuration: platformdirs-based config discovery and persistence."""
+"""Config discovery and persistence (platformdirs YAML)."""
 
+import os
 from pathlib import Path
 
 import yaml
@@ -8,6 +9,7 @@ from pydantic import BaseModel, field_validator
 
 APP_NAME = "photo-darkroom-manager"
 CONFIG_FILENAME = "config.yaml"
+CONFIG_PATH_ENV = "PHOTO_DARKROOM_MANAGER_CONFIG_PATH"
 
 
 def get_config_dir() -> Path:
@@ -15,10 +17,19 @@ def get_config_dir() -> Path:
 
 
 def get_config_path() -> Path:
+    """Path to the YAML config file.
+
+    If ``PHOTO_DARKROOM_MANAGER_CONFIG_PATH`` is set to a non-empty string,
+    that path is used (expanded user, resolved). Otherwise the default
+    platformdirs location is used.
+    """
+    override = os.environ.get(CONFIG_PATH_ENV)
+    if override is not None and override.strip():
+        return Path(override).expanduser().resolve()
     return get_config_dir() / CONFIG_FILENAME
 
 
-class GuiSettings(BaseModel):
+class Settings(BaseModel):
     darkroom: Path
     showroom: Path
     archive: Path
@@ -34,24 +45,21 @@ class GuiSettings(BaseModel):
         return v
 
 
-def load_settings() -> GuiSettings | None:
-    """Load settings from the platformdirs config file. Returns None if missing."""
+def load_settings() -> Settings | None:
+    """Load settings from the config file. Returns None if missing."""
     config_path = get_config_path()
     if not config_path.exists():
         return None
     with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    return GuiSettings(**data)
+    return Settings(**data)
 
 
-def save_settings(settings: GuiSettings) -> Path:
-    """Persist settings to the platformdirs config file."""
+def save_settings(settings: Settings) -> Path:
+    """Persist settings to the config file (platformdirs or env override)."""
     config_path = get_config_path()
-    data = {
-        "darkroom": str(settings.darkroom),
-        "showroom": str(settings.showroom),
-        "archive": str(settings.archive),
-    }
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data = settings.model_dump(mode="json")
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False)
     return config_path

@@ -5,14 +5,22 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 
 from nicegui import run, ui
 
+from photo_darkroom_manager.actions import (
+    Action,
+    ActionPlan,
+    ActionResult,
+    ExecutionResult,
+    PrepareError,
+)
 from photo_darkroom_manager.constants import PUBLISH_FOLDER
-from photo_darkroom_manager.gui.model import App
-from photo_darkroom_manager.gui.scanner import DarkroomNode
+from photo_darkroom_manager.manager import DarkroomManager
+from photo_darkroom_manager.scan import DarkroomNode
 
 # ---------------------------------------------------------------------------
 # Shared style tokens -- single source of truth for recurring props/classes
@@ -28,9 +36,6 @@ _DEPTH_BG = [
     "bg-white/[12%]",
     "bg-white/[15%]",
 ]
-
-_all_expansions: dict[str, ui.expansion] = {}
-_expanded_paths: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -64,13 +69,14 @@ def _tree_btn(label: str, icon: str, *, on_click, color: str = "primary"):
 
 
 # ---------------------------------------------------------------------------
-# Node widgets
+# Node widgets (pure helpers)
 # ---------------------------------------------------------------------------
 
 
 def _stat_badges(node: DarkroomNode) -> None:
     ui.badge(f"{node.stats.image_count} img", color="blue-4").props("outline")
     ui.badge(f"{node.stats.video_count} vid", color="teal-4").props("outline")
+    ui.badge(f"{node.stats.other_file_count} other", color="grey-6").props("outline")
 
 
 def _open_folder_button(node: DarkroomNode) -> None:
@@ -79,230 +85,282 @@ def _open_folder_button(node: DarkroomNode) -> None:
     ).tooltip("Open in file manager")
 
 
-def _action_buttons(node: DarkroomNode, model: App, rebuild_fn) -> None:
-    if node.node_type == "year":
+def _present_action_details(
+    result: ActionResult,
+    *,
+    after_close: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Show details dialog. If *after_close* is set, it runs after OK (e.g. rescan)."""
+    if not result.details:
         return
-    if node.name == PUBLISH_FOLDER:
-        return
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+        title = "Details" if result.success else "Error"
+        ui.label(title).classes("text-lg font-bold")
+        ui.label(result.message).classes("text-base font-bold")
+        with ui.scroll_area().classes("w-full max-h-96"):
+            ui.label(result.details).classes(
+                "font-mono text-xs whitespace-pre-wrap break-all w-full"
+            )
+        with ui.row().classes("w-full justify-end"):
 
-    if node.node_type in ("album", "subfolder"):
-        tidy_color = "red" if "untidy" in node.issues else "primary"
-        _tree_btn(
-            "Tidy",
-            "cleaning_services",
-            color=tidy_color,
-            on_click=lambda _n=node: _run_action(
-                model.tidy, _n.path, model, rebuild_fn, f"Tidying {_n.name}"
-            ),
-        )
-        _tree_btn(
-            "Archive",
-            "archive",
-            on_click=lambda _n=node: _run_action(
-                model.archive, _n.path, model, rebuild_fn, f"Archiving {_n.name}"
-            ),
-        )
+            async def on_ok() -> None:
+                dialog.close()
+                if after_close is not None:
+                    await after_close()
 
-    if node.node_type == "album":
-        _tree_btn(
-            "Publish",
-            "publish",
-            on_click=lambda _n=node: _run_action(
-                model.publish, _n.path, model, rebuild_fn, f"Publishing {_n.name}"
-            ),
-        )
-        _tree_btn(
-            "Rename",
-            "edit",
-            on_click=lambda _n=node: _show_rename_dialog(_n, model, rebuild_fn),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Actions
-# ---------------------------------------------------------------------------
-
-
-async def _run_action(action_fn, path: Path, model: App, rebuild_fn, label: str):
-    ui.notify(label + "...", type="info", timeout=2000)
-    result = await run.io_bound(action_fn, path)
-    if result.success:
-        ui.notify(result.message, type="positive")
-    else:
-        ui.notify(result.message, type="negative", timeout=5000)
-    await _rescan_and_rebuild(model, rebuild_fn)
-
-
-async def _rescan_and_rebuild(model: App, rebuild_fn):
-    await run.io_bound(model.rescan)
-    rebuild_fn()
-
-
-# ---------------------------------------------------------------------------
-# Dialogs
-# ---------------------------------------------------------------------------
-
-
-def _show_rename_dialog(node: DarkroomNode, model: App, rebuild_fn):
-    async def do_rename():
-        new_name = name_input.value.strip()
-        if not new_name or new_name == node.name:
-            dialog.close()
-            return
-        result = await run.io_bound(model.rename_album, node.path, new_name)
-        dialog.close()
-        if result.success:
-            ui.notify(result.message, type="positive")
-        else:
-            ui.notify(result.message, type="negative", timeout=5000)
-        await _rescan_and_rebuild(model, rebuild_fn)
-
-    with ui.dialog() as dialog, ui.card().classes("w-96"):
-        ui.label("Rename Album").classes("text-lg font-bold")
-        name_input = ui.input("Album name", value=node.name).classes("w-full")
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Rename", on_click=do_rename).props("color=primary")
-    dialog.open()
-
-
-def _show_new_album_dialog(model: App, rebuild_fn):
-    now = datetime.now()
-
-    async def do_create():
-        y = year_input.value.strip()
-        m = month_input.value.strip()
-        d = day_input.value.strip() or None
-        n = name_input.value.strip()
-        result = await run.io_bound(model.new_album, y, m, d, n)
-        dialog.close()
-        if result.success:
-            ui.notify(result.message, type="positive")
-        else:
-            ui.notify(result.message, type="negative", timeout=5000)
-        await _rescan_and_rebuild(model, rebuild_fn)
-
-    with ui.dialog() as dialog, ui.card().classes("w-96"):
-        ui.label("New Album").classes("text-lg font-bold")
-        year_input = ui.input("Year", value=str(now.year)).classes("w-full")
-        month_input = ui.input("Month", value=f"{now.month:02d}").classes("w-full")
-        day_input = ui.input("Day (optional)").classes("w-full")
-        name_input = ui.input("Name (optional)").classes("w-full")
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Create", on_click=do_create).props("color=primary")
+            ui.button("OK", on_click=on_ok).props("color=primary")
     dialog.open()
 
 
 # ---------------------------------------------------------------------------
-# Tree rendering
+# Main UI (per-connection state + refreshable tree)
 # ---------------------------------------------------------------------------
 
 
-def _render_node(node: DarkroomNode, model: App, rebuild_fn, depth: int = 0) -> None:
-    has_children = bool(node.children)
-    icon = "folder" if node.node_type == "root" else "folder"
-    bg = _depth_class(depth)
+class DarkroomUI:
+    """Encapsulates darkroom model, tree expansion state, and NiceGUI refresh."""
 
-    if has_children:
-        path_key = str(node.path)
-        exp = (
-            ui.expansion(value=path_key in _expanded_paths)
-            .classes(f"w-full {bg}")
-            .props("dense")
-        )
-        _all_expansions[path_key] = exp
+    def __init__(self, manager: DarkroomManager) -> None:
+        self.manager = manager
+        self._all_expansions: dict[str, ui.expansion] = {}
+        self._expanded_paths: set[str] = set()
 
-        def _on_toggle(e, key=path_key):
-            if e.value:
-                _expanded_paths.add(key)
-            else:
-                _expanded_paths.discard(key)
+    async def rescan_and_refresh(self) -> None:
+        await run.io_bound(self.manager.rescan)
+        self.render_tree.refresh()
 
-        exp.on_value_change(_on_toggle)
-
-        with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES + "  py-2"):
-            ui.icon(icon, size="sm").classes("text-grey-7")
-            ui.label(node.name).classes("font-medium")
-            ui.element("div").classes(SECTION_GAP)
-            _stat_badges(node)
-            ui.element("div").classes(SECTION_GAP)
-            _open_folder_button(node)
-            _action_buttons(node, model, rebuild_fn)
-
-        with exp:
-            for child in node.children:
-                _render_node(child, model, rebuild_fn, depth + 1)
-    else:
-        with (
-            ui.element("div").classes(f"w-full py-2 pl-4 {bg}"),
-            ui.row().classes(NODE_ROW_CLASSES),
-        ):
-            ui.icon(icon, size="sm").classes("text-grey-7")
-            ui.label(node.name).classes("font-medium")
-            ui.element("div").classes(SECTION_GAP)
-            _stat_badges(node)
-            ui.element("div").classes(SECTION_GAP)
-            _open_folder_button(node)
-            _action_buttons(node, model, rebuild_fn)
-
-
-# ---------------------------------------------------------------------------
-# Top-level UI builder
-# ---------------------------------------------------------------------------
-
-
-def build_ui(model: App) -> None:
-    state: dict = {"tree_container": None}
-
-    def rebuild_tree():
-        container = state["tree_container"]
-        if container is None:
-            return
-        _all_expansions.clear()
-        container.clear()  # _expanded_paths is intentionally preserved
-        if model.tree is None:
-            return
-        with container:
-            for year_node in model.tree.children:
-                _render_node(year_node, model, rebuild_tree)
-
-    def expand_all():
-        for key, exp in _all_expansions.items():
-            exp.open()
-            _expanded_paths.add(key)
-
-    def collapse_all():
-        for exp in _all_expansions.values():
-            exp.close()
-        _expanded_paths.clear()
-
-    async def refresh():
+    async def refresh_scan(self) -> None:
+        """Header Refresh: notify, rescan, rebuild tree, notify."""
         ui.notify("Scanning darkroom...", type="info", timeout=2000)
-        await run.io_bound(model.rescan)
-        rebuild_tree()
+        await run.io_bound(self.manager.rescan)
+        self.render_tree.refresh()
         ui.notify("Scan complete", type="positive")
 
-    ui.dark_mode(True)
+    async def _handle_execute_result(self, result: ExecutionResult) -> None:
+        if result.success:
+            ui.notify(result.message, type="positive")
+        else:
+            ui.notify(result.message, type="negative", timeout=5000)
+        if result.details:
+            _present_action_details(
+                result,
+                after_close=lambda: self.rescan_and_refresh(),
+            )
+        else:
+            await self.rescan_and_refresh()
 
-    with ui.header().classes("items-center px-4 gap-4"):
-        ui.label("Photo Darkroom Manager").classes("text-xl font-bold")
-        ui.space()
-        ui.button(icon="unfold_more", on_click=expand_all).props("dense").tooltip(
-            "Expand All"
-        )
-        ui.button(icon="unfold_less", on_click=collapse_all).props("dense").tooltip(
-            "Collapse All"
-        )
-        ui.button(
-            "New Album",
-            icon="add",
-            on_click=lambda: _show_new_album_dialog(model, rebuild_tree),
-        ).props("dense")
-        ui.button("Refresh", icon="refresh", on_click=refresh).props("dense")
+    async def run_action(self, action: Action, label: str) -> None:
+        ui.notify(label + "...", type="info", timeout=2000)
+        prep = await run.io_bound(action.prepare)
 
-    with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-0"):
-        state["tree_container"] = ui.element("div").classes("w-full")
+        if isinstance(prep, PrepareError):
+            ui.notify(prep.message, type="negative", timeout=5000)
+            if prep.details:
+                _present_action_details(prep, after_close=None)
+            return
 
-    model.rescan()
-    rebuild_tree()
+        if prep is None:
+            result = await run.io_bound(action.execute, None)
+            await self._handle_execute_result(result)
+            return
+
+        plan = prep
+        if not isinstance(plan, ActionPlan):
+            raise AssertionError(f"Unhandled plan type: {type(plan)!r}")
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+            ui.label("Review action").classes("text-lg font-bold")
+            with ui.scroll_area().classes("w-full max-h-96"):
+                ui.label(plan.preview_text()).classes(
+                    "font-mono text-xs whitespace-pre-wrap break-all w-full"
+                )
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def on_confirm() -> None:
+                    dialog.close()
+                    result = await run.io_bound(action.execute, plan)
+                    await self._handle_execute_result(result)
+
+                ui.button("Confirm", on_click=on_confirm).props("color=primary")
+        dialog.open()
+
+    def _show_rename_dialog(self, node: DarkroomNode) -> None:
+        async def do_rename():
+            new_name = name_input.value.strip()
+            if not new_name or new_name == node.name:
+                dialog.close()
+                return
+            dialog.close()
+            await self.run_action(
+                self.manager.rename_action(node.path, new_name),
+                f"Renaming {node.name}",
+            )
+
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label("Rename Album").classes("text-lg font-bold")
+            name_input = ui.input("Album name", value=node.name).classes("w-full")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Rename", on_click=do_rename).props("color=primary")
+        dialog.open()
+
+    def _show_new_album_dialog(self) -> None:
+        now = datetime.now()
+
+        async def do_create():
+            y = year_input.value.strip()
+            m = month_input.value.strip()
+            d = day_input.value.strip() or None
+            n = name_input.value.strip()
+            dialog.close()
+            await self.run_action(
+                self.manager.new_album_action(y, m, d, n),
+                "Creating album",
+            )
+
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label("New Album").classes("text-lg font-bold")
+            year_input = ui.input("Year", value=str(now.year)).classes("w-full")
+            month_input = ui.input("Month", value=f"{now.month:02d}").classes("w-full")
+            day_input = ui.input("Day (optional)").classes("w-full")
+            name_input = ui.input("Name (optional)").classes("w-full")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Create", on_click=do_create).props("color=primary")
+        dialog.open()
+
+    def _action_buttons(self, node: DarkroomNode) -> None:
+        if node.node_type == "year":
+            return
+        if node.name == PUBLISH_FOLDER:
+            return
+
+        if node.node_type in ("album", "subfolder"):
+            tidy_color = "red" if "untidy" in node.issues else "primary"
+            _tree_btn(
+                "Tidy",
+                "cleaning_services",
+                color=tidy_color,
+                on_click=lambda _n=node: self.run_action(
+                    self.manager.tidy_action(_n.path),
+                    f"Tidying {_n.name}",
+                ),
+            )
+            _tree_btn(
+                "Archive",
+                "archive",
+                on_click=lambda _n=node: self.run_action(
+                    self.manager.archive_action(_n.path),
+                    f"Archiving {_n.name}",
+                ),
+            )
+
+        if node.node_type == "album":
+            _tree_btn(
+                "Publish",
+                "publish",
+                on_click=lambda _n=node: self.run_action(
+                    self.manager.publish_action(_n.path),
+                    f"Publishing {_n.name}",
+                ),
+            )
+            _tree_btn(
+                "Rename",
+                "edit",
+                on_click=lambda _n=node: self._show_rename_dialog(_n),
+            )
+
+    def _render_node(self, node: DarkroomNode, depth: int = 0) -> None:
+        has_children = bool(node.children)
+        icon = "folder" if node.node_type == "root" else "folder"
+        bg = _depth_class(depth)
+
+        if has_children:
+            path_key = str(node.path)
+            exp = (
+                ui.expansion(value=path_key in self._expanded_paths)
+                .classes(f"w-full {bg}")
+                .props("dense")
+            )
+            self._all_expansions[path_key] = exp
+
+            def _on_toggle(e, key=path_key):
+                if e.value:
+                    self._expanded_paths.add(key)
+                else:
+                    self._expanded_paths.discard(key)
+
+            exp.on_value_change(_on_toggle)
+
+            with exp.add_slot("header"), ui.row().classes(NODE_ROW_CLASSES + "  py-2"):
+                ui.icon(icon, size="sm").classes("text-grey-7")
+                ui.label(node.name).classes("font-medium")
+                ui.element("div").classes(SECTION_GAP)
+                _stat_badges(node)
+                ui.element("div").classes(SECTION_GAP)
+                _open_folder_button(node)
+                self._action_buttons(node)
+
+            with exp:
+                for child in node.children:
+                    self._render_node(child, depth + 1)
+        else:
+            with (
+                ui.element("div").classes(f"w-full py-2 pl-4 {bg}"),
+                ui.row().classes(NODE_ROW_CLASSES),
+            ):
+                ui.icon(icon, size="sm").classes("text-grey-7")
+                ui.label(node.name).classes("font-medium")
+                ui.element("div").classes(SECTION_GAP)
+                _stat_badges(node)
+                ui.element("div").classes(SECTION_GAP)
+                _open_folder_button(node)
+                self._action_buttons(node)
+
+    @ui.refreshable_method
+    def render_tree(self) -> None:
+        self._all_expansions.clear()
+        if self.manager.tree is None:
+            return
+        for year_node in self.manager.tree.children:
+            self._render_node(year_node)
+
+    def expand_all(self) -> None:
+        for key, exp in self._all_expansions.items():
+            exp.open()
+            self._expanded_paths.add(key)
+
+    def collapse_all(self) -> None:
+        for exp in self._all_expansions.values():
+            exp.close()
+        self._expanded_paths.clear()
+
+    def build(self) -> None:
+        ui.dark_mode(True)
+
+        with ui.header().classes("items-center px-4 gap-4"):
+            ui.label("Photo Darkroom Manager").classes("text-xl font-bold")
+            ui.button(
+                icon="settings",
+                on_click=lambda: ui.navigate.to("/settings"),
+            ).props("dense").tooltip("Settings")
+            ui.space()
+            ui.button(icon="unfold_more", on_click=self.expand_all).props(
+                "dense"
+            ).tooltip("Expand All")
+            ui.button(icon="unfold_less", on_click=self.collapse_all).props(
+                "dense"
+            ).tooltip("Collapse All")
+            ui.button(
+                "New Album",
+                icon="add",
+                on_click=self._show_new_album_dialog,
+            ).props("dense")
+            ui.button("Refresh", icon="refresh", on_click=self.refresh_scan).props(
+                "dense"
+            )
+
+        with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-0"):
+            self.manager.rescan()
+            self.render_tree()

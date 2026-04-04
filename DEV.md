@@ -41,12 +41,12 @@ From the repository root:
 Start the GUI in your browser with hot reload enabled:
 
 ```bash
-uv run python -m photo_darkroom_manager.gui.app
+uv run python -m photo_darkroom_manager.gui.gui_app
 ```
 
 This opens the app at `http://localhost:8090` in your default browser. Any file change triggers an automatic reload — no restart needed.
 
-> The production entry point (`dr-mng-gui`) launches a native window instead. Use the command above during development only.
+> The production entry point (`photo-darkroom-manager` / `dr-mng`) launches a native window instead. Use the command above during development only.
 
 ## CI
 
