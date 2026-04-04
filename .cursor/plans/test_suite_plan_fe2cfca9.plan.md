@@ -15,7 +15,7 @@ todos:
     content: "Chunk 3: write tests/test_models.py — DarkroomYearAlbum validators, recognize_darkroom_album, publish_dir"
     status: completed
   - id: chunk-4
-    content: "Chunk 4: write tests/file_utils/ — test_prune.py, test_merge.py (move_dir_safely removed from app; no test_move)"
+    content: "Chunk 4: write tests/file_utils/ — test_prune.py, test_merge.py"
     status: completed
   - id: chunk-5
     content: "Chunk 5: write tests/actions/test_tidy.py — _collect_files_to_tidy (incl. multi-dot filenames), collect_files_to_tidy, TidyAction, PhotoSetup in conftest"
@@ -90,7 +90,8 @@ The implementation is stable enough to test — refactoring volume is expected t
 - **Framework**: `pytest` with `tmp_path` for filesystem isolation; `monkeypatch` for env vars. No test classes — only functions and fixtures.
 - **No GUI tests** — `gui/` is NiceGUI and is excluded entirely.
 - **Fixture strategy**:
-  - `tests/data/` is the canonical fixture tree (committed, realistic album structures). It is **always copied** to `tmp_path` before use — never mutated directly. A shared `data_dir` fixture in `conftest.py` exposes the path; individual tests do `shutil.copytree(data_dir / "darkroom", tmp_path / "darkroom")` (or similar) as needed.
+  - `tests/data/` is the canonical fixture tree (committed, realistic album structures). It is **always copied** to `tmp_path` before use — never mutated directly. A shared `data_dir` fixture in `conftest.py` exposes the read-only source path.
+  - **`photo_setup`** (`conftest.py`): copies the **full** `tests/data` tree into `tmp_path / "workspace"` and returns a **`PhotoSetup`** instance with **`settings`** (`darkroom` / `showroom` / `archive` roots). Use **`photo_setup.darkroom_has_dir(relative_path)`** (and analogous helpers if added later) for integration tests that need real album paths. **`PhotoSetup` lives in `conftest.py`** — extend it there when new helpers are needed (e.g. showroom/archive path assertions); avoid `from tests.…` imports for harness types.
   - `tmp_path` is also used for fully synthetic trees built programmatically within individual tests.
   - Prepare-step assertions that do not call execute may still use a `tmp_path` copy of `tests/data` rather than constructing trees from scratch — but the copy rule applies regardless.
 - **Test order**: strictly bottom-up along the dependency graph. No test file imports from a module that hasn't been covered by a prior chunk.
@@ -149,8 +150,7 @@ tests/
 ├── file_utils/                          # chunk 4 — split by concern
 │   ├── __init__.py
 │   ├── test_prune.py                    # _rmdir_empty_dir, _prune_empty_dirs_under
-│   ├── test_merge.py                    # preview_merge_into_archive, merge_tree_into_archive
-│   └── test_move.py                     # move_dir_safely, cstm_shutil_move
+│   └── test_merge.py                    # preview_merge_into_archive, merge_tree_into_archive (cstm_shutil_move via merge)
 ├── actions/                             # chunks 5–8 — one file per action
 │   ├── __init__.py
 │   ├── test_tidy.py
@@ -161,7 +161,7 @@ tests/
 └── test_manager.py                      # chunk 10
 ```
 
-`conftest.py` provides the `data_dir` source fixture, three writable root fixtures, and a `settings` fixture. Helper builder functions (plain functions, not fixtures) live inside individual test files to construct album trees from scratch — avoids fixture combinatorial explosion. When using `tests/data` as a source, tests copy the relevant subtree into `tmp_path` before the test body runs.
+`conftest.py` provides `data_dir`, empty-root fixtures (`darkroom_root`, …), `settings`, **`PhotoSetup`**, and **`photo_setup`** (full `tests/data` copy — see fixture strategy above). Helper builder functions (plain functions, not fixtures) may live inside individual test files for synthetic trees. Prefer **`photo_setup`** when exercising actions against the shared scaffold.
 
 ---
 
@@ -226,7 +226,7 @@ Commit: `test: cover models module`
 
 ---
 
-### Chunk 4 — `file_utils/` (three files, one commit)
+### Chunk 4 — `file_utils/` (two modules, one commit)
 
 `**test_prune.py**`
 
@@ -237,11 +237,7 @@ Commit: `test: cover models module`
 
 - `preview_merge_into_archive`: no conflicts returns all leaves; one duplicate is identified; source not a dir raises `ValueError`
 - `merge_tree_into_archive`: moves all files preserving relative structure; source empty dirs cleaned up; stops (moves nothing) when duplicate present; `ArchiveMergeResult` counts correct
-
-`**test_move.py**`
-
-- `move_dir_safely`: happy path, source not exist → `ValueError`, target exists → `ValueError`
-- `cstm_shutil_move` tested indirectly through `move_dir_safely` and `merge_tree_into_archive` — no isolated unit tests for this function (it accesses `shutil` privates)
+- `cstm_shutil_move` is covered indirectly through `merge_tree_into_archive` only — no isolated unit tests (it accesses `shutil` privates)
 
 Commit: `test: cover file_utils module`
 
@@ -251,7 +247,7 @@ Commit: `test: cover file_utils module`
 
 - `_collect_files_to_tidy` (unit): photo + XMP sidecar grouped together; video; already in `PHOTOS/` → skipped; already in `VIDEOS/` → skipped
 - `collect_files_to_tidy`: `PUBLISH` in path → empty; `recursive=True` walks subdirs; skips `PUBLISH` subdir during recursion
-- `TidyAction._prepare`: nothing to tidy → `PrepareError`; misplaced files → valid `TidyPlan`; uses `tmp_path` copy of `tests/data` "tidy basic" album
+- `TidyAction._prepare`: nothing to tidy → `PrepareError`; misplaced files → valid `TidyPlan`; at least one integration case uses **`photo_setup`** + **`darkroom_has_dir`** for the "tidy basic" album under the copied scaffold
 - `TidyAction._execute`: files land in `PHOTOS/` and `VIDEOS/`, count correct
 - `TidyAction.prepare` (public wrapper): exception inside `_prepare` → `PrepareError` with traceback in details
 
@@ -329,3 +325,7 @@ Commit: `ci: add pytest test job`
 ## STOP rule for the AI
 
 **After writing each chunk, the AI must stop and wait for confirmation before proceeding to the next chunk.** The user will review, run the tests, and commit. The AI must not speculatively write the next chunk. Each chunk is self-contained and committable on its own.
+
+## Plan maintenance
+
+When a chunk is finished, **update the YAML `todos:` in this file** (`status: completed` for that chunk). Session / IDE todos are not synced automatically.
