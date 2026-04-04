@@ -235,7 +235,11 @@ class DarkroomUI:
             "Open",
             "folder_open",
             on_click=lambda _n=node: _open_directory(_n.path),
-        ).tooltip("Open in file manager")
+        ).tooltip(
+            "Open in file manager"
+            if (is_dir := node.path.is_dir())
+            else "Folder does not exist on disk"
+        ).set_enabled(is_dir)
 
         if node.node_type == "year":
             return
@@ -284,20 +288,30 @@ class DarkroomUI:
         # Showroom section
         ui.splitter()
         ui.icon("photo_library", size="sm").classes("text-grey-7")
+        showroom_target = self.manager.showroom_path(darkroom_path=node.path)
         _tree_btn(
             "Open",
             "folder_open",
-            on_click=lambda _n=node: _open_directory(_n.path),
-        ).tooltip("Open in file manager")
+            on_click=lambda _p=showroom_target: _open_directory(_p),
+        ).tooltip(
+            "Open in file manager"
+            if (is_dir := showroom_target.is_dir())
+            else "Showroom folder does not exist yet"
+        ).set_enabled(is_dir)
 
         # Archive section
         ui.splitter()
         ui.icon("archive", size="sm").classes("text-grey-7")
+        archive_target = self.manager.archive_path(darkroom_path=node.path)
         _tree_btn(
             "Open",
             "folder_open",
-            on_click=lambda _n=node: _open_directory(_n.path),
-        ).tooltip("Open in file manager")
+            on_click=lambda _p=archive_target: _open_directory(_p),
+        ).tooltip(
+            "Open in file manager"
+            if (is_dir := archive_target.is_dir())
+            else "Archive folder does not exist yet"
+        ).set_enabled(is_dir)
 
     def _render_node(self, node: DarkroomNode, depth: int = 0) -> None:
         has_children = bool(node.children)

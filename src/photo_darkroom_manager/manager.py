@@ -16,6 +16,15 @@ from photo_darkroom_manager.scan import DarkroomNode, scan_darkroom
 from photo_darkroom_manager.settings import Settings
 
 
+def _translate_path(path: Path, from_root: Path, to_root: Path) -> Path:
+    return to_root / path.relative_to(from_root)
+
+
+def _require_one(*args: Path | None) -> None:
+    if sum(1 for a in args if a is not None) != 1:
+        raise ValueError("Provide exactly one non-None path argument")
+
+
 class DarkroomManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -46,3 +55,51 @@ class DarkroomManager:
         self, year: str, month: str, day: str | None, name: str
     ) -> Action:
         return NewAlbumAction(self.settings.darkroom, year, month, day, name)
+
+    def darkroom_path(
+        self,
+        *,
+        archive_path: Path | None = None,
+        showroom_path: Path | None = None,
+    ) -> Path:
+        _require_one(archive_path, showroom_path)
+        if archive_path is not None:
+            return _translate_path(
+                archive_path, self.settings.archive, self.settings.darkroom
+            )
+        assert showroom_path is not None
+        return _translate_path(
+            showroom_path, self.settings.showroom, self.settings.darkroom
+        )
+
+    def showroom_path(
+        self,
+        *,
+        darkroom_path: Path | None = None,
+        archive_path: Path | None = None,
+    ) -> Path:
+        _require_one(darkroom_path, archive_path)
+        if darkroom_path is not None:
+            return _translate_path(
+                darkroom_path, self.settings.darkroom, self.settings.showroom
+            )
+        assert archive_path is not None
+        return _translate_path(
+            archive_path, self.settings.archive, self.settings.showroom
+        )
+
+    def archive_path(
+        self,
+        *,
+        darkroom_path: Path | None = None,
+        showroom_path: Path | None = None,
+    ) -> Path:
+        _require_one(darkroom_path, showroom_path)
+        if darkroom_path is not None:
+            return _translate_path(
+                darkroom_path, self.settings.darkroom, self.settings.archive
+            )
+        assert showroom_path is not None
+        return _translate_path(
+            showroom_path, self.settings.showroom, self.settings.archive
+        )
