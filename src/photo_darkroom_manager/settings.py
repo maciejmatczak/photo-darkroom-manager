@@ -11,6 +11,11 @@ APP_NAME = "photo-darkroom-manager"
 CONFIG_FILENAME = "config.yaml"
 CONFIG_PATH_ENV = "PHOTO_DARKROOM_MANAGER_CONFIG_PATH"
 
+# Well-known folder names used throughout the darkroom workflow.
+PUBLISH_FOLDER = "PUBLISH"
+PHOTOS_FOLDER = "PHOTOS"
+VIDEOS_FOLDER = "VIDEOS"
+
 
 def get_config_dir() -> Path:
     return user_config_path(APP_NAME, ensure_exists=True)

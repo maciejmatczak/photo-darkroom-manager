@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, field_validator
 
-from photo_darkroom_manager.constants import PUBLISH_FOLDER
+from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
 
 class DarkroomYearAlbum(BaseModel):

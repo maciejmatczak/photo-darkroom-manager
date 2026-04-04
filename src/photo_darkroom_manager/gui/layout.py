@@ -18,9 +18,9 @@ from photo_darkroom_manager.actions import (
     ExecutionResult,
     PrepareError,
 )
-from photo_darkroom_manager.constants import PUBLISH_FOLDER
 from photo_darkroom_manager.manager import DarkroomManager
 from photo_darkroom_manager.scan import DarkroomNode
+from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
 # ---------------------------------------------------------------------------
 # Shared style tokens -- single source of truth for recurring props/classes

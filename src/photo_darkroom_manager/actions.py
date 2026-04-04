@@ -8,17 +8,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-from photo_darkroom_manager.constants import (
-    PHOTOS_FOLDER,
-    PUBLISH_FOLDER,
-    VIDEOS_FOLDER,
-)
 from photo_darkroom_manager.file_utils import (
     merge_tree_into_archive,
     preview_merge_into_archive,
 )
 from photo_darkroom_manager.media import is_file_a_photo, is_file_a_video
 from photo_darkroom_manager.models import recognize_darkroom_album
+from photo_darkroom_manager.settings import (
+    PHOTOS_FOLDER,
+    PUBLISH_FOLDER,
+    VIDEOS_FOLDER,
+)
 
 _PREVIEW_PATH_LINES = 35
 
