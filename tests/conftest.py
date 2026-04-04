@@ -1,5 +1,6 @@
 """Shared pytest fixtures."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,22 @@ from photo_darkroom_manager.settings import Settings
 def data_dir() -> Path:
     """Path to the committed tests/data tree (read-only source)."""
     return Path(__file__).resolve().parent / "data"
+
+
+@pytest.fixture
+def photographer_workspace(tmp_path: Path, data_dir: Path) -> Settings:
+    """Copy ``tests/data`` into ``tmp_path``; return ``Settings`` for the three roots.
+
+    Mirrors a real install: writable darkroom, showroom, and archive trees built
+    from the shared fixture scaffold.
+    """
+    root = tmp_path / "workspace"
+    shutil.copytree(data_dir, root)
+    return Settings(
+        darkroom=root / "darkroom",
+        showroom=root / "showroom",
+        archive=root / "archive",
+    )
 
 
 @pytest.fixture
