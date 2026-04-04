@@ -21,7 +21,7 @@ photo-darkroom-manager = "photo_darkroom_manager.gui.gui_app:main"
 dr-mng = "photo_darkroom_manager.gui.gui_app:main"
 
 [dependency-groups]
-dev = ["pre-commit~=4.5.1", "ruff~=0.15.8", "ty~=0.0.28"]
+dev = ["pre-commit~=4.5.1", "pytest~=8.4.0", "ruff~=0.15.8", "ty~=0.0.28"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/photo_darkroom_manager"]
@@ -44,3 +44,6 @@ select = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["photo_darkroom_manager"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
