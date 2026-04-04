@@ -7,19 +7,19 @@ todos:
     status: completed
   - id: chunk-1
     content: "Chunk 1: write tests/test_media.py — is_file_a_photo, is_file_a_video, parametrized"
-    status: in_progress
+    status: completed
   - id: chunk-2
     content: "Chunk 2: write tests/test_settings.py — get_config_path, Settings validator, save/load round-trip"
-    status: pending
+    status: completed
   - id: chunk-3
     content: "Chunk 3: write tests/test_models.py — DarkroomYearAlbum validators, recognize_darkroom_album, publish_dir"
-    status: pending
+    status: completed
   - id: chunk-4
-    content: "Chunk 4: write tests/file_utils/ folder — test_prune.py, test_merge.py, test_move.py"
-    status: pending
+    content: "Chunk 4: write tests/file_utils/ — test_prune.py, test_merge.py (move_dir_safely removed from app; no test_move)"
+    status: completed
   - id: chunk-5
-    content: "Chunk 5: write tests/actions/test_tidy.py — _collect_files_to_tidy (incl. multi-dot filenames), collect_files_to_tidy, TidyAction"
-    status: pending
+    content: "Chunk 5: write tests/actions/test_tidy.py — _collect_files_to_tidy (incl. multi-dot filenames), collect_files_to_tidy, TidyAction, PhotoSetup in conftest"
+    status: completed
   - id: chunk-6
     content: "Chunk 6: write tests/actions/test_archive.py — ArchiveAction prepare/execute, album-root and subfolder cases"
     status: pending
