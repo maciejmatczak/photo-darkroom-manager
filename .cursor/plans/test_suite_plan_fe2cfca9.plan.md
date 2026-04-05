@@ -25,7 +25,7 @@ todos:
     status: completed
   - id: chunk-7
     content: "Chunk 7: write tests/actions/test_publish.py — PublishAction prepare/execute"
-    status: pending
+    status: completed
   - id: chunk-8
     content: "Chunk 8: write tests/actions/test_new_album_rename.py — NewAlbumAction, RenameAction"
     status: pending
