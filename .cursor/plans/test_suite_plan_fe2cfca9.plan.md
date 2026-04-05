@@ -34,7 +34,7 @@ todos:
     status: completed
   - id: chunk-10
     content: "Chunk 10: write tests/test_manager.py — DarkroomManager path helpers, _require_one, rescan"
-    status: pending
+    status: completed
   - id: chunk-11
     content: "Chunk 11: add pytest test job to .github/workflows/ci.yml"
     status: pending
