@@ -37,7 +37,7 @@ todos:
     status: completed
   - id: chunk-11
     content: "Chunk 11: add pytest test job to .github/workflows/ci.yml"
-    status: pending
+    status: completed
 isProject: false
 ---
 
