@@ -22,7 +22,7 @@ todos:
     status: completed
   - id: chunk-6
     content: "Chunk 6: write tests/actions/test_archive.py — ArchiveAction prepare/execute, album-root and subfolder cases"
-    status: pending
+    status: completed
   - id: chunk-7
     content: "Chunk 7: write tests/actions/test_publish.py — PublishAction prepare/execute"
     status: pending

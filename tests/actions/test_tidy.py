@@ -13,7 +13,7 @@ from photo_darkroom_manager.actions import (
 )
 from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
 
-TIDY_BASIC_ALBUM_REL = Path("2026") / "2026-03 tidy basic moves jpg and xmp"
+TIDY_ALBUM_BASIC_REL = Path("2026") / "2026-03 tidy basic moves jpg and xmp"
 
 
 def test_collect_misplaced_photos_and_sidecar(tmp_path: Path) -> None:
@@ -149,7 +149,7 @@ def test_tidy_prepare_wraps_exception(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_tidy_executes_on_copied_data_fixture(photo_setup) -> None:
-    album = photo_setup.darkroom_has_dir(TIDY_BASIC_ALBUM_REL)
+    album = photo_setup.darkroom_has_dir(TIDY_ALBUM_BASIC_REL)
     act = TidyAction(album)
     plan = act._prepare()
     assert isinstance(plan, TidyPlan)
