@@ -28,7 +28,7 @@ todos:
     status: completed
   - id: chunk-8
     content: "Chunk 8: write tests/actions/test_new_album_rename.py — NewAlbumAction, RenameAction"
-    status: pending
+    status: completed
   - id: chunk-9
     content: "Chunk 9: write tests/test_scan.py — _count_files, _aggregate_stats, _detect_untidy, _propagate_issues, scan_darkroom end-to-end incl. PUBLISH subtree"
     status: pending
