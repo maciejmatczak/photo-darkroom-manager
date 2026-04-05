@@ -31,7 +31,7 @@ todos:
     status: completed
   - id: chunk-9
     content: "Chunk 9: write tests/test_scan.py — _count_files, _aggregate_stats, _detect_untidy, _propagate_issues, scan_darkroom end-to-end incl. PUBLISH subtree"
-    status: pending
+    status: completed
   - id: chunk-10
     content: "Chunk 10: write tests/test_manager.py — DarkroomManager path helpers, _require_one, rescan"
     status: pending
