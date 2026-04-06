@@ -9,6 +9,12 @@ import pytest
 from photo_darkroom_manager.settings import Settings
 
 
+def _remove_gitkeep_files(root: Path) -> None:
+    """Strip placeholder files used only so empty dirs stay in git."""
+    for path in root.glob("**/.gitkeep"):
+        path.unlink()
+
+
 @dataclass(frozen=True, slots=True)
 class PhotoSetup:
     """Writable three-root layout (darkroom / showroom / archive) plus helpers."""
@@ -41,6 +47,7 @@ def photo_setup(tmp_path: Path, data_dir: Path) -> PhotoSetup:
     """
     root = tmp_path / "workspace"
     shutil.copytree(data_dir, root)
+    _remove_gitkeep_files(root)
     return PhotoSetup(
         settings=Settings(
             darkroom=root / "darkroom",
