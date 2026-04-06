@@ -52,7 +52,7 @@ def _open_directory(path: Path) -> None:
     p = str(path)
     system = platform.system()
     if system == "Windows":
-        os.startfile(p)
+        os.startfile(p)  # ty: ignore[unresolved-attribute, unused-ignore-comment]
     elif system == "Darwin":
         subprocess.Popen(["open", p])
     else:

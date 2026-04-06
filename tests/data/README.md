@@ -29,15 +29,18 @@ treated as albums.
 
 - **`2026-03 publish will fail missing publish dir`**
   - **Publish (fail)**: missing `PUBLISH/` directory.
+  - Album folder is held in git with a root `.gitkeep`.
 
 - **`2026-03 publish will fail empty publish dir`**
   - **Publish (fail)**: `PUBLISH/` exists but contains **no files**.
-  - Note: this folder is intentionally empty on disk; it is not reliably
-    representable in git, but it exists in the workspace checkout.
+  - The album is tracked with a root `.gitkeep`; an empty `PUBLISH/` is not
+    representable in git, so the test (and `create_test_data_fixtures.py`)
+    creates that directory at runtime.
 
 - **`2026-03 publish will fail publish has subdir`**
   - **Publish (fail)**: `PUBLISH/` contains a subdirectory (`nested/`), which
     should fail publish prepare.
+  - `nested/.gitkeep` keeps the otherwise empty subdirectory in git.
 
 - **`2026-03 tidy basic moves jpg and xmp`**
   - **Tidy**: media files sit directly in the album root (`IMG_0001.jpg` +

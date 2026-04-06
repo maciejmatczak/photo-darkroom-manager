@@ -49,17 +49,23 @@ def main() -> None:
     )
 
     # 2026-03 publish will fail missing publish dir (no PUBLISH/)
-    _mkdir(darkroom_2026 / "2026-03 publish will fail missing publish dir")
+    _touch_empty(
+        darkroom_2026 / "2026-03 publish will fail missing publish dir" / ".gitkeep"
+    )
 
-    # 2026-03 publish will fail empty publish dir (PUBLISH exists but empty)
+    # 2026-03 publish will fail empty publish dir (album root in git; PUBLISH empty)
+    _touch_empty(
+        darkroom_2026 / "2026-03 publish will fail empty publish dir" / ".gitkeep"
+    )
     _mkdir(darkroom_2026 / "2026-03 publish will fail empty publish dir" / "PUBLISH")
 
     # 2026-03 publish will fail publish has subdir (PUBLISH contains nested/)
-    _mkdir(
+    _touch_empty(
         darkroom_2026
         / "2026-03 publish will fail publish has subdir"
         / "PUBLISH"
         / "nested"
+        / ".gitkeep"
     )
     _touch_empty(
         darkroom_2026
