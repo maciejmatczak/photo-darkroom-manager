@@ -5,7 +5,11 @@ Micro helper for moving photo files around.
 ## Installation
 
 ```bash
+# First installation
 uv tool install --python 3.13 git+https://github.com/maciejmatczak/photo-darkroom-manager
+
+# Upgrade
+uv tool upgrade photo-darkroom-manager
 ```
 
 After installation, run **`photo-darkroom-manager`** or **`dr-mng`** to open the GUI (native window). On first launch, configure darkroom, showroom, and archive paths; settings are stored under the platform user config directory (or the path in `PHOTO_DARKROOM_MANAGER_CONFIG_PATH` if set).
