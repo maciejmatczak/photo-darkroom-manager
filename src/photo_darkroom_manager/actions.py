@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
 import shutil
+import subprocess
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -12,7 +14,11 @@ from photo_darkroom_manager.file_utils import (
     merge_tree_into_archive,
     preview_merge_into_archive,
 )
-from photo_darkroom_manager.media import is_file_a_photo, is_file_a_video
+from photo_darkroom_manager.media import (
+    ALL_IMAGE_EXTENSIONS,
+    is_file_a_photo,
+    is_file_a_video,
+)
 from photo_darkroom_manager.models import recognize_darkroom_album
 from photo_darkroom_manager.settings import (
     PHOTOS_FOLDER,
@@ -519,3 +525,132 @@ class RenameAction(Action):
 
         album_path.rename(new_path)
         return ExecutionResult(True, f"Renamed to {new_name_stripped}")
+
+
+class _NoImageFound(Exception):
+    pass
+
+
+def _find_first_image(folder: Path) -> Path | None:
+    try:
+        files = [
+            f
+            for f in folder.iterdir()
+            if f.is_file() and f.suffix.lower().lstrip(".") in ALL_IMAGE_EXTENSIONS
+        ]
+    except PermissionError:
+        return None
+    if not files:
+        return None
+    return min(files, key=lambda p: p.name)
+
+
+class _CommandMapping(dict[str, str]):
+    def __init__(self, folder: Path) -> None:
+        super().__init__()
+        self._folder = folder.resolve()
+
+    def __missing__(self, key: str) -> str:
+        if key == "folder":
+            return str(self._folder)
+        if key == "first_image_in_folder":
+            first = _find_first_image(self._folder)
+            if first is None:
+                raise _NoImageFound
+            return str(first.resolve())
+        raise KeyError(key)
+
+
+def _strip_outer_shell_quotes(part: str) -> str:
+    """Drop one pair of outer quotes from a shlex token.
+
+    ``shlex.split(..., posix=False)`` (used so Windows paths keep ``\\``) leaves
+    surrounding ``"`` or ``'`` inside the token; ``subprocess`` argv must not
+    include those characters.
+    """
+    if len(part) >= 2 and part[0] == part[-1] and part[0] in "\"'":
+        return part[1:-1]
+    return part
+
+
+def _resolve_command(template: str, folder: Path) -> list[str] | PrepareError:
+    if not template.strip():
+        return PrepareError(False, "Command is empty", None)
+    mapping = _CommandMapping(folder)
+    try:
+        resolved = template.format_map(mapping)
+    except _NoImageFound:
+        return PrepareError(
+            False,
+            "No image found in folder",
+            details=(
+                "{first_image_in_folder} requires an image file as a direct child of "
+                "the folder (not inside subfolders such as PHOTOS/)."
+            ),
+        )
+    except KeyError as e:
+        return PrepareError(
+            False,
+            "Unknown placeholder in command",
+            details=str(e),
+        )
+    except ValueError as e:
+        return PrepareError(False, "Invalid command template", details=str(e))
+
+    try:
+        parts = shlex.split(resolved, posix=False)
+    except ValueError as e:
+        return PrepareError(False, "Invalid command (quoting)", details=str(e))
+
+    if not parts:
+        return PrepareError(False, "Command resolves to empty", None)
+
+    return [_strip_outer_shell_quotes(p) for p in parts]
+
+
+class OpenExternalAppAction(Action):
+    def __init__(self, command_template: str, folder_path: Path) -> None:
+        self._command_template = command_template
+        self._folder_path = folder_path
+
+    def _prepare(self) -> ActionPlan | PrepareError | None:
+        outcome = _resolve_command(self._command_template, self._folder_path)
+        if isinstance(outcome, PrepareError):
+            return outcome
+        return None
+
+    def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
+        outcome = _resolve_command(self._command_template, self._folder_path)
+        if isinstance(outcome, PrepareError):
+            return ExecutionResult(
+                False,
+                outcome.message,
+                details=outcome.details,
+            )
+        parts = outcome
+        try:
+            proc = subprocess.Popen(
+                parts,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as e:
+            return ExecutionResult(
+                False,
+                f"Could not start command: {parts}",
+                details=str(e),
+            )
+
+        try:
+            code = proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            return ExecutionResult(True, "Started external application")
+
+        if code == 0:
+            return ExecutionResult(True, "Started external application")
+
+        return ExecutionResult(
+            False,
+            f"Command exited with code {code}",
+            details=None,
+        )

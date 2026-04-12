@@ -265,6 +265,28 @@ class DarkroomUI:
                 ),
             ).tooltip("Tidy folder")
 
+            settings = self.manager.settings
+            if settings.cull_command:
+                cull_cmd = settings.cull_command
+                _tree_btn(
+                    "Cull",
+                    "filter_frames",
+                    on_click=lambda _n=node, cmd=cull_cmd: self.run_action(
+                        self.manager.open_external_app_action(cmd, _n.path),
+                        f"Culling {_n.name}",
+                    ),
+                ).tooltip(f"Open in culling app\nCommand: {cull_cmd}")
+            if settings.edit_command:
+                edit_cmd = settings.edit_command
+                _tree_btn(
+                    "Edit",
+                    "tune",
+                    on_click=lambda _n=node, cmd=edit_cmd: self.run_action(
+                        self.manager.open_external_app_action(cmd, _n.path),
+                        f"Editing {_n.name}",
+                    ),
+                ).tooltip(f"Open in editing app\nCommand: {edit_cmd}")
+
         if node.node_type == "album":
             _tree_btn(
                 "Publish",

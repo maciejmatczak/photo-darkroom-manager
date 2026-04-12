@@ -8,6 +8,7 @@ from photo_darkroom_manager.actions import (
     Action,
     ArchiveAction,
     NewAlbumAction,
+    OpenExternalAppAction,
     PublishAction,
     RenameAction,
     TidyAction,
@@ -41,6 +42,11 @@ class DarkroomManager:
 
     def tidy_action(self, folder_path: Path) -> Action:
         return TidyAction(folder_path)
+
+    def open_external_app_action(
+        self, command_template: str, folder_path: Path
+    ) -> Action:
+        return OpenExternalAppAction(command_template, folder_path)
 
     def archive_action(self, folder_path: Path) -> Action:
         return ArchiveAction(folder_path, self.settings.darkroom, self.settings.archive)

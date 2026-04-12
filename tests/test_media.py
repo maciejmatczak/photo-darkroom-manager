@@ -3,7 +3,9 @@
 import pytest
 
 from photo_darkroom_manager.media import (
+    ALL_IMAGE_EXTENSIONS,
     PHOTO_EXTENSIONS,
+    RAW_IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
     is_file_a_photo,
     is_file_a_video,
@@ -19,6 +21,8 @@ from photo_darkroom_manager.media import (
         (["heic"], True),
         (["heif"], True),
         (["png"], True),
+        (["tif"], True),
+        (["tiff"], True),
         ([], False),
         (["txt"], False),
         (["mp4"], False),
@@ -46,8 +50,14 @@ def test_is_file_a_video(suffixes: list[str], expected: bool) -> None:
 
 
 def test_photo_extensions_cover_known_types() -> None:
-    assert {"jpg", "jpeg", "png", "heic", "heif"}.issubset(PHOTO_EXTENSIONS)
+    assert {"jpg", "jpeg", "png", "heic", "heif", "tif", "tiff"}.issubset(
+        PHOTO_EXTENSIONS
+    )
 
 
 def test_video_extensions_cover_known_types() -> None:
     assert {"mp4", "mov", "avi", "mkv", "webm"}.issubset(VIDEO_EXTENSIONS)
+
+
+def test_all_image_extensions_is_composed_union() -> None:
+    assert ALL_IMAGE_EXTENSIONS == PHOTO_EXTENSIONS | RAW_IMAGE_EXTENSIONS

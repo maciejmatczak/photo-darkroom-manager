@@ -38,6 +38,8 @@ class Settings(BaseModel):
     darkroom: Path
     showroom: Path
     archive: Path
+    cull_command: str | None = None
+    edit_command: str | None = None
 
     @field_validator("darkroom", "showroom", "archive")
     @classmethod

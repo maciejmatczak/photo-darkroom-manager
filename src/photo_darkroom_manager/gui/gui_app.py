@@ -6,6 +6,15 @@ from photo_darkroom_manager.gui.layout import DarkroomUI
 from photo_darkroom_manager.manager import DarkroomManager
 from photo_darkroom_manager.settings import Settings, load_settings, save_settings
 
+PLACEHOLDER_HELP = (
+    "Placeholders:\n"
+    "  {folder}                 absolute path to the album folder\n"
+    "  {first_image_in_folder}  absolute path to the first image in the folder\n"
+    "\n"
+    "{first_image_in_folder} only considers files directly in that folder, "
+    "not subfolders such as PHOTOS/."
+)
+
 
 def _try_load_settings() -> Settings | None:
     """Load settings; return None if missing, invalid, or unreadable."""
@@ -24,6 +33,8 @@ def _build_setup_page(initial: Settings | None = None) -> None:
                 darkroom=darkroom_input.value,
                 showroom=showroom_input.value,
                 archive=archive_input.value,
+                cull_command=cull_input.value.strip() or None,
+                edit_command=edit_input.value.strip() or None,
             )
         except Exception as e:
             ui.notify(str(e), type="negative", timeout=5000)
@@ -54,6 +65,22 @@ def _build_setup_page(initial: Settings | None = None) -> None:
             "Archive directory",
             value=str(initial.archive) if initial else "",
         ).classes("w-full")
+        cull_input = (
+            ui.input(
+                "Cull command (optional)",
+                value=(initial.cull_command or "") if initial else "",
+            )
+            .classes("w-full")
+            .tooltip(PLACEHOLDER_HELP)
+        )
+        edit_input = (
+            ui.input(
+                "Edit command (optional)",
+                value=(initial.edit_command or "") if initial else "",
+            )
+            .classes("w-full")
+            .tooltip(PLACEHOLDER_HELP)
+        )
         ui.button("Save", icon="check", on_click=do_save).classes("mt-4")
 
 
