@@ -1,5 +1,7 @@
 test-config.yaml
 
+# Local git worktrees (superpowers / parallel work)
+.worktrees/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
