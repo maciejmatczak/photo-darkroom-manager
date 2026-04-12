@@ -124,11 +124,10 @@ class DarkroomUI:
         self._expanded_paths: set[str] = set()
 
     async def rescan_and_refresh(self) -> None:
-        await run.io_bound(self.manager.rescan)
-        self.render_tree.refresh()
+        """Rescan disk on a worker thread, then refresh the tree UI.
 
-    async def refresh_scan(self) -> None:
-        """Header Refresh: notify, rescan, rebuild tree, notify."""
+        Call ``render_tree()`` once first so the NiceGUI refreshable slot exists.
+        """
         ui.notify("Scanning darkroom...", type="info", timeout=2000)
         await run.io_bound(self.manager.rescan)
         self.render_tree.refresh()
@@ -401,7 +400,7 @@ class DarkroomUI:
             exp.close()
         self._expanded_paths.clear()
 
-    def build(self) -> None:
+    async def build(self) -> None:
         ui.dark_mode(True)
 
         with ui.header().classes("items-center px-4 gap-4"):
@@ -422,10 +421,15 @@ class DarkroomUI:
                 icon="add",
                 on_click=self._show_new_album_dialog,
             ).props("dense")
-            ui.button("Refresh", icon="refresh", on_click=self.refresh_scan).props(
-                "dense"
-            )
+            ui.button(
+                "Refresh",
+                icon="refresh",
+                on_click=self.rescan_and_refresh,
+            ).props("dense")
 
         with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-0"):
-            self.manager.rescan()
             self.render_tree()
+
+        # Defer first rescan: awaiting it inside build() can race client teardown;
+        # ui.timer waits for client.connected() then runs after layout is mounted.
+        ui.timer(0.0, self.rescan_and_refresh, once=True)

@@ -116,13 +116,13 @@ def _build_not_configured() -> None:
 
 def _register_pages() -> None:
     @ui.page("/")
-    def index():
+    async def index():
         settings = _try_load_settings()
         if settings is None:
             _build_not_configured()
             return
         try:
-            DarkroomUI(DarkroomManager(settings)).build()
+            await DarkroomUI(DarkroomManager(settings)).build()
         except Exception as e:
             _build_configuration_error(str(e))
 
