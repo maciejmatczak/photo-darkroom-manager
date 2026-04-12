@@ -54,8 +54,10 @@ class DarkroomManager:
     def publish_action(self, album_path: Path) -> Action:
         return PublishAction(album_path, self.settings.showroom, self.settings.darkroom)
 
-    def rename_action(self, album_path: Path, new_name: str) -> Action:
-        return RenameAction(album_path, new_name, self.settings.darkroom)
+    def rename_action(
+        self, album_path: Path, year: str, month: str, day: str | None, name: str | None
+    ) -> Action:
+        return RenameAction(album_path, self.settings.darkroom, year, month, day, name)
 
     def new_album_action(
         self, year: str, month: str, day: str | None, name: str | None

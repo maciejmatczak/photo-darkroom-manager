@@ -155,10 +155,13 @@ def test_factory_methods_return_actions_with_expected_paths(tmp_path: Path) -> N
     assert pub._showroom_path == settings.showroom
     assert pub._darkroom_path == settings.darkroom
 
-    ren = mgr.rename_action(album, "2026-03 new name")
+    ren = mgr.rename_action(album, "2026", "03", None, "new name")
     assert isinstance(ren, RenameAction)
     assert ren._album_path == album
-    assert ren._new_name == "2026-03 new name"
+    assert ren._year == "2026"
+    assert ren._month == "03"
+    assert ren._day is None
+    assert ren._name == "new name"
     assert ren._darkroom_path == settings.darkroom
 
     na = mgr.new_album_action("2026", "09", None, "Title")

@@ -59,11 +59,18 @@ def test_new_album_execute_rejects_non_none_plan(tmp_path: Path) -> None:
     assert "new album expects no plan" in result.message
 
 
+def test_new_album_execute_fails_on_invalid_month(tmp_path: Path) -> None:
+    darkroom = tmp_path / "darkroom"
+    act = NewAlbumAction(darkroom, "2026", "13", None, "X")
+    result = act._execute(None)
+    assert not result.success
+
+
 def test_rename_execute_renames_album_folder(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
     old = darkroom / "2026" / "2026-03 rename me"
     old.mkdir(parents=True)
-    act = RenameAction(old, "2026-03 renamed album", darkroom)
+    act = RenameAction(old, darkroom, "2026", "03", None, "renamed album")
     result = act._execute(None)
     assert result.success
     new_path = darkroom / "2026" / "2026-03 renamed album"
@@ -71,14 +78,13 @@ def test_rename_execute_renames_album_folder(tmp_path: Path) -> None:
     assert not old.exists()
 
 
-def test_rename_execute_fails_on_empty_name(tmp_path: Path) -> None:
+def test_rename_execute_fails_on_invalid_month(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
     album = darkroom / "2026" / "2026-03 a"
     album.mkdir(parents=True)
-    act = RenameAction(album, "   ", darkroom)
+    act = RenameAction(album, darkroom, "2026", "99", None, None)
     result = act._execute(None)
     assert not result.success
-    assert result.message == "New name cannot be empty"
 
 
 def test_rename_execute_fails_when_target_name_exists(tmp_path: Path) -> None:
@@ -87,7 +93,7 @@ def test_rename_execute_fails_when_target_name_exists(tmp_path: Path) -> None:
     year.mkdir(parents=True)
     (year / "2026-03 source").mkdir()
     (year / "2026-03 taken").mkdir()
-    act = RenameAction(year / "2026-03 source", "2026-03 taken", darkroom)
+    act = RenameAction(year / "2026-03 source", darkroom, "2026", "03", None, "taken")
     result = act._execute(None)
     assert not result.success
     assert "already exists" in result.message
@@ -97,7 +103,7 @@ def test_rename_execute_fails_when_album_not_recognized(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
     year_only = darkroom / "2026"
     year_only.mkdir(parents=True)
-    act = RenameAction(year_only, "2026-03 new", darkroom)
+    act = RenameAction(year_only, darkroom, "2026", "03", None, "new")
     result = act._execute(None)
     assert not result.success
     assert result.message == "Could not recognize album"
@@ -107,7 +113,17 @@ def test_rename_execute_rejects_non_none_plan(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
     album = darkroom / "2026" / "2026-03 x"
     album.mkdir(parents=True)
-    act = RenameAction(album, "2026-03 y", darkroom)
+    act = RenameAction(album, darkroom, "2026", "03", None, "y")
     result = act._execute(cast(ActionPlan, object()))
     assert not result.success
     assert "rename expects no plan" in result.message
+
+
+def test_rename_execute_noop_when_unchanged(tmp_path: Path) -> None:
+    darkroom = tmp_path / "darkroom"
+    album = darkroom / "2026" / "2026-03 same"
+    album.mkdir(parents=True)
+    act = RenameAction(album, darkroom, "2026", "03", None, "same")
+    result = act._execute(None)
+    assert result.success
+    assert album.is_dir()

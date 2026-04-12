@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nicegui import run, ui
+from pydantic import ValidationError
 
 from photo_darkroom_manager.actions import (
     Action,
@@ -19,6 +20,7 @@ from photo_darkroom_manager.actions import (
     PrepareError,
 )
 from photo_darkroom_manager.manager import DarkroomManager
+from photo_darkroom_manager.models import AlbumFolderName, format_validation_error
 from photo_darkroom_manager.scan import DarkroomNode
 from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
@@ -61,6 +63,20 @@ def _open_directory(path: Path) -> None:
 
 def _depth_class(depth: int) -> str:
     return CSS_DEPTH_BG[min(depth, len(CSS_DEPTH_BG) - 1)]
+
+
+def _optional_number_to_day_str(v: float | None) -> str | None:
+    if v is None:
+        return None
+    return str(int(v))
+
+
+def _required_year_month_str(
+    y: float | None, m: float | None
+) -> tuple[str, str] | None:
+    if y is None or m is None:
+        return None
+    return str(int(y)), str(int(m))
 
 
 def _tree_btn(label: str, icon: str, *, on_click, color: str = "primary"):
@@ -183,20 +199,81 @@ class DarkroomUI:
         dialog.open()
 
     def _show_rename_dialog(self, node: DarkroomNode) -> None:
-        async def do_rename():
-            new_name = name_input.value.strip()
-            if not new_name or new_name == node.name:
+        try:
+            parsed = AlbumFolderName.from_str(node.name)
+        except ValidationError:
+            parsed = None
+
+        try:
+            year_default = int(node.path.parent.name)
+        except ValueError:
+            year_default = datetime.now().year
+
+        async def do_rename() -> None:
+            pair = _required_year_month_str(year_input.value, month_input.value)
+            if pair is None:
+                ui.notify("Year and month are required", type="negative", timeout=5000)
+                return
+            y, m = pair
+            d = _optional_number_to_day_str(day_input.value)
+            n = name_input.value.strip() or None
+            try:
+                folder_name = AlbumFolderName(
+                    year=y, month=m, day=d, name=n
+                ).folder_name
+            except ValidationError as e:
+                ui.notify(
+                    format_validation_error(e),
+                    type="negative",
+                    timeout=5000,
+                )
+                return
+            if folder_name == node.name:
                 dialog.close()
                 return
             dialog.close()
             await self.run_action(
-                self.manager.rename_action(node.path, new_name),
+                self.manager.rename_action(node.path, y, m, d, n),
                 f"Renaming {node.name}",
             )
 
         with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
             ui.label("Rename Album").classes("text-lg font-bold")
-            name_input = ui.input("Album name", value=node.name).classes("w-full")
+            if parsed is None:
+                ui.label(
+                    "Current name could not be parsed — fill fields manually."
+                ).classes("text-sm text-grey-7")
+
+            year_input = ui.number(
+                "Year",
+                value=float(year_default),
+                precision=0,
+                min=1000,
+                max=9999,
+            ).classes("w-full")
+            year_input.props("readonly")
+
+            month_val = int(parsed.month) if parsed else None
+            day_val = int(parsed.day) if parsed and parsed.day else None
+
+            month_input = ui.number(
+                "Month",
+                value=float(month_val) if month_val is not None else None,
+                precision=0,
+                min=1,
+                max=12,
+            ).classes("w-full")
+            day_input = ui.number(
+                "Day (optional)",
+                value=float(day_val) if day_val is not None else None,
+                precision=0,
+                min=1,
+                max=31,
+            ).classes("w-full")
+            name_input = ui.input(
+                "Name (optional)",
+                value=parsed.name if parsed and parsed.name else "",
+            ).classes("w-full")
             with ui.row().classes("w-full justify-end gap-2"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
                 ui.button("Rename", on_click=do_rename).props("color=primary")
@@ -205,10 +282,13 @@ class DarkroomUI:
     def _show_new_album_dialog(self) -> None:
         now = datetime.now()
 
-        async def do_create():
-            y = year_input.value.strip()
-            m = month_input.value.strip()
-            d = day_input.value.strip() or None
+        async def do_create() -> None:
+            pair = _required_year_month_str(year_input.value, month_input.value)
+            if pair is None:
+                ui.notify("Year and month are required", type="negative", timeout=5000)
+                return
+            y, m = pair
+            d = _optional_number_to_day_str(day_input.value)
             n = name_input.value.strip() or None
             dialog.close()
             await self.run_action(
@@ -218,9 +298,27 @@ class DarkroomUI:
 
         with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
             ui.label("New Album").classes("text-lg font-bold")
-            year_input = ui.input("Year", value=str(now.year)).classes("w-full")
-            month_input = ui.input("Month", value=f"{now.month:02d}").classes("w-full")
-            day_input = ui.input("Day (optional)").classes("w-full")
+            year_input = ui.number(
+                "Year",
+                value=float(now.year),
+                precision=0,
+                min=1000,
+                max=9999,
+            ).classes("w-full")
+            month_input = ui.number(
+                "Month",
+                value=float(now.month),
+                precision=0,
+                min=1,
+                max=12,
+            ).classes("w-full")
+            day_input = ui.number(
+                "Day (optional)",
+                value=None,
+                precision=0,
+                min=1,
+                max=31,
+            ).classes("w-full")
             name_input = ui.input("Name (optional)").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")

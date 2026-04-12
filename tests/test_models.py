@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from photo_darkroom_manager.models import DarkroomYearAlbum, recognize_darkroom_album
+from photo_darkroom_manager.models import (
+    AlbumFolderName,
+    DarkroomYearAlbum,
+    recognize_darkroom_album,
+)
 from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
 
@@ -19,6 +23,17 @@ def test_darkroom_year_album_valid() -> None:
     )
     assert a.year == "2024"
     assert a.publish_dir == p / PUBLISH_FOLDER
+
+
+def test_darkroom_year_album_valid_with_day() -> None:
+    p = Path("/dr/2026/2026-04-15 Spring Outing")
+    a = DarkroomYearAlbum(
+        year="2026",
+        album="2026-04-15 Spring Outing",
+        album_path=p,
+        relative_subpath=Path("2026/2026-04-15 Spring Outing"),
+    )
+    assert a.album == "2026-04-15 Spring Outing"
 
 
 @pytest.mark.parametrize(
@@ -109,3 +124,44 @@ def test_recognize_darkroom_album_not_under_darkroom_raises(tmp_path: Path) -> N
     other.mkdir()
     with pytest.raises(ValueError, match="not a subpath"):
         recognize_darkroom_album(dr, other)
+
+
+def test_album_folder_name_round_trip_date_only() -> None:
+    a = AlbumFolderName(year="2024", month="01", day=None, name=None)
+    assert a.folder_name == "2024-01"
+    p = AlbumFolderName.from_str(a.folder_name)
+    assert p.year == "2024"
+    assert p.month == "01"
+    assert p.day is None
+    assert p.name is None
+
+
+def test_album_folder_name_round_trip_with_day_and_title() -> None:
+    a = AlbumFolderName(year="2026", month="04", day="15", name="Spring Outing")
+    assert a.folder_name == "2026-04-15 Spring Outing"
+    p = AlbumFolderName.from_str(a.folder_name)
+    assert p.folder_name == a.folder_name
+
+
+def test_album_folder_name_normalizes_month_and_day() -> None:
+    a = AlbumFolderName(year="2024", month="4", day="5", name=None)
+    assert a.month == "04"
+    assert a.day == "05"
+    assert a.folder_name == "2024-04-05"
+
+
+def test_album_folder_name_from_str_raises_for_invalid_shape() -> None:
+    with pytest.raises(ValidationError):
+        AlbumFolderName.from_str("not-a-date")
+    with pytest.raises(ValidationError):
+        AlbumFolderName.from_str("2024-01foo")
+
+
+def test_album_folder_name_from_str_raises_when_values_invalid() -> None:
+    with pytest.raises(ValidationError):
+        AlbumFolderName.from_str("2024-13-01")
+
+
+def test_album_folder_name_rejects_forbidden_title_chars() -> None:
+    with pytest.raises(ValidationError):
+        AlbumFolderName(year="2024", month="01", day=None, name="bad:name")

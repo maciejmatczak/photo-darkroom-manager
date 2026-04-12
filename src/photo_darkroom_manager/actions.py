@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from photo_darkroom_manager.file_utils import (
     merge_tree_into_archive,
     preview_merge_into_archive,
@@ -19,7 +21,11 @@ from photo_darkroom_manager.media import (
     is_file_a_photo,
     is_file_a_video,
 )
-from photo_darkroom_manager.models import recognize_darkroom_album
+from photo_darkroom_manager.models import (
+    AlbumFolderName,
+    format_validation_error,
+    recognize_darkroom_album,
+)
 from photo_darkroom_manager.settings import (
     PHOTOS_FOLDER,
     PUBLISH_FOLDER,
@@ -472,11 +478,12 @@ class NewAlbumAction(Action):
         day = self._day
         name = self._name
 
-        date_part = f"{year}-{month}"
-        if day:
-            date_part = f"{date_part}-{day}"
-        stripped = (name or "").strip()
-        album_folder_name = f"{date_part} {stripped}" if stripped else date_part
+        try:
+            album_folder_name = AlbumFolderName(
+                year=year, month=month, day=day, name=name
+            ).folder_name
+        except ValidationError as e:
+            return ExecutionResult(False, format_validation_error(e))
 
         target_dir = darkroom_path / year / album_folder_name
         if target_dir.exists():
@@ -493,12 +500,18 @@ class RenameAction(Action):
     def __init__(
         self,
         album_path: Path,
-        new_name: str,
         darkroom_path: Path,
+        year: str,
+        month: str,
+        day: str | None,
+        name: str | None,
     ) -> None:
         self._album_path = album_path
-        self._new_name = new_name
         self._darkroom_path = darkroom_path
+        self._year = year
+        self._month = month
+        self._day = day
+        self._name = name
 
     def _prepare(self) -> ActionPlan | PrepareError | None:
         return None
@@ -507,25 +520,33 @@ class RenameAction(Action):
         if plan is not None:
             return ExecutionResult(False, "Internal error: rename expects no plan")
         album_path = self._album_path
-        new_name = self._new_name
         darkroom_path = self._darkroom_path
+        year = self._year
+        month = self._month
+        day = self._day
+        name = self._name
 
-        album = recognize_darkroom_album(darkroom_path, album_path)
-        if album is None:
+        if recognize_darkroom_album(darkroom_path, album_path) is None:
             return ExecutionResult(False, "Could not recognize album")
 
-        new_name_stripped = new_name.strip()
-        if not new_name_stripped:
-            return ExecutionResult(False, "New name cannot be empty")
+        try:
+            new_folder_name = AlbumFolderName(
+                year=year, month=month, day=day, name=name
+            ).folder_name
+        except ValidationError as e:
+            return ExecutionResult(False, format_validation_error(e))
 
-        new_path = album_path.parent / new_name_stripped
+        if new_folder_name == album_path.name:
+            return ExecutionResult(True, f"No change: {new_folder_name}")
+
+        new_path = album_path.parent / new_folder_name
         if new_path.exists():
             return ExecutionResult(
-                False, f"A folder named '{new_name_stripped}' already exists"
+                False, f"A folder named '{new_folder_name}' already exists"
             )
 
         album_path.rename(new_path)
-        return ExecutionResult(True, f"Renamed to {new_name_stripped}")
+        return ExecutionResult(True, f"Renamed to {new_folder_name}")
 
 
 class _NoImageFound(Exception):
