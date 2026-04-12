@@ -83,19 +83,19 @@ Backwards-compatible — existing YAML files without these keys still load fine.
 
 Three private helpers before the class:
 
-- `_find_first_image(folder)` — `min()` over `folder.iterdir()` filtered by `ALL_IMAGE_EXTENSIONS`, keyed by `f.name`; returns `None` on empty or `PermissionError`
+- `_find_first_image(folder)` — flat scan (direct children only, no recursion): `min()` over `folder.iterdir()` filtered by `ALL_IMAGE_EXTENSIONS`, keyed by `f.name`; returns `None` on empty or `PermissionError`
 - `_NoImageFound` — sentinel exception
 - `_CommandMapping` — custom mapping for `format_map`:
   - `"folder"` → `str(folder)`
   - `"first_image_in_folder"` → calls `_find_first_image`, raises `_NoImageFound` if missing
   - any other key → raises `KeyError` (unknown placeholder)
-- `_resolve_command(template, folder)` — calls `template.format_map(_CommandMapping(folder))`, catches `_NoImageFound` → `PrepareError`, catches `KeyError` → `PrepareError`, then `shlex.split`
+- `_resolve_command(template, folder)` — calls `template.format_map(_CommandMapping(folder))`, catches `_NoImageFound` → `PrepareError`, catches `KeyError` → `PrepareError`, catches `ValueError` (malformed format string) → `PrepareError`; then `shlex.split(resolved, posix=False)`, catches `ValueError` (unbalanced quotes) → `PrepareError`
 
 `OpenExternalAppAction.__init__(command_template, folder_path)`:
-- `_prepare()` → calls `_resolve_command`, returns `PrepareError` on failure, else `None` (no confirmation dialog)
-- `_execute(None)` → re-resolves, `Popen(parts, stdout=PIPE, stderr=PIPE)`, catches `FileNotFoundError` / `OSError`, then `time.sleep(0.5)` + `proc.poll()`:
+- `_prepare()` → calls `_resolve_command`, returns `PrepareError` on failure, else `None` (no confirmation dialog). Result is discarded — resolution is intentionally repeated in `_execute` to capture current filesystem state at launch time.
+- `_execute(None)` → re-resolves fresh via `_resolve_command`, `Popen(parts, stdout=PIPE, stderr=PIPE)`, catches `FileNotFoundError` / `OSError`; then `time.sleep(0.5)` + `proc.poll()`:
   - `poll() is None` or `poll() == 0` → `ExecutionResult(True, ...)`
-  - `poll() != 0` → read stdout/stderr, indent each line with two spaces, return `ExecutionResult(False, ..., details)`
+  - `poll() != 0` → process has exited; safe to `read()` stdout/stderr (no deadlock since process is done); indent each line with two spaces; return `ExecutionResult(False, ..., details)`
 
 ## 4. `manager.py` — factory
 
@@ -134,4 +134,6 @@ PLACEHOLDER_HELP = (
 )
 ```
 
-Two `ui.input` fields with `.tooltip(PLACEHOLDER_HELP)`, values initialised from `initial.cull_command` / `initial.edit_command`. In `do_save()`, pass `cull_command=... or None` and `edit_command=... or None` (empty string → `None`).
+Two `ui.input` fields with `.tooltip(PLACEHOLDER_HELP)`, values initialised from `initial.cull_command or ""` / `initial.edit_command or ""` (`None` is not a safe value for `ui.input`). In `do_save()`, pass `cull_command=cull_input.value.strip() or None` and `edit_command=edit_input.value.strip() or None` (empty string → `None`).
+
+The tooltip should also note that `{first_image_in_folder}` searches direct children of the folder only (not subdirectories like `PHOTOS/`).
