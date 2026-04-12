@@ -452,7 +452,7 @@ class NewAlbumAction(Action):
         year: str,
         month: str,
         day: str | None,
-        name: str,
+        name: str | None,
     ) -> None:
         self._darkroom_path = darkroom_path
         self._year = year
@@ -475,7 +475,8 @@ class NewAlbumAction(Action):
         date_part = f"{year}-{month}"
         if day:
             date_part = f"{date_part}-{day}"
-        album_folder_name = f"{date_part} {name.strip()}" if name.strip() else date_part
+        stripped = (name or "").strip()
+        album_folder_name = f"{date_part} {stripped}" if stripped else date_part
 
         target_dir = darkroom_path / year / album_folder_name
         if target_dir.exists():

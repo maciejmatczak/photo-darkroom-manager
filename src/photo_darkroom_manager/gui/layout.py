@@ -209,7 +209,7 @@ class DarkroomUI:
             y = year_input.value.strip()
             m = month_input.value.strip()
             d = day_input.value.strip() or None
-            n = name_input.value.strip()
+            n = name_input.value.strip() or None
             dialog.close()
             await self.run_action(
                 self.manager.new_album_action(y, m, d, n),

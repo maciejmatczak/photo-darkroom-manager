@@ -58,7 +58,7 @@ class DarkroomManager:
         return RenameAction(album_path, new_name, self.settings.darkroom)
 
     def new_album_action(
-        self, year: str, month: str, day: str | None, name: str
+        self, year: str, month: str, day: str | None, name: str | None
     ) -> Action:
         return NewAlbumAction(self.settings.darkroom, year, month, day, name)
 

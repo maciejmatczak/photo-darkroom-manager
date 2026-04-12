@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from photo_darkroom_manager.actions import ActionPlan, NewAlbumAction, RenameAction
 from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
@@ -27,9 +29,12 @@ def test_new_album_execute_without_day(tmp_path: Path) -> None:
     assert (album_dir / PUBLISH_FOLDER).is_dir()
 
 
-def test_new_album_execute_without_name_uses_date_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("no_title", [None, ""])
+def test_new_album_execute_without_name_uses_date_only(
+    tmp_path: Path, no_title: str | None
+) -> None:
     darkroom = tmp_path / "darkroom"
-    act = NewAlbumAction(darkroom, "2026", "06", None, "")
+    act = NewAlbumAction(darkroom, "2026", "06", None, no_title)
     result = act._execute(None)
     assert result.success
     album_dir = darkroom / "2026" / "2026-06"
