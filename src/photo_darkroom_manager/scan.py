@@ -51,17 +51,18 @@ def _count_files(directory: Path) -> FolderStats:
     return FolderStats(images, videos, others)
 
 
-def _aggregate_stats(node: DarkroomNode) -> FolderStats:
-    """Recursively aggregate stats from all descendants."""
-    total = FolderStats(
-        node.stats.image_count, node.stats.video_count, node.stats.other_file_count
-    )
+def _rollup_subtree_stats(node: DarkroomNode) -> None:
+    """Set ``node.stats`` to files directly in this folder plus each child's stats.
+
+    Children are expected to already store their full subtree totals.
+    """
+    direct = _count_files(node.path)
+    total = FolderStats(direct.image_count, direct.video_count, direct.other_file_count)
     for child in node.children:
-        child_agg = _aggregate_stats(child)
-        total.image_count += child_agg.image_count
-        total.video_count += child_agg.video_count
-        total.other_file_count += child_agg.other_file_count
-    return total
+        total.image_count += child.stats.image_count
+        total.video_count += child.stats.video_count
+        total.other_file_count += child.stats.other_file_count
+    node.stats = total
 
 
 def _detect_untidy(directory: Path) -> bool:
@@ -79,7 +80,7 @@ def _scan_subfolder(path: Path) -> DarkroomNode:
         path=path,
         name=path.name,
         node_type="subfolder",
-        stats=_count_files(path),
+        stats=FolderStats(),
     )
 
     if _detect_untidy(path):
@@ -92,6 +93,7 @@ def _scan_subfolder(path: Path) -> DarkroomNode:
     except PermissionError:
         pass
 
+    _rollup_subtree_stats(node)
     return node
 
 
@@ -101,7 +103,7 @@ def _scan_album(path: Path) -> DarkroomNode:
         path=path,
         name=path.name,
         node_type="album",
-        stats=_count_files(path),
+        stats=FolderStats(),
     )
 
     if _detect_untidy(path):
@@ -114,6 +116,7 @@ def _scan_album(path: Path) -> DarkroomNode:
     except PermissionError:
         pass
 
+    _rollup_subtree_stats(node)
     return node
 
 
@@ -139,12 +142,11 @@ def _scan_year(path: Path) -> DarkroomNode:
         for child_dir in sorted(path.iterdir()):
             if child_dir.is_dir() and ALBUM_PATTERN.match(child_dir.name):
                 album_node = _scan_album(child_dir)
-                album_node.stats = _aggregate_stats(album_node)
                 node.children.append(album_node)
     except PermissionError:
         pass
 
-    node.stats = _aggregate_stats(node)
+    _rollup_subtree_stats(node)
     return node
 
 
@@ -168,6 +170,6 @@ def scan_darkroom(darkroom_path: Path) -> DarkroomNode:
     except PermissionError:
         pass
 
-    root.stats = _aggregate_stats(root)
+    _rollup_subtree_stats(root)
     _propagate_issues(root)
     return root

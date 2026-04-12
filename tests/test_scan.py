@@ -5,10 +5,10 @@ from pathlib import Path
 from photo_darkroom_manager.scan import (
     DarkroomNode,
     FolderStats,
-    _aggregate_stats,
     _count_files,
     _detect_untidy,
     _propagate_issues,
+    _rollup_subtree_stats,
     scan_darkroom,
 )
 from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER
@@ -27,31 +27,56 @@ def test_count_files_photo_video_other_including_xmp_as_other(tmp_path: Path) ->
     assert st.other_file_count == 2
 
 
-def test_aggregate_stats_sums_descendants() -> None:
-    parent = DarkroomNode(
-        path=Path("p"),
-        name="p",
-        node_type="album",
-        stats=FolderStats(1, 0, 1),
-    )
-    child = DarkroomNode(
-        path=Path("c"),
-        name="c",
-        node_type="subfolder",
-        stats=FolderStats(2, 1, 0),
-    )
-    grand = DarkroomNode(
-        path=Path("g"),
-        name="g",
-        node_type="subfolder",
-        stats=FolderStats(0, 0, 3),
-    )
+def test_rollup_subtree_stats_bottom_up_matches_full_tree(tmp_path: Path) -> None:
+    """Roll up deepest-first so each parent sees already-totaled children."""
+    p = tmp_path / "p"
+    c = p / "c"
+    g = c / "g"
+    g.mkdir(parents=True)
+    (p / "a.jpg").write_bytes(b"")
+    (p / "root.txt").write_bytes(b"")
+    (c / "b.jpg").write_bytes(b"")
+    (c / "c2.jpg").write_bytes(b"")
+    (c / "v.mp4").write_bytes(b"")
+    (g / "x.xmp").write_bytes(b"")
+    (g / "y.xmp").write_bytes(b"")
+    (g / "deep.txt").write_bytes(b"")
+
+    parent = DarkroomNode(path=p, name="p", node_type="album", stats=FolderStats())
+    child = DarkroomNode(path=c, name="c", node_type="subfolder", stats=FolderStats())
+    grand = DarkroomNode(path=g, name="g", node_type="subfolder", stats=FolderStats())
     child.children.append(grand)
     parent.children.append(child)
-    agg = _aggregate_stats(parent)
-    assert agg.image_count == 3
-    assert agg.video_count == 1
-    assert agg.other_file_count == 4
+
+    _rollup_subtree_stats(grand)
+    _rollup_subtree_stats(child)
+    _rollup_subtree_stats(parent)
+
+    assert parent.stats.image_count == 3
+    assert parent.stats.video_count == 1
+    assert parent.stats.other_file_count == 4
+
+
+def test_rollup_subtree_stats_sums_one_level_only(tmp_path: Path) -> None:
+    """Rolled-up child stats must not be fed back through a full recursive sum."""
+    p = tmp_path / "p"
+    c = p / "c"
+    c.mkdir(parents=True)
+    parent = DarkroomNode(
+        path=p,
+        name="p",
+        node_type="subfolder",
+        stats=FolderStats(),
+    )
+    child = DarkroomNode(
+        path=c,
+        name="c",
+        node_type="subfolder",
+        stats=FolderStats(2, 0, 0),
+    )
+    parent.children.append(child)
+    _rollup_subtree_stats(parent)
+    assert parent.stats.image_count == 2
 
 
 def test_detect_untidy_true_when_misplaced_photo_at_album_root(tmp_path: Path) -> None:
@@ -139,6 +164,22 @@ def test_scan_darkroom_node_types_and_aggregated_stats(tmp_path: Path) -> None:
     assert al.stats.image_count == 2
     photos_node = next(c for c in al.children if c.name == PHOTOS_FOLDER)
     assert photos_node.stats.image_count == 2
+
+
+def test_scan_nested_subfolder_shows_accumulated_stats(tmp_path: Path) -> None:
+    """Intermediate folder with no direct files still shows descendant counts."""
+    dr = tmp_path / "darkroom"
+    nested = dr / "2026" / "2026-07 nested" / "outer" / "inner"
+    nested.mkdir(parents=True)
+    (nested / "x.jpg").write_bytes(b"")
+
+    tree = scan_darkroom(dr)
+    al = tree.children[0].children[0]
+    outer = next(c for c in al.children if c.name == "outer")
+    inner = next(c for c in outer.children if c.name == "inner")
+    assert outer.stats.image_count == 1
+    assert inner.stats.image_count == 1
+    assert al.stats.image_count == 1
 
 
 def test_scan_publish_files_count_toward_stats_but_do_not_mark_album_untidy(
