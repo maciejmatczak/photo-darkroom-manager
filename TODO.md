@@ -1,6 +1,5 @@
 # TODO
 
-- [ ] add support for opening external applications (e.g. for culling, for editing)
 - [ ] bug: the darkroom scanning became very heavy and blocks UI when scanning
   - something got broken in the recent refactoring
 - [ ] add logging
