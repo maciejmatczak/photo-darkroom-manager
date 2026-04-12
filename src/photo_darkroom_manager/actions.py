@@ -283,7 +283,6 @@ class ArchiveAction(Action):
             return PrepareError(False, "Could not recognize album for this path")
 
         target_dir = self._archive_path / album.relative_subpath
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             leaves, duplicates = preview_merge_into_archive(folder_path, target_dir)
@@ -315,6 +314,7 @@ class ArchiveAction(Action):
         if not isinstance(plan, ArchivePlan):
             return ExecutionResult(False, "Internal error: invalid plan for archive")
         try:
+            plan.target_dir.parent.mkdir(parents=True, exist_ok=True)
             merge_result = merge_tree_into_archive(plan.folder_path, plan.target_dir)
         except ValueError as e:
             return ExecutionResult(False, str(e))

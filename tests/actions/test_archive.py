@@ -56,6 +56,26 @@ def test_archive_prepare_unrecognized_album_path(photo_setup) -> None:
     assert out.message == "Could not recognize album for this path"
 
 
+def test_archive_prepare_does_not_create_archive_directories(photo_setup) -> None:
+    """Prepare must not mkdir under archive; destination dirs are created on execute."""
+    photos = photo_setup.darkroom_has_dir(ARCHIVE_ALBUM_BASIC_REL / PHOTOS_FOLDER)
+    archive_root = photo_setup.settings.archive
+
+    def archive_tree_snapshot() -> frozenset[Path]:
+        return frozenset(p.relative_to(archive_root) for p in archive_root.rglob("*"))
+
+    before = archive_tree_snapshot()
+    act = ArchiveAction(
+        photos,
+        photo_setup.settings.darkroom,
+        photo_setup.settings.archive,
+    )
+    out = act._prepare()
+    assert isinstance(out, ArchivePlan)
+    after = archive_tree_snapshot()
+    assert before == after
+
+
 def test_archive_prepare_subfolder_photos(photo_setup) -> None:
     """UI can pass a subfolder (e.g. PHOTOS/); relative_subpath includes it."""
     photos = photo_setup.darkroom_has_dir(ARCHIVE_ALBUM_BASIC_REL / PHOTOS_FOLDER)
