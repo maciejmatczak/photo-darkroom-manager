@@ -269,7 +269,7 @@ class DarkroomUI:
                 cull_cmd = settings.cull_command
                 _tree_btn(
                     "Cull",
-                    "filter_frames",
+                    "star_rate",
                     on_click=lambda _n=node, cmd=cull_cmd: self.run_action(
                         self.manager.open_external_app_action(cmd, _n.path),
                         f"Culling {_n.name}",
