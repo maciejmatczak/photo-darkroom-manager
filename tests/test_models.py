@@ -51,29 +51,28 @@ def test_darkroom_year_album_invalid_album_format(album: str) -> None:
         )
 
 
-def test_darkroom_year_album_permissive_regex_accepts_non_calendar_month() -> None:
-    """Current validator only checks YYYY-MM prefix; month need not be 01-12."""
-    # TODO: should be changed in the future, months should be month
+def test_darkroom_year_album_rejects_non_calendar_month() -> None:
+    """Invalid month (not 01–12) is rejected."""
     p = Path("/dr/2024/2024-13 Album")
-    a = DarkroomYearAlbum(
-        year="2024",
-        album="2024-13 Album",
-        album_path=p,
-        relative_subpath=Path("2024/2024-13 Album"),
-    )
-    assert a.album == "2024-13 Album"
+    with pytest.raises(ValidationError, match="album"):
+        DarkroomYearAlbum(
+            year="2024",
+            album="2024-13 Album",
+            album_path=p,
+            relative_subpath=Path("2024/2024-13 Album"),
+        )
 
 
-def test_darkroom_year_album_permissive_regex_accepts_tight_prefix() -> None:
-    # TODO: should be changed in the future, this is not correct behavior
+def test_darkroom_year_album_rejects_glued_suffix_after_month() -> None:
+    """Characters glued after YYYY-MM without a space are rejected."""
     p = Path("/dr/2024/2024-01foo")
-    a = DarkroomYearAlbum(
-        year="2024",
-        album="2024-01foo",
-        album_path=p,
-        relative_subpath=Path("2024/2024-01foo"),
-    )
-    assert a.album == "2024-01foo"
+    with pytest.raises(ValidationError, match="album"):
+        DarkroomYearAlbum(
+            year="2024",
+            album="2024-01foo",
+            album_path=p,
+            relative_subpath=Path("2024/2024-01foo"),
+        )
 
 
 def test_recognize_darkroom_album_happy_path() -> None:

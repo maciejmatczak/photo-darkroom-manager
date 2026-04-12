@@ -30,10 +30,11 @@ class DarkroomYearAlbum(BaseModel):
     @classmethod
     def validate_album(cls, v: str) -> str:
         """Validate that the album follows the format 'YYYY-MM[ <something>]'."""
-        pattern = r"^\d{4}-\d{2}.*"
+        pattern = r"^\d{4}-(0[1-9]|1[0-2])( .*)?$"
         if not re.match(pattern, v):
             raise ValueError(
-                "album must follow format 'YYYY-MM[ <something>]' "
+                "album must follow format 'YYYY-MM[ <something>]' with month 01–12; "
+                "after YYYY-MM use end of string or a space before an optional title "
                 f"(e.g., '2024-01 Album Name' or '2024-01'), got: {v}"
             )
         return v
