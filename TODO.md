@@ -1,5 +1,6 @@
 # TODO
 
+- [ ] BUG: tidying files in higher folder does not calculate a per-file target properly
 - [ ] add support for ignoring a folders with `dr-mng-ignore` file
 - [ ] `scan.py`: review silently skipping folders that do not match the recognized year/album patterns (extra dirs under darkroom or year are invisible today). Consider surfacing **ignored paths** (and optional reasons) as scan metadata or messages so a workflow/report can show what was not treated as an album
 - [ ] add logging
