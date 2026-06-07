@@ -130,6 +130,96 @@ def test_tidy_prepare_execute_moves_to_photos(tmp_path: Path) -> None:
     assert not (album / "a.jpg").exists()
 
 
+def test_tidy_recursive_from_album_moves_to_subfolder_photos(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    iphone = album / "iPhone"
+    iphone.mkdir(parents=True)
+    (iphone / "img.jpg").write_bytes(b"")
+    act = TidyAction(album)
+    plan = act._prepare()
+    assert isinstance(plan, TidyPlan)
+    result = act._execute(plan)
+    assert result.success
+    assert (iphone / PHOTOS_FOLDER / "img.jpg").exists()
+    assert not (iphone / "img.jpg").exists()
+    assert not (album / PHOTOS_FOLDER / "img.jpg").exists()
+
+
+def test_tidy_sibling_bucket_video_in_photos(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    photos = album / "iPhone" / PHOTOS_FOLDER
+    photos.mkdir(parents=True)
+    (photos / "clip.mp4").write_bytes(b"")
+    act = TidyAction(album)
+    plan = act._prepare()
+    assert isinstance(plan, TidyPlan)
+    result = act._execute(plan)
+    assert result.success
+    assert (album / "iPhone" / VIDEOS_FOLDER / "clip.mp4").exists()
+    assert not (photos / "clip.mp4").exists()
+
+
+def test_tidy_sibling_bucket_photo_in_videos(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    videos = album / "iPhone" / VIDEOS_FOLDER
+    videos.mkdir(parents=True)
+    (videos / "shot.jpg").write_bytes(b"")
+    act = TidyAction(album)
+    plan = act._prepare()
+    assert isinstance(plan, TidyPlan)
+    result = act._execute(plan)
+    assert result.success
+    assert (album / "iPhone" / PHOTOS_FOLDER / "shot.jpg").exists()
+    assert not (videos / "shot.jpg").exists()
+
+
+def test_tidy_prepare_blocks_when_destination_exists(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    album.mkdir()
+    (album / "a.jpg").write_bytes(b"")
+    (album / PHOTOS_FOLDER).mkdir()
+    (album / PHOTOS_FOLDER / "a.jpg").write_bytes(b"other")
+    act = TidyAction(album)
+    out = act.prepare()
+    assert isinstance(out, PrepareError)
+    assert "Tidy blocked" in out.message
+    assert out.details is not None
+    assert "→" in out.details
+    assert (album / "a.jpg").exists()
+
+
+def test_tidy_execute_aborts_on_late_conflict(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    album.mkdir()
+    (album / "a.jpg").write_bytes(b"")
+    act = TidyAction(album)
+    plan = act._prepare()
+    assert isinstance(plan, TidyPlan)
+    (album / PHOTOS_FOLDER).mkdir()
+    (album / PHOTOS_FOLDER / "a.jpg").write_bytes(b"blocker")
+    result = act._execute(plan)
+    assert not result.success
+    assert "Tidy blocked" in result.message
+    assert (album / "a.jpg").exists()
+
+
+def test_tidy_preview_text_extension_stats(tmp_path: Path) -> None:
+    album = tmp_path / "album"
+    album.mkdir()
+    (album / "a.jpg").write_bytes(b"")
+    (album / "a.xmp").write_bytes(b"")
+    (album / "b.mp4").write_bytes(b"")
+    act = TidyAction(album)
+    plan = act._prepare()
+    assert isinstance(plan, TidyPlan)
+    text = plan.preview_text()
+    assert ".jpg: 1" in text
+    assert ".xmp: 1" in text
+    assert ".mp4: 1" in text
+    assert "a.jpg" not in text
+    assert "b.mp4" not in text
+
+
 def test_tidy_prepare_wraps_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     album = Path("/tmp/will-not-use")
     act = TidyAction(album)
@@ -153,7 +243,7 @@ def test_tidy_executes_on_copied_data_fixture(photo_setup) -> None:
     act = TidyAction(album)
     plan = act._prepare()
     assert isinstance(plan, TidyPlan)
-    assert len(plan.photo_paths) >= 1
+    assert len(plan.moves) >= 1
     ex = act._execute(plan)
     assert ex.success
     assert (album / PHOTOS_FOLDER).is_dir()

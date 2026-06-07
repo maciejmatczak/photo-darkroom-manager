@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import traceback
 from abc import ABC, abstractmethod
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,16 +37,72 @@ from photo_darkroom_manager.settings import (
 _PREVIEW_PATH_LINES = 35
 
 
-def _format_preview_path_names(
-    root: Path, paths: tuple[Path, ...], *, max_lines: int
-) -> str:
-    lines: list[str] = []
-    for i, p in enumerate(paths):
-        if i >= max_lines:
-            lines.append(f"… and {len(paths) - max_lines} more")
-            break
-        lines.append(f"  {p.relative_to(root)}")
+def _file_extension(path: Path) -> str:
+    return path.suffix.lstrip(".").lower()
+
+
+def _tidy_destination(src: Path) -> Path:
+    """Resolve target path for a misplaced media file."""
+    parent = src.parent
+    ext = _file_extension(src)
+
+    if parent.name == PHOTOS_FOLDER and is_file_a_video([ext]):
+        return parent.parent / VIDEOS_FOLDER / src.name
+    if parent.name == VIDEOS_FOLDER and is_file_a_photo([ext]):
+        return parent.parent / PHOTOS_FOLDER / src.name
+    if is_file_a_video([ext]):
+        return parent / VIDEOS_FOLDER / src.name
+    return parent / PHOTOS_FOLDER / src.name
+
+
+def _build_tidy_moves(folder_path: Path) -> list[tuple[Path, Path]]:
+    """Collect misplaced files recursively and pair each with its tidy target.
+
+    Targets are per source folder (e.g. iPhone/IMG.jpg → iPhone/PHOTOS/), not
+    flattened to the action root, so prepare, preview, and execute share one plan.
+    """
+    photo_paths, video_paths = collect_files_to_tidy(folder_path, recursive=True)
+    sources = photo_paths + video_paths
+    return [(src, _tidy_destination(src)) for src in sources]
+
+
+def _find_tidy_conflicts(
+    moves: Sequence[tuple[Path, Path]],
+) -> list[tuple[Path, Path]]:
+    """Return moves that would overwrite an existing file or another move's target.
+
+    Checked at prepare and again at execute so the user sees conflicts before
+    confirming and late arrivals on disk cannot silently replace files.
+    """
+    conflicts: list[tuple[Path, Path]] = []
+    seen_dst: dict[Path, Path] = {}
+
+    for src, dst in moves:
+        if dst in seen_dst and seen_dst[dst] != src:
+            conflicts.append((src, dst))
+        else:
+            seen_dst[dst] = src
+
+        if (
+            dst.exists()
+            and dst.resolve() != src.resolve()
+            and (src, dst) not in conflicts
+        ):
+            conflicts.append((src, dst))
+
+    return conflicts
+
+
+def _format_tidy_move_lines(root: Path, pairs: Sequence[tuple[Path, Path]]) -> str:
+    lines = [
+        f"{src.relative_to(root)}\n\t→ {dst.relative_to(root)}" for src, dst in pairs
+    ]
     return "\n".join(lines)
+
+
+def _format_extension_stats(paths: Sequence[Path]) -> str:
+    counts = Counter(f".{_file_extension(p)}" for p in paths)
+    return "\n".join(f"  {ext}: {n}" for ext, n in sorted(counts.items()))
 
 
 @dataclass(frozen=True)
@@ -171,12 +229,17 @@ def collect_files_to_tidy(
 @dataclass(frozen=True)
 class TidyPlan(ActionPlan):
     folder_path: Path
-    photo_paths: tuple[Path, ...]
-    video_paths: tuple[Path, ...]
+    moves: tuple[tuple[Path, Path], ...]
 
     def preview_text(self) -> str:
-        n_photo = len(self.photo_paths)
-        n_video = len(self.video_paths)
+        photo_sources = [
+            src for src, dst in self.moves if dst.parent.name == PHOTOS_FOLDER
+        ]
+        video_sources = [
+            src for src, dst in self.moves if dst.parent.name == VIDEOS_FOLDER
+        ]
+        n_photo = len(photo_sources)
+        n_video = len(video_sources)
         parts = [
             f"Root folder: {self.folder_path}",
             "",
@@ -185,19 +248,11 @@ class TidyPlan(ActionPlan):
             "",
         ]
         if n_photo:
-            parts.append("Photo files (-> PHOTOS/):")
-            parts.append(
-                _format_preview_path_names(
-                    self.folder_path, self.photo_paths, max_lines=_PREVIEW_PATH_LINES
-                )
-            )
+            parts.append("Photos:")
+            parts.append(_format_extension_stats(photo_sources))
         if n_video:
-            parts.append("Video files (-> VIDEOS/):")
-            parts.append(
-                _format_preview_path_names(
-                    self.folder_path, self.video_paths, max_lines=_PREVIEW_PATH_LINES
-                )
-            )
+            parts.append("Videos:")
+            parts.append(_format_extension_stats(video_sources))
         return "\n".join(parts)
 
 
@@ -210,8 +265,8 @@ class TidyAction(Action):
         if not folder_path.is_dir():
             return PrepareError(False, f"Not a directory: {folder_path}")
 
-        photo_paths, video_paths = collect_files_to_tidy(folder_path, recursive=True)
-        if not photo_paths and not video_paths:
+        moves = _build_tidy_moves(folder_path)
+        if not moves:
             details = "\n".join(
                 [
                     f"Folder: {folder_path}",
@@ -220,33 +275,34 @@ class TidyAction(Action):
                 ]
             )
             return PrepareError(False, "Nothing to tidy", details)
-        return TidyPlan(
-            folder_path=folder_path,
-            photo_paths=tuple(photo_paths),
-            video_paths=tuple(video_paths),
-        )
+
+        conflicts = _find_tidy_conflicts(moves)
+        if conflicts:
+            return PrepareError(
+                False,
+                f"Tidy blocked: {len(conflicts)} file conflict(s)",
+                _format_tidy_move_lines(folder_path, conflicts),
+            )
+
+        return TidyPlan(folder_path=folder_path, moves=tuple(moves))
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
         if not isinstance(plan, TidyPlan):
             return ExecutionResult(False, "Internal error: invalid plan for tidy")
-        folder_path = plan.folder_path
 
-        moved = 0
-        if plan.photo_paths:
-            photos_dir = folder_path / PHOTOS_FOLDER
-            photos_dir.mkdir(exist_ok=True)
-            for p in plan.photo_paths:
-                shutil.move(str(p), str(photos_dir / p.name))
-                moved += 1
+        conflicts = _find_tidy_conflicts(plan.moves)
+        if conflicts:
+            return ExecutionResult(
+                False,
+                f"Tidy blocked: {len(conflicts)} file conflict(s)",
+                details=_format_tidy_move_lines(plan.folder_path, conflicts),
+            )
 
-        if plan.video_paths:
-            videos_dir = folder_path / VIDEOS_FOLDER
-            videos_dir.mkdir(exist_ok=True)
-            for p in plan.video_paths:
-                shutil.move(str(p), str(videos_dir / p.name))
-                moved += 1
+        for src, dst in plan.moves:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
 
-        return ExecutionResult(True, f"Tidied {moved} files")
+        return ExecutionResult(True, f"Tidied {len(plan.moves)} files")
 
 
 @dataclass(frozen=True)
