@@ -3,6 +3,7 @@
 from nicegui import ui
 
 from photo_darkroom_manager.gui.layout import DarkroomUI
+from photo_darkroom_manager.logging_config import configure_logging
 from photo_darkroom_manager.manager import DarkroomManager
 from photo_darkroom_manager.settings import Settings, load_settings, save_settings
 
@@ -35,11 +36,13 @@ def _build_setup_page(initial: Settings | None = None) -> None:
                 archive=archive_input.value,
                 cull_command=cull_input.value.strip() or None,
                 edit_command=edit_input.value.strip() or None,
+                log_level=log_level_select.value or "INFO",
             )
         except Exception as e:
             ui.notify(str(e), type="negative", timeout=5000)
             return
         save_settings(settings)
+        configure_logging(settings.log_level)
         ui.notify("Configuration saved!", type="positive")
 
     ui.dark_mode(True)
@@ -81,6 +84,11 @@ def _build_setup_page(initial: Settings | None = None) -> None:
             .classes("w-full")
             .tooltip(PLACEHOLDER_HELP)
         )
+        log_level_select = ui.select(
+            ["DEBUG", "INFO", "WARNING", "ERROR"],
+            label="Log level",
+            value=(initial.log_level if initial else "INFO"),
+        ).classes("w-full")
         ui.button("Save", icon="check", on_click=do_save).classes("mt-4")
 
 
@@ -121,6 +129,7 @@ def _register_pages() -> None:
         if settings is None:
             _build_not_configured()
             return
+        configure_logging(settings.log_level)
         try:
             await DarkroomUI(DarkroomManager(settings)).build()
         except Exception as e:
@@ -132,6 +141,7 @@ def _register_pages() -> None:
 
 
 def main() -> None:
+    configure_logging()
     _register_pages()
     ui.run(
         title="Photo Darkroom Manager",
@@ -143,6 +153,7 @@ def main() -> None:
 
 def dev() -> None:
     """Dev server: opens in browser with hot reload."""
+    configure_logging()
     _register_pages()
     ui.run(
         title="Photo Darkroom Manager [DEV]",

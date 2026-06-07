@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+
+import structlog
 
 from photo_darkroom_manager.actions import (
     Action,
@@ -15,6 +18,19 @@ from photo_darkroom_manager.actions import (
 )
 from photo_darkroom_manager.scan import DarkroomNode, scan_darkroom
 from photo_darkroom_manager.settings import Settings
+
+log = structlog.get_logger(__name__)
+
+
+def _scan_stats(node: DarkroomNode) -> tuple[int, int]:
+    """Return (album_count, nodes_with_issues_count) for a scan tree."""
+    albums = 1 if node.node_type == "album" else 0
+    issues = 1 if node.issues else 0
+    for child in node.children:
+        child_albums, child_issues = _scan_stats(child)
+        albums += child_albums
+        issues += child_issues
+    return albums, issues
 
 
 def _translate_path(path: Path, from_root: Path, to_root: Path) -> Path:
@@ -33,11 +49,23 @@ class DarkroomManager:
         self.scanning = False
 
     def rescan(self) -> DarkroomNode:
+        root = self.settings.darkroom
+        log.info("rescan_started", root=str(root))
+        started = time.perf_counter()
         self.scanning = True
         try:
-            self.tree = scan_darkroom(self.settings.darkroom)
+            self.tree = scan_darkroom(root)
         finally:
             self.scanning = False
+        albums, issues = _scan_stats(self.tree)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        log.info(
+            "rescan_complete",
+            root=str(root),
+            albums=albums,
+            issues=issues,
+            duration_ms=duration_ms,
+        )
         return self.tree
 
     def tidy_action(self, folder_path: Path) -> Action:

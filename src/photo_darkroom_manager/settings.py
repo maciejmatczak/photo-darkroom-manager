@@ -2,10 +2,16 @@
 
 import os
 from pathlib import Path
+from typing import Literal, cast
 
+import structlog
 import yaml
-from platformdirs import user_config_path
+from platformdirs import user_config_path, user_log_dir
 from pydantic import BaseModel, field_validator
+
+log = structlog.get_logger(__name__)
+
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 APP_NAME = "photo-darkroom-manager"
 CONFIG_FILENAME = "config.yaml"
@@ -19,6 +25,11 @@ VIDEOS_FOLDER = "VIDEOS"
 
 def get_config_dir() -> Path:
     return user_config_path(APP_NAME, ensure_exists=True)
+
+
+def get_logs_dir() -> Path:
+    """Directory for per-run log files (platformdirs user log dir)."""
+    return Path(user_log_dir(APP_NAME, ensure_exists=True))
 
 
 def get_config_path() -> Path:
@@ -40,6 +51,16 @@ class Settings(BaseModel):
     archive: Path
     cull_command: str | None = None
     edit_command: str | None = None
+    log_level: LogLevel = "INFO"
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> LogLevel:
+        normalized = v.upper()
+        allowed: set[LogLevel] = {"DEBUG", "INFO", "WARNING", "ERROR"}
+        if normalized not in allowed:
+            raise ValueError(f"log_level must be one of {sorted(allowed)}")
+        return cast(LogLevel, normalized)
 
     @field_validator("darkroom", "showroom", "archive")
     @classmethod
@@ -59,7 +80,11 @@ def load_settings() -> Settings | None:
         return None
     with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    return Settings(**data)
+    settings = Settings(**data)
+    log.info(
+        "settings_loaded", config_path=str(config_path), log_level=settings.log_level
+    )
+    return settings
 
 
 def save_settings(settings: Settings) -> Path:
@@ -69,4 +94,7 @@ def save_settings(settings: Settings) -> Path:
     data = settings.model_dump(mode="json")
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False)
+    log.info(
+        "settings_saved", config_path=str(config_path), log_level=settings.log_level
+    )
     return config_path

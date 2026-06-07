@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import structlog
 from pydantic import ValidationError
 
 from photo_darkroom_manager.file_utils import (
@@ -35,6 +36,8 @@ from photo_darkroom_manager.settings import (
 )
 
 _PREVIEW_PATH_LINES = 35
+
+log = structlog.get_logger(__name__)
 
 
 def _file_extension(path: Path) -> str:
@@ -137,19 +140,72 @@ class Action(ABC):
     Subclasses implement _prepare / _execute.
     """
 
+    def log_context(self) -> dict[str, object]:
+        return {}
+
     def prepare(self) -> ActionPlan | PrepareError | None:
+        action_name = type(self).__name__
+        ctx = self.log_context()
         try:
-            return self._prepare()
+            result = self._prepare()
         except Exception:
+            log.exception("action_prepare", action=action_name, **ctx)
             return PrepareError(False, "Internal error", traceback.format_exc())
 
+        if isinstance(result, PrepareError):
+            log.warning(
+                "action_prepare",
+                action=action_name,
+                success=False,
+                message=result.message,
+                **ctx,
+            )
+        elif result is None:
+            log.info(
+                "action_prepare",
+                action=action_name,
+                success=True,
+                message="no plan",
+                **ctx,
+            )
+        else:
+            log.info(
+                "action_prepare",
+                action=action_name,
+                success=True,
+                message="plan ready",
+                **ctx,
+            )
+        return result
+
     def execute(self, plan: ActionPlan | None) -> ExecutionResult:
+        action_name = type(self).__name__
+        ctx = self.log_context()
         try:
-            return self._execute(plan)
+            result = self._execute(plan)
         except Exception:
+            log.exception("action_execute", action=action_name, **ctx)
             return ExecutionResult(
                 False, "Internal error", details=traceback.format_exc()
             )
+
+        if result.success:
+            log.info(
+                "action_execute",
+                action=action_name,
+                success=True,
+                message=result.message,
+                **ctx,
+            )
+        else:
+            log.warning(
+                "action_execute",
+                action=action_name,
+                success=False,
+                message=result.message,
+                **ctx,
+            )
+        return result
 
     @abstractmethod
     def _prepare(self) -> ActionPlan | PrepareError | None: ...
@@ -260,6 +316,9 @@ class TidyAction(Action):
     def __init__(self, folder_path: Path) -> None:
         self._folder_path = folder_path
 
+    def log_context(self) -> dict[str, object]:
+        return {"folder": str(self._folder_path)}
+
     def _prepare(self) -> TidyPlan | PrepareError:
         folder_path = self._folder_path
         if not folder_path.is_dir():
@@ -337,6 +396,9 @@ class ArchiveAction(Action):
         self._folder_path = folder_path
         self._darkroom_path = darkroom_path
         self._archive_path = archive_path
+
+    def log_context(self) -> dict[str, object]:
+        return {"folder": str(self._folder_path)}
 
     def _prepare(self) -> ArchivePlan | PrepareError:
         folder_path = self._folder_path
@@ -457,6 +519,9 @@ class PublishAction(Action):
         self._showroom_path = showroom_path
         self._darkroom_path = darkroom_path
 
+    def log_context(self) -> dict[str, object]:
+        return {"album": str(self._album_path)}
+
     def _prepare(self) -> PublishPlan | PrepareError:
         album_path = self._album_path
         album = recognize_darkroom_album(self._darkroom_path, album_path)
@@ -522,6 +587,13 @@ class NewAlbumAction(Action):
         self._day = day
         self._name = name
 
+    def log_context(self) -> dict[str, object]:
+        return {
+            "darkroom": str(self._darkroom_path),
+            "year": self._year,
+            "month": self._month,
+        }
+
     def _prepare(self) -> ActionPlan | PrepareError | None:
         return None
 
@@ -568,6 +640,9 @@ class RenameAction(Action):
         self._month = month
         self._day = day
         self._name = name
+
+    def log_context(self) -> dict[str, object]:
+        return {"album": str(self._album_path)}
 
     def _prepare(self) -> ActionPlan | PrepareError | None:
         return None
@@ -690,6 +765,9 @@ class OpenExternalAppAction(Action):
     def __init__(self, command_template: str, folder_path: Path) -> None:
         self._command_template = command_template
         self._folder_path = folder_path
+
+    def log_context(self) -> dict[str, object]:
+        return {"folder": str(self._folder_path)}
 
     def _prepare(self) -> ActionPlan | PrepareError | None:
         outcome = _resolve_command(self._command_template, self._folder_path)
