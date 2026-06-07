@@ -126,8 +126,8 @@ class PrepareError(ActionResult):
 class ExecutionResult(ActionResult):
     """Result of executing an action after user confirmation."""
 
-    requires_rescan: bool = True
-    """If True, the GUI rescans the darkroom tree after handling this result."""
+    rescan_node_path: Path | None = None
+    """Subtree root to rescan after this action; None means no rescan needed."""
 
 
 class ActionPlan:
@@ -351,7 +351,6 @@ class TidyAction(Action):
             return ExecutionResult(
                 False,
                 "Internal error: invalid plan for tidy",
-                requires_rescan=False,
             )
 
         conflicts = _find_tidy_conflicts(plan.moves)
@@ -360,14 +359,17 @@ class TidyAction(Action):
                 False,
                 f"Tidy blocked: {len(conflicts)} file conflict(s)",
                 details=_format_tidy_move_lines(plan.folder_path, conflicts),
-                requires_rescan=False,
             )
 
         for src, dst in plan.moves:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
 
-        return ExecutionResult(True, f"Tidied {len(plan.moves)} files")
+        return ExecutionResult(
+            True,
+            f"Tidied {len(plan.moves)} files",
+            rescan_node_path=plan.folder_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -445,13 +447,12 @@ class ArchiveAction(Action):
             return ExecutionResult(
                 False,
                 "Internal error: invalid plan for archive",
-                requires_rescan=False,
             )
         try:
             plan.target_dir.parent.mkdir(parents=True, exist_ok=True)
             merge_result = merge_tree_into_archive(plan.folder_path, plan.target_dir)
         except ValueError as e:
-            return ExecutionResult(False, str(e), requires_rescan=False)
+            return ExecutionResult(False, str(e))
 
         if merge_result.duplicates:
             lines = [
@@ -465,7 +466,6 @@ class ArchiveAction(Action):
                 f"Archive blocked: {len(merge_result.duplicates)} file conflict(s)"
                 "already in archive",
                 details="\n".join(lines),
-                requires_rescan=False,
             )
 
         unrecovered = [i for i in merge_result.issues if not i.recovered]
@@ -477,11 +477,13 @@ class ArchiveAction(Action):
                 False,
                 "Archive finished with errors (see details)",
                 details=details,
+                rescan_node_path=self._folder_path.parent,
             )
 
         return ExecutionResult(
             True,
             f"Archived {merge_result.moved_files} file(s) to {plan.target_dir}",
+            rescan_node_path=self._folder_path.parent,
         )
 
 
@@ -572,7 +574,6 @@ class PublishAction(Action):
             return ExecutionResult(
                 False,
                 "Internal error: invalid plan for publish",
-                requires_rescan=False,
             )
         plan.target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -584,7 +585,11 @@ class PublishAction(Action):
             shutil.move(str(f), str(dest))
             moved += 1
 
-        return ExecutionResult(True, f"Published {moved} files to showroom")
+        return ExecutionResult(
+            True,
+            f"Published {moved} files to showroom",
+            rescan_node_path=self._album_path,
+        )
 
 
 class NewAlbumAction(Action):
@@ -617,7 +622,6 @@ class NewAlbumAction(Action):
             return ExecutionResult(
                 False,
                 "Internal error: new album expects no plan",
-                requires_rescan=False,
             )
         darkroom_path = self._darkroom_path
         year = self._year
@@ -633,7 +637,6 @@ class NewAlbumAction(Action):
             return ExecutionResult(
                 False,
                 format_validation_error(e),
-                requires_rescan=False,
             )
 
         target_dir = darkroom_path / year / album_folder_name
@@ -641,14 +644,19 @@ class NewAlbumAction(Action):
             return ExecutionResult(
                 False,
                 f"Album folder already exists: {target_dir}",
-                requires_rescan=False,
             )
 
         target_dir.mkdir(parents=True, exist_ok=False)
         publish_dir = target_dir / PUBLISH_FOLDER
         publish_dir.mkdir(parents=True, exist_ok=True)
 
-        return ExecutionResult(True, f"Created album: {album_folder_name}")
+        return ExecutionResult(
+            True,
+            f"Created album: {album_folder_name}",
+            # TODO: this rescans the whole year; ideally only the new album
+            # node would be added without a full year subtree walk.
+            rescan_node_path=darkroom_path / year,
+        )
 
 
 class RenameAction(Action):
@@ -679,7 +687,6 @@ class RenameAction(Action):
             return ExecutionResult(
                 False,
                 "Internal error: rename expects no plan",
-                requires_rescan=False,
             )
         album_path = self._album_path
         darkroom_path = self._darkroom_path
@@ -692,7 +699,6 @@ class RenameAction(Action):
             return ExecutionResult(
                 False,
                 "Could not recognize album",
-                requires_rescan=False,
             )
 
         try:
@@ -703,14 +709,12 @@ class RenameAction(Action):
             return ExecutionResult(
                 False,
                 format_validation_error(e),
-                requires_rescan=False,
             )
 
         if new_folder_name == album_path.name:
             return ExecutionResult(
                 True,
                 f"No change: {new_folder_name}",
-                requires_rescan=False,
             )
 
         new_path = album_path.parent / new_folder_name
@@ -718,11 +722,14 @@ class RenameAction(Action):
             return ExecutionResult(
                 False,
                 f"A folder named '{new_folder_name}' already exists",
-                requires_rescan=False,
             )
 
         album_path.rename(new_path)
-        return ExecutionResult(True, f"Renamed to {new_folder_name}")
+        return ExecutionResult(
+            True,
+            f"Renamed to {new_folder_name}",
+            rescan_node_path=album_path.parent,
+        )
 
 
 class _NoImageFound(Exception):
@@ -827,7 +834,6 @@ class OpenExternalAppAction(Action):
                 False,
                 outcome.message,
                 details=outcome.details,
-                requires_rescan=False,
             )
         parts = outcome
         try:
@@ -841,7 +847,6 @@ class OpenExternalAppAction(Action):
                 False,
                 f"Could not start command: {parts}",
                 details=str(e),
-                requires_rescan=False,
             )
 
         try:
@@ -850,19 +855,15 @@ class OpenExternalAppAction(Action):
             return ExecutionResult(
                 True,
                 "Started external application",
-                requires_rescan=False,
             )
 
         if code == 0:
             return ExecutionResult(
                 True,
                 "Started external application",
-                requires_rescan=False,
             )
 
         return ExecutionResult(
             False,
             f"Command exited with code {code}",
-            details=None,
-            requires_rescan=False,
         )

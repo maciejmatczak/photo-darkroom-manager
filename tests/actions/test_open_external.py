@@ -17,9 +17,9 @@ from photo_darkroom_manager.actions import (
 )
 
 
-def test_execution_result_requires_rescan_defaults_true() -> None:
+def test_execution_result_rescan_node_path_defaults_none() -> None:
     result = ExecutionResult(True, "ok")
-    assert result.requires_rescan is True
+    assert result.rescan_node_path is None
 
 
 def test_resolve_command_empty_template(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_open_external_execute_uses_devnull_and_wait(
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
     result = act._execute(None)
     assert result.success
-    assert result.requires_rescan is False
+    assert result.rescan_node_path is None
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
     assert len(procs) == 1
@@ -141,7 +141,7 @@ def test_open_external_execute_timeout_means_still_running(
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
     result = act._execute(None)
     assert result.success
-    assert result.requires_rescan is False
+    assert result.rescan_node_path is None
 
 
 def test_open_external_execute_nonzero_exit(
@@ -159,6 +159,6 @@ def test_open_external_execute_nonzero_exit(
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
     result = act._execute(None)
     assert not result.success
-    assert result.requires_rescan is False
+    assert result.rescan_node_path is None
     assert "7" in result.message
     assert result.details is None

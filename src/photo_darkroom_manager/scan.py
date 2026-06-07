@@ -26,8 +26,12 @@ class DarkroomNode:
     name: str
     node_type: Literal["root", "year", "album", "subfolder"]
     stats: FolderStats = field(default_factory=FolderStats)
+    local_issues: set[str] = field(default_factory=set)
+    """Issues detected directly on this folder (not propagated from children)."""
     issues: set[str] = field(default_factory=set)
+    """Propagated union: local_issues ∪ union(child.issues). Used for display."""
     children: list[DarkroomNode] = field(default_factory=list)
+    parent: DarkroomNode | None = field(default=None, repr=False, compare=False)
 
 
 def _count_files(directory: Path) -> FolderStats:
@@ -74,79 +78,100 @@ def _detect_untidy(directory: Path) -> bool:
     return bool(photos or videos)
 
 
-def _scan_subfolder(path: Path) -> DarkroomNode:
+def _aggregate_issues(node: DarkroomNode) -> None:
+    """Set ``node.issues`` to local_issues ∪ union(child.issues).
+
+    Children must already have their own ``issues`` set.
+    """
+    aggregated = set(node.local_issues)
+    for child in node.children:
+        aggregated |= child.issues
+    node.issues = aggregated
+
+
+def _scan_subfolder(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
     """Scan a subfolder under an album (device folder, PHOTOS, VIDEOS, etc.)."""
     node = DarkroomNode(
         path=path,
         name=path.name,
         node_type="subfolder",
         stats=FolderStats(),
+        parent=parent,
     )
 
     if _detect_untidy(path):
-        node.issues.add("untidy")
+        node.local_issues.add("untidy")
 
     try:
         for child_dir in sorted(path.iterdir()):
             if child_dir.is_dir():
-                node.children.append(_scan_subfolder(child_dir))
+                node.children.append(_scan_subfolder(child_dir, parent=node))
     except PermissionError:
         pass
 
     _rollup_subtree_stats(node)
+    _aggregate_issues(node)
     return node
 
 
-def _scan_album(path: Path) -> DarkroomNode:
+def _scan_album(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
     """Scan an album directory."""
     node = DarkroomNode(
         path=path,
         name=path.name,
         node_type="album",
         stats=FolderStats(),
+        parent=parent,
     )
 
     if _detect_untidy(path):
-        node.issues.add("untidy")
+        node.local_issues.add("untidy")
 
     try:
         for child_dir in sorted(path.iterdir()):
             if child_dir.is_dir():
-                node.children.append(_scan_subfolder(child_dir))
+                node.children.append(_scan_subfolder(child_dir, parent=node))
     except PermissionError:
         pass
 
     _rollup_subtree_stats(node)
+    _aggregate_issues(node)
     return node
 
 
 def _propagate_issues(node: DarkroomNode) -> set[str]:
-    """Recursively propagate issues up: a parent inherits all child issues."""
-    all_issues = set(node.issues)
+    """Recursively propagate issues up: a parent inherits all child issues.
+
+    Also sets ``local_issues`` = ``issues`` at leaf nodes (backwards-compat
+    for callers that build nodes without going through the typed scan helpers).
+    """
+    all_issues: set[str] = set(node.local_issues)
     for child in node.children:
         all_issues |= _propagate_issues(child)
     node.issues = all_issues
     return all_issues
 
 
-def _scan_year(path: Path) -> DarkroomNode:
+def _scan_year(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
     """Scan a year directory."""
     node = DarkroomNode(
         path=path,
         name=path.name,
         node_type="year",
         stats=FolderStats(),
+        parent=parent,
     )
 
     try:
         for child_dir in sorted(path.iterdir()):
             if child_dir.is_dir() and ALBUM_PATTERN.match(child_dir.name):
-                album_node = _scan_album(child_dir)
+                album_node = _scan_album(child_dir, parent=node)
                 node.children.append(album_node)
     except PermissionError:
         pass
 
     _rollup_subtree_stats(node)
+    _aggregate_issues(node)
     return node
 
 
@@ -166,10 +191,59 @@ def scan_darkroom(darkroom_path: Path) -> DarkroomNode:
                 and child_dir.name.isdigit()
                 and len(child_dir.name) == 4
             ):
-                root.children.append(_scan_year(child_dir))
+                root.children.append(_scan_year(child_dir, parent=root))
     except PermissionError:
         pass
 
     _rollup_subtree_stats(root)
-    _propagate_issues(root)
+    _aggregate_issues(root)
     return root
+
+
+def rescan_subtree(node: DarkroomNode) -> None:
+    """Rescan *node* in place: recompute local_issues, rebuild children, roll up stats.
+
+    The node's identity (path, node_type, parent, bound callbacks) is preserved.
+    Children are rebuilt fresh from disk; there is no deep reconciliation, so
+    expansion state within the rescanned subtree is lost.
+    """
+    node.local_issues = set()
+    if _detect_untidy(node.path):
+        node.local_issues.add("untidy")
+
+    # Rebuild children based on node_type rules.
+    new_children: list[DarkroomNode] = []
+    try:
+        for child_dir in sorted(node.path.iterdir()):
+            if not child_dir.is_dir():
+                continue
+            if node.node_type == "year":
+                if ALBUM_PATTERN.match(child_dir.name):
+                    new_children.append(_scan_album(child_dir, parent=node))
+            elif node.node_type in ("album", "subfolder"):
+                new_children.append(_scan_subfolder(child_dir, parent=node))
+            elif (
+                node.node_type == "root"
+                and child_dir.name.isdigit()
+                and len(child_dir.name) == 4
+            ):
+                new_children.append(_scan_year(child_dir, parent=node))
+    except PermissionError:
+        pass
+
+    node.children = new_children
+    _rollup_subtree_stats(node)
+    _aggregate_issues(node)
+
+
+def reaggregate_ancestors(node: DarkroomNode) -> None:
+    """Walk from *node*'s parent to the root, re-aggregating stats and issues.
+
+    Call this after ``rescan_subtree`` to propagate changed totals upward
+    without re-scanning any ancestor's folder on disk.
+    """
+    ancestor = node.parent
+    while ancestor is not None:
+        _rollup_subtree_stats(ancestor)
+        _aggregate_issues(ancestor)
+        ancestor = ancestor.parent

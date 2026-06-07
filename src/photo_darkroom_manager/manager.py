@@ -16,7 +16,12 @@ from photo_darkroom_manager.actions import (
     RenameAction,
     TidyAction,
 )
-from photo_darkroom_manager.scan import DarkroomNode, scan_darkroom
+from photo_darkroom_manager.scan import (
+    DarkroomNode,
+    reaggregate_ancestors,
+    rescan_subtree,
+    scan_darkroom,
+)
 from photo_darkroom_manager.settings import Settings
 
 log = structlog.get_logger(__name__)
@@ -47,6 +52,24 @@ class DarkroomManager:
         self.settings = settings
         self.tree: DarkroomNode | None = None
         self.scanning = False
+
+    def rescan_subtree(self, node: DarkroomNode) -> DarkroomNode:
+        """Rescan *node* in place and reaggregate ancestors. Returns *node*.
+
+        Preferred over ``rescan()`` when only a single subtree has changed
+        (e.g. after a tidy or publish action).  I/O is limited to the node's
+        subtree; ancestor stats/issues are re-aggregated cheaply without disk
+        access.
+        """
+        log.info("rescan_subtree_started", path=str(node.path))
+        started = time.perf_counter()
+        rescan_subtree(node)
+        reaggregate_ancestors(node)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        log.info(
+            "rescan_subtree_complete", path=str(node.path), duration_ms=duration_ms
+        )
+        return node
 
     def rescan(self) -> DarkroomNode:
         root = self.settings.darkroom

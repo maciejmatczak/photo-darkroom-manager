@@ -1,16 +1,12 @@
-"""NiceGUI layout: header bar, recursive expansion tree, action buttons."""
+"""NiceGUI layout: controller/page shell, action orchestration, tree root."""
 
 from __future__ import annotations
 
-import os
-import platform
-import subprocess
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 
 from nicegui import run, ui
-from pydantic import ValidationError
 
 from photo_darkroom_manager.actions import (
     Action,
@@ -19,50 +15,13 @@ from photo_darkroom_manager.actions import (
     ExecutionResult,
     PrepareError,
 )
+from photo_darkroom_manager.gui.node import DarkroomNodeUI
+from photo_darkroom_manager.gui.widgets import (
+    CSS_DIALOG_CARD,
+    CSS_DIALOG_SCROLL_AREA,
+)
 from photo_darkroom_manager.manager import DarkroomManager
-from photo_darkroom_manager.models import AlbumFolderName, format_validation_error
 from photo_darkroom_manager.scan import DarkroomNode
-from photo_darkroom_manager.settings import PUBLISH_FOLDER
-
-# ---------------------------------------------------------------------------
-# Shared style tokens -- single source of truth for recurring props/classes
-# ---------------------------------------------------------------------------
-CSS_TREE_BTN_PROPS = "dense size=sm"
-CSS_NODE_ROW_CLASSES = "items-center gap-2 flex-nowrap"
-CSS_SECTION_GAP = "w-3"
-
-# Modal cards: shared width/layout; scroll variants add max height.
-CSS_DIALOG_CARD = "w-full !max-w-5xl"
-CSS_DIALOG_SCROLL_AREA = "w-full !max-h-96"
-
-CSS_DEPTH_BG = [
-    "bg-white/[3%]",
-    "bg-white/[6%]",
-    "bg-white/[9%]",
-    "bg-white/[12%]",
-    "bg-white/[15%]",
-]
-
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
-
-
-def _open_directory(path: Path) -> None:
-    """Open a directory in the platform's file manager."""
-    p = str(path)
-    system = platform.system()
-    if system == "Windows":
-        os.startfile(p)  # ty: ignore[unresolved-attribute, unused-ignore-comment]
-    elif system == "Darwin":
-        subprocess.Popen(["open", p])
-    else:
-        subprocess.Popen(["xdg-open", p])
-
-
-def _depth_class(depth: int) -> str:
-    return CSS_DEPTH_BG[min(depth, len(CSS_DEPTH_BG) - 1)]
 
 
 def _optional_number_to_day_str(v: float | None) -> str | None:
@@ -77,26 +36,6 @@ def _required_year_month_str(
     if y is None or m is None:
         return None
     return str(int(y)), str(int(m))
-
-
-def _tree_btn(label: str, icon: str, *, on_click, color: str = "primary"):
-    """Create a consistently-styled tree-row action button."""
-    return (
-        ui.button("", icon=icon, color=color, on_click=on_click)
-        .props(CSS_TREE_BTN_PROPS)
-        .on("click.stop", lambda: None)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Node widgets (pure helpers)
-# ---------------------------------------------------------------------------
-
-
-def _stat_badges(node: DarkroomNode) -> None:
-    ui.badge(f"{node.stats.image_count} img", color="blue-4").props("outline")
-    ui.badge(f"{node.stats.video_count} vid", color="teal-4").props("outline")
-    ui.badge(f"{node.stats.other_file_count} other", color="grey-6").props("outline")
 
 
 def _present_action_details(
@@ -126,18 +65,21 @@ def _present_action_details(
     dialog.open()
 
 
-# ---------------------------------------------------------------------------
-# Main UI (per-connection state + refreshable tree)
-# ---------------------------------------------------------------------------
-
-
 class DarkroomUI:
-    """Encapsulates darkroom model, tree expansion state, and NiceGUI refresh."""
+    """Controller and page shell: owns the manager, registry, and action dispatch."""
 
     def __init__(self, manager: DarkroomManager) -> None:
         self.manager = manager
-        self._all_expansions: dict[str, ui.expansion] = {}
-        self._expanded_paths: set[str] = set()
+        self.registry: dict[Path, DarkroomNodeUI] = {}
+        self.expanded_paths: set[str] = set()
+
+    def register(self, path: Path, node_ui: DarkroomNodeUI) -> None:
+        """Called by each DarkroomNodeUI on render to add itself to the registry."""
+        self.registry[path] = node_ui
+
+    # ------------------------------------------------------------------
+    # Rescan: full tree (first load / manual refresh)
+    # ------------------------------------------------------------------
 
     async def rescan_and_refresh(self) -> None:
         """Rescan disk on a worker thread, then refresh the tree UI.
@@ -146,21 +88,76 @@ class DarkroomUI:
         """
         ui.notify("Scanning darkroom...", type="info", timeout=2000)
         await run.io_bound(self.manager.rescan)
+        self.registry.clear()
         self.render_tree.refresh()
         ui.notify("Scan complete", type="positive")
+
+    # ------------------------------------------------------------------
+    # Rescan: scoped (after an action)
+    # ------------------------------------------------------------------
+
+    async def _refresh_scoped(self, rescan_path: Path) -> None:
+        """Rescan the subtree at *rescan_path* and refresh only the affected zones.
+
+        Looks up *rescan_path* in the registry; on a miss (e.g. new year folder)
+        walks parent paths until a registered ancestor is found.  Falls back to a
+        full rescan if no ancestor is registered either.
+        """
+        # Resolve to the nearest registered node.
+        target_ui: DarkroomNodeUI | None = None
+        candidate = rescan_path
+        while True:
+            target_ui = self.registry.get(candidate)
+            if target_ui is not None:
+                break
+            parent = candidate.parent
+            if parent == candidate:
+                # Reached filesystem root without a registry hit.
+                break
+            candidate = parent
+
+        if target_ui is None:
+            # Fallback: full rescan.
+            await self.rescan_and_refresh()
+            return
+
+        # Run the local disk scan off the UI thread.
+        await run.io_bound(self.manager.rescan_subtree, target_ui.node)
+
+        # Refresh the two zones of the target node.
+        target_ui.refresh_children()
+        target_ui.refresh_header()
+
+        # Walk ancestors, refreshing their header zone only (stats/issue badges).
+        ancestor: DarkroomNode | None = target_ui.node.parent
+        while ancestor is not None:
+            ancestor_ui = self.registry.get(ancestor.path)
+            if ancestor_ui is not None:
+                ancestor_ui.refresh_header()
+            ancestor = ancestor.parent
+
+    # ------------------------------------------------------------------
+    # Action dispatch
+    # ------------------------------------------------------------------
 
     async def _handle_execute_result(self, result: ExecutionResult) -> None:
         if result.success:
             ui.notify(result.message, type="positive")
         else:
             ui.notify(result.message, type="negative", timeout=5000)
-        if result.details:
-            after_close = (
-                (lambda: self.rescan_and_refresh()) if result.requires_rescan else None
-            )
-            _present_action_details(result, after_close=after_close)
-        elif result.requires_rescan:
-            await self.rescan_and_refresh()
+
+        if result.rescan_node_path is not None:
+            rescan_path = result.rescan_node_path
+            if result.details:
+                # Show details first; rescan runs after the user dismisses the dialog.
+                _present_action_details(
+                    result,
+                    after_close=lambda _p=rescan_path: self._refresh_scoped(_p),
+                )
+            else:
+                await self._refresh_scoped(rescan_path)
+        elif result.details:
+            _present_action_details(result, after_close=None)
 
     async def run_action(self, action: Action, label: str) -> None:
         ui.notify(label + "...", type="info", timeout=2000)
@@ -198,86 +195,9 @@ class DarkroomUI:
                 ui.button("Confirm", on_click=on_confirm).props("color=primary")
         dialog.open()
 
-    def _show_rename_dialog(self, node: DarkroomNode) -> None:
-        try:
-            parsed = AlbumFolderName.from_str(node.name)
-        except ValidationError:
-            parsed = None
-
-        try:
-            year_default = int(node.path.parent.name)
-        except ValueError:
-            year_default = datetime.now().year
-
-        async def do_rename() -> None:
-            pair = _required_year_month_str(year_input.value, month_input.value)
-            if pair is None:
-                ui.notify("Year and month are required", type="negative", timeout=5000)
-                return
-            y, m = pair
-            d = _optional_number_to_day_str(day_input.value)
-            n = name_input.value.strip() or None
-            try:
-                folder_name = AlbumFolderName(
-                    year=y, month=m, day=d, name=n
-                ).folder_name
-            except ValidationError as e:
-                ui.notify(
-                    format_validation_error(e),
-                    type="negative",
-                    timeout=5000,
-                )
-                return
-            if folder_name == node.name:
-                dialog.close()
-                return
-            dialog.close()
-            await self.run_action(
-                self.manager.rename_action(node.path, y, m, d, n),
-                f"Renaming {node.name}",
-            )
-
-        with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
-            ui.label("Rename Album").classes("text-lg font-bold")
-            if parsed is None:
-                ui.label(
-                    "Current name could not be parsed — fill fields manually."
-                ).classes("text-sm text-grey-7")
-
-            year_input = ui.number(
-                "Year",
-                value=float(year_default),
-                precision=0,
-                min=1000,
-                max=9999,
-            ).classes("w-full")
-            year_input.props("readonly")
-
-            month_val = int(parsed.month) if parsed else None
-            day_val = int(parsed.day) if parsed and parsed.day else None
-
-            month_input = ui.number(
-                "Month",
-                value=float(month_val) if month_val is not None else None,
-                precision=0,
-                min=1,
-                max=12,
-            ).classes("w-full")
-            day_input = ui.number(
-                "Day (optional)",
-                value=float(day_val) if day_val is not None else None,
-                precision=0,
-                min=1,
-                max=31,
-            ).classes("w-full")
-            name_input = ui.input(
-                "Name (optional)",
-                value=parsed.name if parsed and parsed.name else "",
-            ).classes("w-full")
-            with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
-                ui.button("Rename", on_click=do_rename).props("color=primary")
-        dialog.open()
+    # ------------------------------------------------------------------
+    # New-album dialog (controller-level: not node-scoped)
+    # ------------------------------------------------------------------
 
     def _show_new_album_dialog(self) -> None:
         now = datetime.now()
@@ -325,178 +245,36 @@ class DarkroomUI:
                 ui.button("Create", on_click=do_create).props("color=primary")
         dialog.open()
 
-    def _action_buttons(self, node: DarkroomNode) -> None:
-        # Darkroom section
-        ui.icon("camera_roll", size="sm").classes("text-grey-7")
-        _tree_btn(
-            "Open",
-            "folder_open",
-            on_click=lambda _n=node: _open_directory(_n.path),
-        ).tooltip(
-            "Open in file manager"
-            if (is_dir := node.path.is_dir())
-            else "Folder does not exist on disk"
-        ).set_enabled(is_dir)
+    # ------------------------------------------------------------------
+    # Tree: expand / collapse helpers
+    # ------------------------------------------------------------------
 
-        if node.node_type == "year":
-            return
-        if node.name == PUBLISH_FOLDER:
-            return
+    def expand_all(self) -> None:
+        for path, node_ui in self.registry.items():
+            node_ui.set_expanded(True)
+            self.expanded_paths.add(str(path))
 
-        if node.node_type == "album":
-            _tree_btn(
-                "Rename",
-                "edit",
-                on_click=lambda _n=node: self._show_rename_dialog(_n),
-            ).tooltip("Rename album")
+    def collapse_all(self) -> None:
+        for node_ui in self.registry.values():
+            node_ui.set_expanded(False)
+        self.expanded_paths.clear()
 
-        if node.node_type in ("album", "subfolder"):
-            tidy_color = "red" if "untidy" in node.issues else "primary"
-            _tree_btn(
-                "Tidy",
-                "cleaning_services",
-                color=tidy_color,
-                on_click=lambda _n=node: self.run_action(
-                    self.manager.tidy_action(_n.path),
-                    f"Tidying {_n.name}",
-                ),
-            ).tooltip("Tidy folder")
-
-            settings = self.manager.settings
-            if settings.cull_command:
-                cull_cmd = settings.cull_command
-                _tree_btn(
-                    "Cull",
-                    "star_rate",
-                    on_click=lambda _n=node, cmd=cull_cmd: self.run_action(
-                        self.manager.open_external_app_action(cmd, _n.path),
-                        f"Culling {_n.name}",
-                    ),
-                ).tooltip(f"Open in culling app\nCommand: {cull_cmd}")
-            if settings.edit_command:
-                edit_cmd = settings.edit_command
-                _tree_btn(
-                    "Edit",
-                    "tune",
-                    on_click=lambda _n=node, cmd=edit_cmd: self.run_action(
-                        self.manager.open_external_app_action(cmd, _n.path),
-                        f"Editing {_n.name}",
-                    ),
-                ).tooltip(f"Open in editing app\nCommand: {edit_cmd}")
-
-        if node.node_type == "album":
-            _tree_btn(
-                "Publish",
-                "publish",
-                on_click=lambda _n=node: self.run_action(
-                    self.manager.publish_action(_n.path),
-                    f"Publishing {_n.name}",
-                ),
-            ).tooltip("Publish album")
-
-        if node.node_type in ("album", "subfolder"):
-            _tree_btn(
-                "Archive",
-                "archive",
-                on_click=lambda _n=node: self.run_action(
-                    self.manager.archive_action(_n.path),
-                    f"Archiving {_n.name}",
-                ),
-            ).tooltip("Archive folder")
-
-        # Showroom section
-        ui.splitter()
-        ui.icon("photo_library", size="sm").classes("text-grey-7")
-        showroom_target = self.manager.showroom_path(darkroom_path=node.path)
-        _tree_btn(
-            "Open",
-            "folder_open",
-            on_click=lambda _p=showroom_target: _open_directory(_p),
-        ).tooltip(
-            "Open in file manager"
-            if (is_dir := showroom_target.is_dir())
-            else "Showroom folder does not exist yet"
-        ).set_enabled(is_dir)
-
-        # Archive section
-        ui.splitter()
-        ui.icon("archive", size="sm").classes("text-grey-7")
-        archive_target = self.manager.archive_path(darkroom_path=node.path)
-        _tree_btn(
-            "Open",
-            "folder_open",
-            on_click=lambda _p=archive_target: _open_directory(_p),
-        ).tooltip(
-            "Open in file manager"
-            if (is_dir := archive_target.is_dir())
-            else "Archive folder does not exist yet"
-        ).set_enabled(is_dir)
-
-    def _render_node(self, node: DarkroomNode, depth: int = 0) -> None:
-        has_children = bool(node.children)
-        icon = "folder" if node.node_type == "root" else "folder"
-        bg = _depth_class(depth)
-
-        if has_children:
-            path_key = str(node.path)
-            exp = (
-                ui.expansion(value=path_key in self._expanded_paths)
-                .classes(f"w-full {bg}")
-                .props("dense")
-            )
-            self._all_expansions[path_key] = exp
-
-            def _on_toggle(e, key=path_key):
-                if e.value:
-                    self._expanded_paths.add(key)
-                else:
-                    self._expanded_paths.discard(key)
-
-            exp.on_value_change(_on_toggle)
-
-            with (
-                exp.add_slot("header"),
-                ui.row().classes(CSS_NODE_ROW_CLASSES + "  py-2"),
-            ):
-                ui.icon(icon, size="sm").classes("text-grey-7")
-                ui.label(node.name).classes("font-medium")
-                ui.element("div").classes(CSS_SECTION_GAP)
-                _stat_badges(node)
-                ui.element("div").classes(CSS_SECTION_GAP)
-                self._action_buttons(node)
-
-            with exp:
-                for child in node.children:
-                    self._render_node(child, depth + 1)
-        else:
-            with (
-                ui.element("div").classes(f"w-full py-2 pl-4 {bg}"),
-                ui.row().classes(CSS_NODE_ROW_CLASSES),
-            ):
-                ui.icon(icon, size="sm").classes("text-grey-7")
-                ui.label(node.name).classes("font-medium")
-                ui.element("div").classes(CSS_SECTION_GAP)
-                _stat_badges(node)
-                ui.element("div").classes(CSS_SECTION_GAP)
-                self._action_buttons(node)
+    # ------------------------------------------------------------------
+    # Tree root (refreshable -- full rebuild on full rescan only)
+    # ------------------------------------------------------------------
 
     @ui.refreshable_method
     def render_tree(self) -> None:
-        self._all_expansions.clear()
+        self.registry.clear()
         if self.manager.tree is None:
             return
         for year_node in self.manager.tree.children:
-            self._render_node(year_node)
+            year_ui = DarkroomNodeUI(year_node, self, depth=0)
+            year_ui.render()
 
-    def expand_all(self) -> None:
-        for key, exp in self._all_expansions.items():
-            exp.open()
-            self._expanded_paths.add(key)
-
-    def collapse_all(self) -> None:
-        for exp in self._all_expansions.values():
-            exp.close()
-        self._expanded_paths.clear()
+    # ------------------------------------------------------------------
+    # Page builder
+    # ------------------------------------------------------------------
 
     async def build(self) -> None:
         ui.dark_mode(True)
