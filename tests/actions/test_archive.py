@@ -132,6 +132,7 @@ def test_archive_execute_blocked_when_conflict_appears_after_prepare(
 
     result = act._execute(plan)
     assert not result.success
+    assert result.requires_rescan is False
     assert "Archive blocked" in result.message
     assert result.details is not None
 

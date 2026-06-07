@@ -48,6 +48,7 @@ def test_new_album_execute_fails_when_folder_already_exists(tmp_path: Path) -> N
     act = NewAlbumAction(darkroom, "2026", "07", None, "Exists")
     result = act._execute(None)
     assert not result.success
+    assert result.requires_rescan is False
     assert "already exists" in result.message
 
 
@@ -64,6 +65,7 @@ def test_new_album_execute_fails_on_invalid_month(tmp_path: Path) -> None:
     act = NewAlbumAction(darkroom, "2026", "13", None, "X")
     result = act._execute(None)
     assert not result.success
+    assert result.requires_rescan is False
 
 
 def test_rename_execute_renames_album_folder(tmp_path: Path) -> None:
@@ -73,6 +75,7 @@ def test_rename_execute_renames_album_folder(tmp_path: Path) -> None:
     act = RenameAction(old, darkroom, "2026", "03", None, "renamed album")
     result = act._execute(None)
     assert result.success
+    assert result.requires_rescan is True
     new_path = darkroom / "2026" / "2026-03 renamed album"
     assert new_path.is_dir()
     assert not old.exists()
@@ -96,6 +99,7 @@ def test_rename_execute_fails_when_target_name_exists(tmp_path: Path) -> None:
     act = RenameAction(year / "2026-03 source", darkroom, "2026", "03", None, "taken")
     result = act._execute(None)
     assert not result.success
+    assert result.requires_rescan is False
     assert "already exists" in result.message
 
 
@@ -126,4 +130,5 @@ def test_rename_execute_noop_when_unchanged(tmp_path: Path) -> None:
     act = RenameAction(album, darkroom, "2026", "03", None, "same")
     result = act._execute(None)
     assert result.success
+    assert result.requires_rescan is False
     assert album.is_dir()

@@ -199,6 +199,7 @@ def test_tidy_execute_aborts_on_late_conflict(tmp_path: Path) -> None:
     (album / PHOTOS_FOLDER / "a.jpg").write_bytes(b"blocker")
     result = act._execute(plan)
     assert not result.success
+    assert result.requires_rescan is False
     assert "Tidy blocked" in result.message
     assert (album / "a.jpg").exists()
 

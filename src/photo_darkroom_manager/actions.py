@@ -126,7 +126,8 @@ class PrepareError(ActionResult):
 class ExecutionResult(ActionResult):
     """Result of executing an action after user confirmation."""
 
-    pass
+    requires_rescan: bool = True
+    """If True, the GUI rescans the darkroom tree after handling this result."""
 
 
 class ActionPlan:
@@ -347,7 +348,11 @@ class TidyAction(Action):
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
         if not isinstance(plan, TidyPlan):
-            return ExecutionResult(False, "Internal error: invalid plan for tidy")
+            return ExecutionResult(
+                False,
+                "Internal error: invalid plan for tidy",
+                requires_rescan=False,
+            )
 
         conflicts = _find_tidy_conflicts(plan.moves)
         if conflicts:
@@ -355,6 +360,7 @@ class TidyAction(Action):
                 False,
                 f"Tidy blocked: {len(conflicts)} file conflict(s)",
                 details=_format_tidy_move_lines(plan.folder_path, conflicts),
+                requires_rescan=False,
             )
 
         for src, dst in plan.moves:
@@ -436,12 +442,16 @@ class ArchiveAction(Action):
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
         if not isinstance(plan, ArchivePlan):
-            return ExecutionResult(False, "Internal error: invalid plan for archive")
+            return ExecutionResult(
+                False,
+                "Internal error: invalid plan for archive",
+                requires_rescan=False,
+            )
         try:
             plan.target_dir.parent.mkdir(parents=True, exist_ok=True)
             merge_result = merge_tree_into_archive(plan.folder_path, plan.target_dir)
         except ValueError as e:
-            return ExecutionResult(False, str(e))
+            return ExecutionResult(False, str(e), requires_rescan=False)
 
         if merge_result.duplicates:
             lines = [
@@ -455,6 +465,7 @@ class ArchiveAction(Action):
                 f"Archive blocked: {len(merge_result.duplicates)} file conflict(s)"
                 "already in archive",
                 details="\n".join(lines),
+                requires_rescan=False,
             )
 
         unrecovered = [i for i in merge_result.issues if not i.recovered]
@@ -558,7 +569,11 @@ class PublishAction(Action):
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
         if not isinstance(plan, PublishPlan):
-            return ExecutionResult(False, "Internal error: invalid plan for publish")
+            return ExecutionResult(
+                False,
+                "Internal error: invalid plan for publish",
+                requires_rescan=False,
+            )
         plan.target_dir.mkdir(parents=True, exist_ok=True)
 
         moved = 0
@@ -599,7 +614,11 @@ class NewAlbumAction(Action):
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
         if plan is not None:
-            return ExecutionResult(False, "Internal error: new album expects no plan")
+            return ExecutionResult(
+                False,
+                "Internal error: new album expects no plan",
+                requires_rescan=False,
+            )
         darkroom_path = self._darkroom_path
         year = self._year
         month = self._month
@@ -611,11 +630,19 @@ class NewAlbumAction(Action):
                 year=year, month=month, day=day, name=name
             ).folder_name
         except ValidationError as e:
-            return ExecutionResult(False, format_validation_error(e))
+            return ExecutionResult(
+                False,
+                format_validation_error(e),
+                requires_rescan=False,
+            )
 
         target_dir = darkroom_path / year / album_folder_name
         if target_dir.exists():
-            return ExecutionResult(False, f"Album folder already exists: {target_dir}")
+            return ExecutionResult(
+                False,
+                f"Album folder already exists: {target_dir}",
+                requires_rescan=False,
+            )
 
         target_dir.mkdir(parents=True, exist_ok=False)
         publish_dir = target_dir / PUBLISH_FOLDER
@@ -649,7 +676,11 @@ class RenameAction(Action):
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
         if plan is not None:
-            return ExecutionResult(False, "Internal error: rename expects no plan")
+            return ExecutionResult(
+                False,
+                "Internal error: rename expects no plan",
+                requires_rescan=False,
+            )
         album_path = self._album_path
         darkroom_path = self._darkroom_path
         year = self._year
@@ -658,22 +689,36 @@ class RenameAction(Action):
         name = self._name
 
         if recognize_darkroom_album(darkroom_path, album_path) is None:
-            return ExecutionResult(False, "Could not recognize album")
+            return ExecutionResult(
+                False,
+                "Could not recognize album",
+                requires_rescan=False,
+            )
 
         try:
             new_folder_name = AlbumFolderName(
                 year=year, month=month, day=day, name=name
             ).folder_name
         except ValidationError as e:
-            return ExecutionResult(False, format_validation_error(e))
+            return ExecutionResult(
+                False,
+                format_validation_error(e),
+                requires_rescan=False,
+            )
 
         if new_folder_name == album_path.name:
-            return ExecutionResult(True, f"No change: {new_folder_name}")
+            return ExecutionResult(
+                True,
+                f"No change: {new_folder_name}",
+                requires_rescan=False,
+            )
 
         new_path = album_path.parent / new_folder_name
         if new_path.exists():
             return ExecutionResult(
-                False, f"A folder named '{new_folder_name}' already exists"
+                False,
+                f"A folder named '{new_folder_name}' already exists",
+                requires_rescan=False,
             )
 
         album_path.rename(new_path)
@@ -782,6 +827,7 @@ class OpenExternalAppAction(Action):
                 False,
                 outcome.message,
                 details=outcome.details,
+                requires_rescan=False,
             )
         parts = outcome
         try:
@@ -795,18 +841,28 @@ class OpenExternalAppAction(Action):
                 False,
                 f"Could not start command: {parts}",
                 details=str(e),
+                requires_rescan=False,
             )
 
         try:
             code = proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            return ExecutionResult(True, "Started external application")
+            return ExecutionResult(
+                True,
+                "Started external application",
+                requires_rescan=False,
+            )
 
         if code == 0:
-            return ExecutionResult(True, "Started external application")
+            return ExecutionResult(
+                True,
+                "Started external application",
+                requires_rescan=False,
+            )
 
         return ExecutionResult(
             False,
             f"Command exited with code {code}",
             details=None,
+            requires_rescan=False,
         )

@@ -9,11 +9,17 @@ from unittest.mock import Mock
 import pytest
 
 from photo_darkroom_manager.actions import (
+    ExecutionResult,
     OpenExternalAppAction,
     PrepareError,
     _find_first_image,
     _resolve_command,
 )
+
+
+def test_execution_result_requires_rescan_defaults_true() -> None:
+    result = ExecutionResult(True, "ok")
+    assert result.requires_rescan is True
 
 
 def test_resolve_command_empty_template(tmp_path: Path) -> None:
@@ -111,6 +117,7 @@ def test_open_external_execute_uses_devnull_and_wait(
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
     result = act._execute(None)
     assert result.success
+    assert result.requires_rescan is False
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
     assert len(procs) == 1
@@ -134,6 +141,7 @@ def test_open_external_execute_timeout_means_still_running(
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
     result = act._execute(None)
     assert result.success
+    assert result.requires_rescan is False
 
 
 def test_open_external_execute_nonzero_exit(
@@ -151,5 +159,6 @@ def test_open_external_execute_nonzero_exit(
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
     result = act._execute(None)
     assert not result.success
+    assert result.requires_rescan is False
     assert "7" in result.message
     assert result.details is None

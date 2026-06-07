@@ -155,11 +155,11 @@ class DarkroomUI:
         else:
             ui.notify(result.message, type="negative", timeout=5000)
         if result.details:
-            _present_action_details(
-                result,
-                after_close=lambda: self.rescan_and_refresh(),
+            after_close = (
+                (lambda: self.rescan_and_refresh()) if result.requires_rescan else None
             )
-        else:
+            _present_action_details(result, after_close=after_close)
+        elif result.requires_rescan:
             await self.rescan_and_refresh()
 
     async def run_action(self, action: Action, label: str) -> None:
