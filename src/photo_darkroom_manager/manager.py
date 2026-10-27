@@ -10,12 +10,13 @@ import structlog
 from photo_darkroom_manager.actions import (
     Action,
     ArchiveAction,
-    NewAlbumAction,
+    NewBatchAction,
     OpenExternalAppAction,
     PublishAction,
     RenameAction,
     TidyAction,
 )
+from photo_darkroom_manager.paths import translate_path
 from photo_darkroom_manager.scan import (
     DarkroomNode,
     reaggregate_ancestors,
@@ -28,18 +29,14 @@ log = structlog.get_logger(__name__)
 
 
 def _scan_stats(node: DarkroomNode) -> tuple[int, int]:
-    """Return (album_count, nodes_with_issues_count) for a scan tree."""
-    albums = 1 if node.node_type == "album" else 0
+    """Return (batch_count, nodes_with_issues_count) for a scan tree."""
+    batches = 1 if node.node_type == "batch" else 0
     issues = 1 if node.issues else 0
     for child in node.children:
-        child_albums, child_issues = _scan_stats(child)
-        albums += child_albums
+        child_batches, child_issues = _scan_stats(child)
+        batches += child_batches
         issues += child_issues
-    return albums, issues
-
-
-def _translate_path(path: Path, from_root: Path, to_root: Path) -> Path:
-    return to_root / path.relative_to(from_root)
+    return batches, issues
 
 
 def _require_one(*args: Path | None) -> None:
@@ -80,12 +77,12 @@ class DarkroomManager:
             self.tree = scan_darkroom(root)
         finally:
             self.scanning = False
-        albums, issues = _scan_stats(self.tree)
+        batches, issues = _scan_stats(self.tree)
         duration_ms = int((time.perf_counter() - started) * 1000)
         log.info(
             "rescan_complete",
             root=str(root),
-            albums=albums,
+            batches=batches,
             issues=issues,
             duration_ms=duration_ms,
         )
@@ -100,20 +97,24 @@ class DarkroomManager:
         return OpenExternalAppAction(command_template, folder_path)
 
     def archive_action(self, folder_path: Path) -> Action:
-        return ArchiveAction(folder_path, self.settings.darkroom, self.settings.archive)
+        return ArchiveAction(folder_path, self.settings)
 
-    def publish_action(self, album_path: Path) -> Action:
-        return PublishAction(album_path, self.settings.showroom, self.settings.darkroom)
+    def publish_action(self, batch_path: Path) -> Action:
+        return PublishAction(batch_path, self.settings)
 
     def rename_action(
-        self, album_path: Path, year: str, month: str, day: str | None, name: str | None
+        self, batch_path: Path, year: str, month: str, day: str | None, name: str | None
     ) -> Action:
-        return RenameAction(album_path, self.settings.darkroom, year, month, day, name)
+        return RenameAction(batch_path, self.settings.darkroom, year, month, day, name)
 
-    def new_album_action(
-        self, year: str, month: str, day: str | None, name: str | None
+    def new_batch_action(
+        self, device: str, year: str, month: str, day: str | None, name: str | None
     ) -> Action:
-        return NewAlbumAction(self.settings.darkroom, year, month, day, name)
+        return NewBatchAction(self.settings.darkroom, device, year, month, day, name)
+
+    def list_devices(self) -> list[str]:
+        """Discover current device directories, including empty ones."""
+        return sorted(p.name for p in self.settings.darkroom.iterdir() if p.is_dir())
 
     def darkroom_path(
         self,
@@ -123,12 +124,18 @@ class DarkroomManager:
     ) -> Path:
         _require_one(archive_path, showroom_path)
         if archive_path is not None:
-            return _translate_path(
-                archive_path, self.settings.archive, self.settings.darkroom
+            return translate_path(
+                archive_path,
+                roots=self.settings,
+                from_area="archive",
+                to_area="darkroom",
             )
         assert showroom_path is not None
-        return _translate_path(
-            showroom_path, self.settings.showroom, self.settings.darkroom
+        return translate_path(
+            showroom_path,
+            roots=self.settings,
+            from_area="showroom",
+            to_area="darkroom",
         )
 
     def showroom_path(
@@ -139,12 +146,18 @@ class DarkroomManager:
     ) -> Path:
         _require_one(darkroom_path, archive_path)
         if darkroom_path is not None:
-            return _translate_path(
-                darkroom_path, self.settings.darkroom, self.settings.showroom
+            return translate_path(
+                darkroom_path,
+                roots=self.settings,
+                from_area="darkroom",
+                to_area="showroom",
             )
         assert archive_path is not None
-        return _translate_path(
-            archive_path, self.settings.archive, self.settings.showroom
+        return translate_path(
+            archive_path,
+            roots=self.settings,
+            from_area="archive",
+            to_area="showroom",
         )
 
     def archive_path(
@@ -155,10 +168,16 @@ class DarkroomManager:
     ) -> Path:
         _require_one(darkroom_path, showroom_path)
         if darkroom_path is not None:
-            return _translate_path(
-                darkroom_path, self.settings.darkroom, self.settings.archive
+            return translate_path(
+                darkroom_path,
+                roots=self.settings,
+                from_area="darkroom",
+                to_area="archive",
             )
         assert showroom_path is not None
-        return _translate_path(
-            showroom_path, self.settings.showroom, self.settings.archive
+        return translate_path(
+            showroom_path,
+            roots=self.settings,
+            from_area="showroom",
+            to_area="archive",
         )

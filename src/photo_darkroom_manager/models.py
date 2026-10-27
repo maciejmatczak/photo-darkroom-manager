@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from pydantic_core import InitErrorDetails
 
-from photo_darkroom_manager.settings import PUBLISH_FOLDER
+from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
 
 
 def format_validation_error(e: ValidationError) -> str:
@@ -15,25 +15,25 @@ def format_validation_error(e: ValidationError) -> str:
     return "; ".join(parts) if parts else str(e)
 
 
-_ALBUM_FOLDER_PARSE_PATTERN = re.compile(r"^(\d{4})-(\d{2})(?:-(\d{2}))?(?:\s+(.+))?$")
+_BATCH_FOLDER_PARSE_PATTERN = re.compile(r"^(\d{4})-(\d{2})(?:-(\d{2}))?(?:\s+(.+))?$")
 
 # Title segment: ASCII letters, digits, spaces, hyphen, underscore only.
 _TITLE_ALLOWED = re.compile(r"^[a-zA-Z0-9_\- ]+$")
 
 
-def _album_folder_shape_validation_error(raw: str) -> ValidationError:
-    msg = "Album folder name does not match YYYY-MM[-DD][ title]"
+def _batch_folder_shape_validation_error(raw: str) -> ValidationError:
+    msg = "Batch folder name does not match YYYY-MM[-DD][ title]"
     details: InitErrorDetails = {
         "type": "value_error",
         "loc": (),
         "input": raw,
         "ctx": {"error": ValueError(msg)},
     }
-    return ValidationError.from_exception_data("AlbumFolderName", [details])
+    return ValidationError.from_exception_data("BatchFolderName", [details])
 
 
-class AlbumFolderName(BaseModel):
-    """Validated darkroom album folder name components and string form."""
+class BatchFolderName(BaseModel):
+    """Validated darkroom batch folder name components and string form."""
 
     year: str
     month: str
@@ -107,25 +107,53 @@ class AlbumFolderName(BaseModel):
         return date_part
 
     @classmethod
-    def from_str(cls, s: str) -> AlbumFolderName:
+    def from_str(cls, s: str) -> BatchFolderName:
         """Build from a folder name string; raises ``ValidationError`` if invalid."""
         raw = s.strip()
-        m = _ALBUM_FOLDER_PARSE_PATTERN.match(raw)
+        m = _BATCH_FOLDER_PARSE_PATTERN.match(raw)
         if not m:
-            raise _album_folder_shape_validation_error(raw)
+            raise _batch_folder_shape_validation_error(raw)
         year, month, day, name = m.group(1), m.group(2), m.group(3), m.group(4)
         return cls(year=year, month=month, day=day, name=name)
 
 
-class DarkroomYearAlbum(BaseModel):
+def validate_device_name(value: str) -> str:
+    """Normalize a device name that is one portable directory component."""
+    name = value.strip()
+    reserved = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CONIN$",
+        "CONOUT$",
+        *(f"COM{i}" for i in "123456789¹²³"),
+        *(f"LPT{i}" for i in "123456789¹²³"),
+    }
+    if (
+        not name
+        or name in {".", ".."}
+        or name.endswith(".")
+        or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in name)
+        or name.split(".", 1)[0].rstrip().upper() in reserved
+        or name.upper() in {PUBLISH_FOLDER, PHOTOS_FOLDER, VIDEOS_FOLDER}
+    ):
+        raise ValueError(
+            "Device must be a valid folder name, not a path or reserved name"
+        )
+    return name
+
+
+class DarkroomBatch(BaseModel):
+    device: str
     year: str
-    album: str
-    album_path: Path
+    batch: str
+    batch_path: Path
     relative_subpath: Path
 
     @property
     def publish_dir(self) -> Path:
-        return self.album_path / PUBLISH_FOLDER
+        return self.batch_path / PUBLISH_FOLDER
 
     @field_validator("year")
     @classmethod
@@ -137,25 +165,23 @@ class DarkroomYearAlbum(BaseModel):
             raise ValueError(f"year must be 4 digits, got: {v} (length {len(v)})")
         return v
 
-    @field_validator("album")
+    @field_validator("batch")
     @classmethod
-    def validate_album(cls, v: str) -> str:
-        """Validate album folder name shape (same rules as ``AlbumFolderName``)."""
+    def validate_batch(cls, v: str) -> str:
+        """Validate batch folder name shape (same rules as ``BatchFolderName``)."""
         try:
-            AlbumFolderName.from_str(v)
+            BatchFolderName.from_str(v)
         except ValidationError:
             raise ValueError(
-                "album must follow format 'YYYY-MM[-DD][ title]' with month 01-12; "
+                "batch must follow format 'YYYY-MM[-DD][ title]' with month 01-12; "
                 "optional day 01-31 after YYYY-MM-DD; optional space and title "
-                f"(e.g. '2024-01 Album Name', '2024-01', '2024-01-15 Trip'), got: {v!r}"
+                f"(e.g. '2024-01 Batch Name', '2024-01', '2024-01-15 Trip'), got: {v!r}"
             ) from None
         return v
 
 
-def recognize_darkroom_album(
-    darkroom_path: Path, path: Path
-) -> DarkroomYearAlbum | None:
-    """Recognize the darkroom album from the path."""
+def recognize_darkroom_batch(darkroom_path: Path, path: Path) -> DarkroomBatch | None:
+    """Recognize the darkroom batch from the path."""
     try:
         relative_path = path.relative_to(darkroom_path)
     except ValueError:
@@ -165,13 +191,20 @@ def recognize_darkroom_album(
     parts = relative_path.parts
 
     try:
-        year = parts[0]
-        album = parts[1]
+        device = parts[0]
+        year = parts[1]
+        batch = parts[2]
     except IndexError:
         return None
 
-    album_path = darkroom_path / year / album
+    if ".." in parts:
+        raise ValueError("Path must not contain traversal components")
+    batch_path = darkroom_path / device / year / batch
 
-    return DarkroomYearAlbum(
-        year=year, album=album, album_path=album_path, relative_subpath=relative_path
+    return DarkroomBatch(
+        device=device,
+        year=year,
+        batch=batch,
+        batch_path=batch_path,
+        relative_subpath=relative_path,
     )

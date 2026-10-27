@@ -5,16 +5,33 @@ from pathlib import Path
 from photo_darkroom_manager.actions import PrepareError, PublishAction, PublishPlan
 from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
-PUBLISH_ALBUM_BASIC_REL = Path("2026") / "2026-03 publish basic success"
-PUBLISH_ALBUM_OVERWRITE_REL = Path("2026") / "2026-03 publish will overwrite conflicts"
-PUBLISH_ALBUM_FAIL_MISSING_REL = (
-    Path("2026") / "2026-03 publish will fail missing publish dir"
+PUBLISH_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 publish basic success"
+PUBLISH_BATCH_OVERWRITE_REL = (
+    Path("Camera") / "2026" / "2026-03 publish will overwrite conflicts"
 )
-PUBLISH_ALBUM_FAIL_EMPTY_REL = (
-    Path("2026") / "2026-03 publish will fail empty publish dir"
+PUBLISH_BATCH_FAIL_MISSING_REL = (
+    Path("Camera") / "2026" / "2026-03 publish will fail missing publish dir"
 )
-PUBLISH_ALBUM_FAIL_SUBDIR_REL = (
-    Path("2026") / "2026-03 publish will fail publish has subdir"
+PUBLISH_BATCH_FAIL_EMPTY_REL = (
+    Path("Camera") / "2026" / "2026-03 publish will fail empty publish dir"
+)
+PUBLISH_BATCH_FAIL_SUBDIR_REL = (
+    Path("Camera") / "2026" / "2026-03 publish will fail publish has subdir"
+)
+
+
+PUBLISH_BATCH_BASIC_DEST = Path("2026") / "2026-03 publish basic success" / "Camera"
+PUBLISH_BATCH_OVERWRITE_DEST = (
+    Path("2026") / "2026-03 publish will overwrite conflicts" / "Camera"
+)
+PUBLISH_BATCH_FAIL_MISSING_DEST = (
+    Path("2026") / "2026-03 publish will fail missing publish dir" / "Camera"
+)
+PUBLISH_BATCH_FAIL_EMPTY_DEST = (
+    Path("2026") / "2026-03 publish will fail empty publish dir" / "Camera"
+)
+PUBLISH_BATCH_FAIL_SUBDIR_DEST = (
+    Path("2026") / "2026-03 publish will fail publish has subdir" / "Camera"
 )
 
 
@@ -23,20 +40,19 @@ def _file_names_in_publish(publish_dir: Path) -> frozenset[str]:
 
 
 def test_publish_prepare_happy_empty_conflicts(photo_setup) -> None:
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_BASIC_REL)
-    publish_dir = album / PUBLISH_FOLDER
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_BASIC_REL)
+    publish_dir = batch / PUBLISH_FOLDER
     expected_names = _file_names_in_publish(publish_dir)
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     out = act._prepare()
     assert isinstance(out, PublishPlan)
     assert out.conflict_pairs == ()
     assert frozenset(f.name for f in out.files) == expected_names
     expected_target = (
-        photo_setup.settings.showroom / PUBLISH_ALBUM_BASIC_REL
+        photo_setup.settings.showroom / PUBLISH_BATCH_BASIC_DEST
     ).resolve()
     assert out.target_dir == expected_target
 
@@ -44,11 +60,10 @@ def test_publish_prepare_happy_empty_conflicts(photo_setup) -> None:
 def test_publish_prepare_conflict_pairs_when_showroom_has_same_name(
     photo_setup,
 ) -> None:
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_OVERWRITE_REL)
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_OVERWRITE_REL)
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     out = act._prepare()
     assert isinstance(out, PublishPlan)
@@ -59,12 +74,11 @@ def test_publish_prepare_conflict_pairs_when_showroom_has_same_name(
 
 
 def test_publish_prepare_fails_when_publish_dir_missing(photo_setup) -> None:
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_FAIL_MISSING_REL)
-    assert not (album / PUBLISH_FOLDER).exists()
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_FAIL_MISSING_REL)
+    assert not (batch / PUBLISH_FOLDER).exists()
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     out = act._prepare()
     assert isinstance(out, PrepareError)
@@ -72,14 +86,13 @@ def test_publish_prepare_fails_when_publish_dir_missing(photo_setup) -> None:
 
 
 def test_publish_prepare_fails_when_publish_dir_empty(photo_setup) -> None:
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_FAIL_EMPTY_REL)
-    publish_dir = album / PUBLISH_FOLDER
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_FAIL_EMPTY_REL)
+    publish_dir = batch / PUBLISH_FOLDER
     assert publish_dir.is_dir()
     assert _file_names_in_publish(publish_dir) == frozenset()
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     out = act._prepare()
     assert isinstance(out, PrepareError)
@@ -87,14 +100,13 @@ def test_publish_prepare_fails_when_publish_dir_empty(photo_setup) -> None:
 
 
 def test_publish_prepare_fails_when_publish_has_subdir(photo_setup) -> None:
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_FAIL_SUBDIR_REL)
-    publish_dir = album / PUBLISH_FOLDER
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_FAIL_SUBDIR_REL)
+    publish_dir = batch / PUBLISH_FOLDER
     nested = [p for p in publish_dir.iterdir() if p.is_dir()]
     assert nested
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     out = act._prepare()
     assert isinstance(out, PrepareError)
@@ -102,13 +114,12 @@ def test_publish_prepare_fails_when_publish_has_subdir(photo_setup) -> None:
 
 
 def test_publish_execute_moves_files_to_showroom(photo_setup) -> None:
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_BASIC_REL)
-    publish_dir = album / PUBLISH_FOLDER
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_BASIC_REL)
+    publish_dir = batch / PUBLISH_FOLDER
     names = _file_names_in_publish(publish_dir)
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     plan = act._prepare()
     assert isinstance(plan, PublishPlan)
@@ -116,20 +127,19 @@ def test_publish_execute_moves_files_to_showroom(photo_setup) -> None:
     assert result.success
     assert f"{len(names)} file" in result.message
 
-    showroom_album = photo_setup.settings.showroom / PUBLISH_ALBUM_BASIC_REL
+    showroom_batch = photo_setup.settings.showroom / PUBLISH_BATCH_BASIC_DEST
     for name in names:
-        assert (showroom_album / name).is_file()
+        assert (showroom_batch / name).is_file()
         assert not (publish_dir / name).exists()
 
 
 def test_publish_execute_unlinks_dest_then_replaces_on_conflict(photo_setup) -> None:
     """Dest existed in showroom; execute unlinks it then moves from PUBLISH."""
-    album = photo_setup.darkroom_has_dir(PUBLISH_ALBUM_OVERWRITE_REL)
-    publish_dir = album / PUBLISH_FOLDER
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_OVERWRITE_REL)
+    publish_dir = batch / PUBLISH_FOLDER
     act = PublishAction(
-        album,
-        photo_setup.settings.showroom,
-        photo_setup.settings.darkroom,
+        batch,
+        photo_setup.settings,
     )
     plan = act._prepare()
     assert isinstance(plan, PublishPlan)
@@ -140,7 +150,7 @@ def test_publish_execute_unlinks_dest_then_replaces_on_conflict(photo_setup) -> 
 
     dest = (
         photo_setup.settings.showroom
-        / PUBLISH_ALBUM_OVERWRITE_REL
+        / PUBLISH_BATCH_OVERWRITE_DEST
         / "same_name_0001.jpg"
     )
     assert dest.is_file()

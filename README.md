@@ -20,10 +20,33 @@ Refer to [BIG_PICTURE.md](BIG_PICTURE.md) for the conceptual overview.
 
 ## Using the app
 
-The GUI shows your darkroom as a tree. From each album or subfolder you can **Tidy** (move photos/videos into `PHOTOS` / `VIDEOS`), **Archive** (merge into the archive tree), **Publish** (move files from `PUBLISH` into the showroom), **Rename** an album, or create a **New Album** from the toolbar.
+The GUI shows your darkroom as a tree of devices, years, and batches. A
+**batch** is a dated folder (`YYYY-MM[-DD][ title]`) of work from one device;
+its name can stay provisional.
 
-**Example:** For an album at `/.../darkroom/2024/2024-01 Vacation/`, publishing moves files from `PUBLISH/` to `/.../showroom/2024/2024-01 Vacation/`.
+- **New Batch** (toolbar, or on a device row with that device preselected)
+  creates `DEVICE/YEAR/BATCH/PUBLISH/`. Choose an existing device folder or
+  type a new device name.
+- On a batch or subfolder: **Tidy** (move photos/videos into `PHOTOS` /
+  `VIDEOS`) and **Archive** (merge into the archive tree).
+- On a batch: **Publish** (move files from `PUBLISH` into the showroom) and
+  **Rename**. Rename changes only the darkroom folder.
 
+The darkroom is organized by device; archive and showroom are organized by
+year and batch, with one folder per device inside:
+
+```text
+darkroom/Camera/2024/2024-01 Vacation/PUBLISH/
+showroom/2024/2024-01 Vacation/Camera/
+archive/2024/2024-01 Vacation/Camera/
+```
+
+**Example:** publishing the batch above moves files from its `PUBLISH/` to
+`showroom/2024/2024-01 Vacation/Camera/`.
+
+**Migrating from albums:** earlier versions used
+`darkroom/YEAR/ALBUM/DEVICE/`. Move existing folders to
+`darkroom/DEVICE/YEAR/BATCH/` by hand; the app does not migrate them.
 
 ## Development
 

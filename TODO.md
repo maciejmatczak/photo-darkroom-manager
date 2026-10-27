@@ -7,9 +7,13 @@
     - Regular architecture the biggest issue is to have a kind of tight coupling even though we do have a separated back and only classes and models with capability to scan the file system the company with UI is still tight.
     - It seems to me the biggest culprit right now is not having a middleware class some sort of a controller like in the classical MVC so that the actions from the specific note on the UI are also triggering the model recalculation but only from the one node.
     - Example: tidying files in one node should only trigger local node scan, not the whole tree.
-- [ ] album validation: support diactric characters
+- [ ] batch title validation: support diacritic characters (OpenSpec change
+  `album-title-diacritics`, needs rebasing onto `library-layout`)
 - [ ] bug?: config resets on one of the directory going bad
 - [ ] **Cull / edit commands:** replace ad-hoc shell-style parsing (`shlex.split(posix=False)` + stripping outer quotes) with something easier to reason about and harder to misconfigure—e.g. structured settings (executable path + argument list / template per arg), or a documented minimal parser—so we are not fighting Windows quoting and `shlex` semantics forever
 - [ ] enh: modify executed action to be more eager: move/archive if possible, leave only the failed ones for the next run
 - [ ] add support for ignoring a folders with `dr-mng-ignore` file
-- [ ] `scan.py`: review silently skipping folders that do not match the recognized year/album patterns (extra dirs under darkroom or year are invisible today). Consider surfacing **ignored paths** (and optional reasons) as scan metadata or messages so a workflow/report can show what was not treated as an album
+- [ ] `scan.py`: review silently skipping folders that do not match the recognized year/batch patterns (extra dirs under a device or year are invisible today). Consider surfacing **ignored paths** (and optional reasons) as scan metadata or messages so a workflow/report can show what was not treated as a batch
+- [ ] archiving a whole batch leaves its now-empty `DEVICE/YEAR/` folders in the
+  darkroom; decide whether archive should prune them or the tree should hide
+  empty organizational rows

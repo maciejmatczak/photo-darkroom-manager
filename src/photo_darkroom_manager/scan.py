@@ -10,7 +10,7 @@ from typing import Literal
 from photo_darkroom_manager.actions import collect_files_to_tidy
 from photo_darkroom_manager.media import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS
 
-ALBUM_PATTERN = re.compile(r"^\d{4}-\d{2}")
+BATCH_PATTERN = re.compile(r"^\d{4}-\d{2}")
 
 
 @dataclass
@@ -24,7 +24,7 @@ class FolderStats:
 class DarkroomNode:
     path: Path
     name: str
-    node_type: Literal["root", "year", "album", "subfolder"]
+    node_type: Literal["root", "device", "year", "batch", "subfolder"]
     stats: FolderStats = field(default_factory=FolderStats)
     local_issues: set[str] = field(default_factory=set)
     """Issues detected directly on this folder (not propagated from children)."""
@@ -90,7 +90,7 @@ def _aggregate_issues(node: DarkroomNode) -> None:
 
 
 def _scan_subfolder(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
-    """Scan a subfolder under an album (device folder, PHOTOS, VIDEOS, etc.)."""
+    """Scan a subfolder under a batch (PHOTOS, VIDEOS, nested folders, etc.)."""
     node = DarkroomNode(
         path=path,
         name=path.name,
@@ -114,12 +114,12 @@ def _scan_subfolder(path: Path, parent: DarkroomNode | None = None) -> DarkroomN
     return node
 
 
-def _scan_album(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
-    """Scan an album directory."""
+def _scan_batch(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
+    """Scan a batch directory."""
     node = DarkroomNode(
         path=path,
         name=path.name,
-        node_type="album",
+        node_type="batch",
         stats=FolderStats(),
         parent=parent,
     )
@@ -164,12 +164,26 @@ def _scan_year(path: Path, parent: DarkroomNode | None = None) -> DarkroomNode:
 
     try:
         for child_dir in sorted(path.iterdir()):
-            if child_dir.is_dir() and ALBUM_PATTERN.match(child_dir.name):
-                album_node = _scan_album(child_dir, parent=node)
-                node.children.append(album_node)
+            if child_dir.is_dir() and BATCH_PATTERN.match(child_dir.name):
+                batch_node = _scan_batch(child_dir, parent=node)
+                node.children.append(batch_node)
     except PermissionError:
         pass
 
+    _rollup_subtree_stats(node)
+    _aggregate_issues(node)
+    return node
+
+
+def _scan_device(path: Path, parent: DarkroomNode) -> DarkroomNode:
+    """Scan an organizational device folder containing year directories."""
+    node = DarkroomNode(path=path, name=path.name, node_type="device", parent=parent)
+    try:
+        for child in sorted(path.iterdir()):
+            if child.is_dir() and child.name.isdigit() and len(child.name) == 4:
+                node.children.append(_scan_year(child, parent=node))
+    except PermissionError:
+        pass
     _rollup_subtree_stats(node)
     _aggregate_issues(node)
     return node
@@ -186,12 +200,8 @@ def scan_darkroom(darkroom_path: Path) -> DarkroomNode:
 
     try:
         for child_dir in sorted(darkroom_path.iterdir()):
-            if (
-                child_dir.is_dir()
-                and child_dir.name.isdigit()
-                and len(child_dir.name) == 4
-            ):
-                root.children.append(_scan_year(child_dir, parent=root))
+            if child_dir.is_dir():
+                root.children.append(_scan_device(child_dir, parent=root))
     except PermissionError:
         pass
 
@@ -208,7 +218,7 @@ def rescan_subtree(node: DarkroomNode) -> None:
     expansion state within the rescanned subtree is lost.
     """
     node.local_issues = set()
-    if _detect_untidy(node.path):
+    if node.node_type in ("batch", "subfolder") and _detect_untidy(node.path):
         node.local_issues.add("untidy")
 
     # Rebuild children based on node_type rules.
@@ -218,12 +228,14 @@ def rescan_subtree(node: DarkroomNode) -> None:
             if not child_dir.is_dir():
                 continue
             if node.node_type == "year":
-                if ALBUM_PATTERN.match(child_dir.name):
-                    new_children.append(_scan_album(child_dir, parent=node))
-            elif node.node_type in ("album", "subfolder"):
+                if BATCH_PATTERN.match(child_dir.name):
+                    new_children.append(_scan_batch(child_dir, parent=node))
+            elif node.node_type in ("batch", "subfolder"):
                 new_children.append(_scan_subfolder(child_dir, parent=node))
+            elif node.node_type == "root":
+                new_children.append(_scan_device(child_dir, parent=node))
             elif (
-                node.node_type == "root"
+                node.node_type == "device"
                 and child_dir.name.isdigit()
                 and len(child_dir.name) == 4
             ):

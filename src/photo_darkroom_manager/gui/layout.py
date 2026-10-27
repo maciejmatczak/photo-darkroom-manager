@@ -21,6 +21,7 @@ from photo_darkroom_manager.gui.widgets import (
     CSS_DIALOG_SCROLL_AREA,
 )
 from photo_darkroom_manager.manager import DarkroomManager
+from photo_darkroom_manager.models import validate_device_name
 from photo_darkroom_manager.scan import DarkroomNode
 
 
@@ -196,13 +197,19 @@ class DarkroomUI:
         dialog.open()
 
     # ------------------------------------------------------------------
-    # New-album dialog (controller-level: not node-scoped)
+    # New-batch dialog (controller-level: not node-scoped)
     # ------------------------------------------------------------------
 
-    def _show_new_album_dialog(self) -> None:
+    def show_new_batch_dialog(self, device: str | None = None) -> None:
+        """Open the New Batch form; *device* preselects a device row's device."""
         now = datetime.now()
 
         async def do_create() -> None:
+            try:
+                device = validate_device_name(device_input.value or "")
+            except ValueError as e:
+                ui.notify(str(e), type="negative", timeout=5000)
+                return
             pair = _required_year_month_str(year_input.value, month_input.value)
             if pair is None:
                 ui.notify("Year and month are required", type="negative", timeout=5000)
@@ -212,12 +219,24 @@ class DarkroomUI:
             n = name_input.value.strip() or None
             dialog.close()
             await self.run_action(
-                self.manager.new_album_action(y, m, d, n),
-                "Creating album",
+                self.manager.new_batch_action(device, y, m, d, n),
+                "Creating batch",
             )
+            dialog.delete()
+
+        def do_cancel() -> None:
+            dialog.close()
+            dialog.delete()
 
         with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
-            ui.label("New Album").classes("text-lg font-bold")
+            ui.label("New Batch").classes("text-lg font-bold")
+            device_input = ui.select(
+                self.manager.list_devices(),
+                label="Device",
+                value=device,
+                with_input=True,
+                new_value_mode="add-unique",
+            ).classes("w-full")
             year_input = ui.number(
                 "Year",
                 value=float(now.year),
@@ -241,7 +260,7 @@ class DarkroomUI:
             ).classes("w-full")
             name_input = ui.input("Name (optional)").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Cancel", on_click=do_cancel).props("flat")
                 ui.button("Create", on_click=do_create).props("color=primary")
         dialog.open()
 
@@ -268,9 +287,9 @@ class DarkroomUI:
         self.registry.clear()
         if self.manager.tree is None:
             return
-        for year_node in self.manager.tree.children:
-            year_ui = DarkroomNodeUI(year_node, self, depth=0)
-            year_ui.render()
+        for device_node in self.manager.tree.children:
+            device_ui = DarkroomNodeUI(device_node, self, depth=0)
+            device_ui.render()
 
     # ------------------------------------------------------------------
     # Page builder
@@ -293,9 +312,9 @@ class DarkroomUI:
                 "dense"
             ).tooltip("Collapse All")
             ui.button(
-                "New Album",
+                "New Batch",
                 icon="add",
-                on_click=self._show_new_album_dialog,
+                on_click=lambda: self.show_new_batch_dialog(),
             ).props("dense")
             ui.button(
                 "Refresh",
