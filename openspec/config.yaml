@@ -18,3 +18,8 @@ schema: spec-driven
 #       - Always include a "Non-goals" section
 #     tasks:
 #       - Break tasks into chunks of max 2 hours
+
+rules:
+  tasks:
+    - Tasks must not include version control operations (commit, push,
+      merge, branch); the developer decides when and how to commit.
