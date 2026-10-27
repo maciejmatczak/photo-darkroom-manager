@@ -29,11 +29,11 @@ Where all of the files from multiple sources are dropped off for further process
 - flow
 	- review the files
 	- recognize events
-	- move files from one event into a Darkroom album
+	- move files from one event into a Darkroom batch of that device
 - operations
 	- "tidy" - put files in year/month folders + PHOTOS/VIDEOS?
 - transition
-	- to Darkroom Album
+	- to Darkroom Batch
 
 ### Darkroom
 
@@ -41,20 +41,21 @@ The place for edits and active work for photos culling end developing. After job
 
 ```
 /.../<DARKROOM>/
-	<YEAR>/
-		<ALBUM>/
-			PUBLISH/
-			<DEVICE>/
+	<DEVICE>/
+		<YEAR>/
+			<BATCH>/
+				PUBLISH/
 				PHOTOS/
 				VIDEOS/
 ```
 
 - input
-	- moved files from Drop off into `DEVICE` folder
+	- moved files from Drop off into a `BATCH` of their `DEVICE`
 - location: PC
 - definitions
 	- `DARKROOM` - Darkroom directory
-	- `ALBUM` - must include date and optional name
+	- `BATCH` - must include date and optional name; may be provisional
+	- `DEVICE` - groups active work by the device it came from
 	- `PHOTOS/`, `VIDEOS/` - additional buckets as photos and videos are ingested differently
 	- `PUBLISH/` - folder containing
 - backup
@@ -65,7 +66,7 @@ The place for edits and active work for photos culling end developing. After job
 - flow
 	- tidy files
 		- put files in PHOTOS/VIDEOS
-			- this stage explicitly it should be done automatically when creating an album?
+			- this stage explicitly it should be done automatically when creating a batch?
 	- photos/video cull, development
 	- if done, export to `PUBLISH/`
 - operations
@@ -81,11 +82,12 @@ The golden catalog of all of photos in videos in a known structure.
 ```
 /.../<SHOWROOM>/
 	<YEAR>/
-		<ALBUM>/
+		<BATCH>/
+			<DEVICE>/
 ```
 
 - input
-	- moved files from Darkroom `PUBLISH` into an `ALBUM`
+	- moved files from Darkroom `PUBLISH` into the `BATCH`'s `DEVICE` folder
 - location: NAS
 - definitions
 	- `SHOWROOM` - Showroom directory
@@ -105,7 +107,7 @@ Archival of all of the photos, used or not used to the Showroom.
 ```
 /.../<ARCHIVE>/
 	<YEAR>/
-		<ALBUM>/
+		<BATCH>/
 			<DEVICE>/
 				PHOTOS/
 				VIDEOS/

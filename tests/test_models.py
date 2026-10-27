@@ -6,162 +6,178 @@ import pytest
 from pydantic import ValidationError
 
 from photo_darkroom_manager.models import (
-    AlbumFolderName,
-    DarkroomYearAlbum,
-    recognize_darkroom_album,
+    BatchFolderName,
+    DarkroomBatch,
+    recognize_darkroom_batch,
 )
 from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
 
-def test_darkroom_year_album_valid() -> None:
-    p = Path("/dr/2024/2024-01 Album")
-    a = DarkroomYearAlbum(
+def test_darkroom_year_batch_valid() -> None:
+    p = Path("/dr/Camera/2024/2024-01 Batch")
+    a = DarkroomBatch(
+        device="Camera",
         year="2024",
-        album="2024-01 Album",
-        album_path=p,
-        relative_subpath=Path("2024/2024-01 Album"),
+        batch="2024-01 Batch",
+        batch_path=p,
+        relative_subpath=Path("Camera/2024/2024-01 Batch"),
     )
     assert a.year == "2024"
     assert a.publish_dir == p / PUBLISH_FOLDER
 
 
-def test_darkroom_year_album_valid_with_day() -> None:
-    p = Path("/dr/2026/2026-04-15 Spring Outing")
-    a = DarkroomYearAlbum(
+def test_darkroom_year_batch_valid_with_day() -> None:
+    p = Path("/dr/Camera/2026/2026-04-15 Spring Outing")
+    a = DarkroomBatch(
+        device="Camera",
         year="2026",
-        album="2026-04-15 Spring Outing",
-        album_path=p,
+        batch="2026-04-15 Spring Outing",
+        batch_path=p,
         relative_subpath=Path("2026/2026-04-15 Spring Outing"),
     )
-    assert a.album == "2026-04-15 Spring Outing"
+    assert a.batch == "2026-04-15 Spring Outing"
 
 
 @pytest.mark.parametrize(
     "year",
     ["abcd", "24", "20245"],
 )
-def test_darkroom_year_album_invalid_year(year: str) -> None:
-    album = "2024-01 x"
+def test_darkroom_year_batch_invalid_year(year: str) -> None:
+    batch = "2024-01 x"
     with pytest.raises(ValidationError, match="year"):
-        DarkroomYearAlbum(
+        DarkroomBatch(
+            device="Camera",
             year=year,
-            album=album,
-            album_path=Path("/dr") / year / album,
-            relative_subpath=Path(year) / album,
+            batch=batch,
+            batch_path=Path("/dr") / "Camera" / year / batch,
+            relative_subpath=Path("Camera") / year / batch,
         )
 
 
 @pytest.mark.parametrize(
-    "album",
-    ["01 Album", "foo", "2024-1 x"],
+    "batch",
+    ["01 Batch", "foo", "2024-1 x"],
 )
-def test_darkroom_year_album_invalid_album_format(album: str) -> None:
+def test_darkroom_year_batch_invalid_batch_format(batch: str) -> None:
     year = "2024"
-    with pytest.raises(ValidationError, match="album"):
-        DarkroomYearAlbum(
+    with pytest.raises(ValidationError, match="batch"):
+        DarkroomBatch(
+            device="Camera",
             year=year,
-            album=album,
-            album_path=Path("/dr") / year / album,
-            relative_subpath=Path(year) / album,
+            batch=batch,
+            batch_path=Path("/dr") / "Camera" / year / batch,
+            relative_subpath=Path("Camera") / year / batch,
         )
 
 
-def test_darkroom_year_album_rejects_non_calendar_month() -> None:
+def test_darkroom_year_batch_rejects_non_calendar_month() -> None:
     """Invalid month (not 01–12) is rejected."""
-    p = Path("/dr/2024/2024-13 Album")
-    with pytest.raises(ValidationError, match="album"):
-        DarkroomYearAlbum(
+    p = Path("/dr/Camera/2024/2024-13 Batch")
+    with pytest.raises(ValidationError, match="batch"):
+        DarkroomBatch(
+            device="Camera",
             year="2024",
-            album="2024-13 Album",
-            album_path=p,
-            relative_subpath=Path("2024/2024-13 Album"),
+            batch="2024-13 Batch",
+            batch_path=p,
+            relative_subpath=Path("Camera/2024/2024-13 Batch"),
         )
 
 
-def test_darkroom_year_album_rejects_glued_suffix_after_month() -> None:
+def test_darkroom_year_batch_rejects_glued_suffix_after_month() -> None:
     """Characters glued after YYYY-MM without a space are rejected."""
-    p = Path("/dr/2024/2024-01foo")
-    with pytest.raises(ValidationError, match="album"):
-        DarkroomYearAlbum(
+    p = Path("/dr/Camera/2024/2024-01foo")
+    with pytest.raises(ValidationError, match="batch"):
+        DarkroomBatch(
+            device="Camera",
             year="2024",
-            album="2024-01foo",
-            album_path=p,
-            relative_subpath=Path("2024/2024-01foo"),
+            batch="2024-01foo",
+            batch_path=p,
+            relative_subpath=Path("Camera/2024/2024-01foo"),
         )
 
 
-def test_recognize_darkroom_album_happy_path() -> None:
+def test_recognize_darkroom_batch_happy_path() -> None:
     dr = Path("/dr")
-    path = dr / "2024" / "2024-01 Test"
-    album = recognize_darkroom_album(dr, path)
-    assert album is not None
-    assert album.year == "2024"
-    assert album.album == "2024-01 Test"
-    assert album.album_path == path
-    assert album.relative_subpath == Path("2024/2024-01 Test")
+    path = dr / "Camera" / "2024" / "2024-01 Test"
+    batch = recognize_darkroom_batch(dr, path)
+    assert batch is not None
+    assert batch.year == "2024"
+    assert batch.batch == "2024-01 Test"
+    assert batch.batch_path == path
+    assert batch.relative_subpath == Path("Camera/2024/2024-01 Test")
 
 
-def test_recognize_darkroom_album_deeper_subpath() -> None:
+def test_recognize_darkroom_batch_deeper_subpath() -> None:
     dr = Path("/dr")
-    path = dr / "2024" / "2024-01 A" / "PHOTOS" / "nested"
-    album = recognize_darkroom_album(dr, path)
-    assert album is not None
-    assert album.relative_subpath == Path("2024/2024-01 A/PHOTOS/nested")
-    assert album.album_path == dr / "2024" / "2024-01 A"
+    path = dr / "Camera" / "2024" / "2024-01 A" / "PHOTOS" / "nested"
+    batch = recognize_darkroom_batch(dr, path)
+    assert batch is not None
+    assert batch.relative_subpath == Path("Camera/2024/2024-01 A/PHOTOS/nested")
+    assert batch.batch_path == dr / "Camera" / "2024" / "2024-01 A"
 
 
-def test_recognize_darkroom_album_too_shallow_returns_none(tmp_path: Path) -> None:
+@pytest.mark.parametrize("rel", ["", "Camera", "Camera/2024"])
+def test_recognize_darkroom_batch_too_shallow_returns_none(
+    tmp_path: Path, rel: str
+) -> None:
     dr = tmp_path / "dr"
-    dr.mkdir()
-    (dr / "2024").mkdir()
-    assert recognize_darkroom_album(dr, dr / "2024") is None
+    assert recognize_darkroom_batch(dr, dr / rel) is None
 
 
-def test_recognize_darkroom_album_not_under_darkroom_raises(tmp_path: Path) -> None:
+@pytest.mark.parametrize("rel", ["Camera/24/2024-01", "Camera/2024/not a batch"])
+def test_recognize_darkroom_batch_invalid_component_raises(
+    tmp_path: Path, rel: str
+) -> None:
+    dr = tmp_path / "dr"
+    with pytest.raises(ValueError):
+        recognize_darkroom_batch(dr, dr / rel)
+
+
+def test_recognize_darkroom_batch_not_under_darkroom_raises(tmp_path: Path) -> None:
     dr = tmp_path / "dr"
     other = tmp_path / "other"
     dr.mkdir()
     other.mkdir()
     with pytest.raises(ValueError, match="not a subpath"):
-        recognize_darkroom_album(dr, other)
+        recognize_darkroom_batch(dr, other)
 
 
-def test_album_folder_name_round_trip_date_only() -> None:
-    a = AlbumFolderName(year="2024", month="01", day=None, name=None)
+def test_batch_folder_name_round_trip_date_only() -> None:
+    a = BatchFolderName(year="2024", month="01", day=None, name=None)
     assert a.folder_name == "2024-01"
-    p = AlbumFolderName.from_str(a.folder_name)
+    p = BatchFolderName.from_str(a.folder_name)
     assert p.year == "2024"
     assert p.month == "01"
     assert p.day is None
     assert p.name is None
 
 
-def test_album_folder_name_round_trip_with_day_and_title() -> None:
-    a = AlbumFolderName(year="2026", month="04", day="15", name="Spring Outing")
+def test_batch_folder_name_round_trip_with_day_and_title() -> None:
+    a = BatchFolderName(year="2026", month="04", day="15", name="Spring Outing")
     assert a.folder_name == "2026-04-15 Spring Outing"
-    p = AlbumFolderName.from_str(a.folder_name)
+    p = BatchFolderName.from_str(a.folder_name)
     assert p.folder_name == a.folder_name
 
 
-def test_album_folder_name_normalizes_month_and_day() -> None:
-    a = AlbumFolderName(year="2024", month="4", day="5", name=None)
+def test_batch_folder_name_normalizes_month_and_day() -> None:
+    a = BatchFolderName(year="2024", month="4", day="5", name=None)
     assert a.month == "04"
     assert a.day == "05"
     assert a.folder_name == "2024-04-05"
 
 
-def test_album_folder_name_from_str_raises_for_invalid_shape() -> None:
+def test_batch_folder_name_from_str_raises_for_invalid_shape() -> None:
     with pytest.raises(ValidationError):
-        AlbumFolderName.from_str("not-a-date")
+        BatchFolderName.from_str("not-a-date")
     with pytest.raises(ValidationError):
-        AlbumFolderName.from_str("2024-01foo")
+        BatchFolderName.from_str("2024-01foo")
 
 
-def test_album_folder_name_from_str_raises_when_values_invalid() -> None:
+def test_batch_folder_name_from_str_raises_when_values_invalid() -> None:
     with pytest.raises(ValidationError):
-        AlbumFolderName.from_str("2024-13-01")
+        BatchFolderName.from_str("2024-13-01")
 
 
-def test_album_folder_name_rejects_forbidden_title_chars() -> None:
+def test_batch_folder_name_rejects_forbidden_title_chars() -> None:
     with pytest.raises(ValidationError):
-        AlbumFolderName(year="2024", month="01", day=None, name="bad:name")
+        BatchFolderName(year="2024", month="01", day=None, name="bad:name")

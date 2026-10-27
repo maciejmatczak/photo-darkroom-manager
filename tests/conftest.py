@@ -48,6 +48,10 @@ def photo_setup(tmp_path: Path, data_dir: Path) -> PhotoSetup:
     root = tmp_path / "workspace"
     shutil.copytree(data_dir, root)
     _remove_gitkeep_files(root)
+    (
+        root
+        / "darkroom/Camera/2026/2026-03 publish will fail empty publish dir/PUBLISH"
+    ).mkdir(exist_ok=True)
     return PhotoSetup(
         settings=Settings(
             darkroom=root / "darkroom",

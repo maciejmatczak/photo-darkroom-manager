@@ -1,4 +1,4 @@
-"""Core action logic -- prepare/execute plans for tidy, archive, publish, albums."""
+"""Core action logic -- prepare/execute plans for tidy, archive, publish, batches."""
 
 from __future__ import annotations
 
@@ -25,10 +25,12 @@ from photo_darkroom_manager.media import (
     is_file_a_video,
 )
 from photo_darkroom_manager.models import (
-    AlbumFolderName,
+    BatchFolderName,
     format_validation_error,
-    recognize_darkroom_album,
+    recognize_darkroom_batch,
+    validate_device_name,
 )
+from photo_darkroom_manager.paths import LibraryRoots, translate_path
 from photo_darkroom_manager.settings import (
     PHOTOS_FOLDER,
     PUBLISH_FOLDER,
@@ -398,23 +400,28 @@ class ArchiveAction(Action):
     def __init__(
         self,
         folder_path: Path,
-        darkroom_path: Path,
-        archive_path: Path,
+        roots: LibraryRoots,
     ) -> None:
         self._folder_path = folder_path
-        self._darkroom_path = darkroom_path
-        self._archive_path = archive_path
+        self._roots = roots
+        self._darkroom_path = roots.darkroom
+        self._archive_path = roots.archive
 
     def log_context(self) -> dict[str, object]:
         return {"folder": str(self._folder_path)}
 
     def _prepare(self) -> ArchivePlan | PrepareError:
         folder_path = self._folder_path
-        album = recognize_darkroom_album(self._darkroom_path, folder_path)
-        if album is None:
-            return PrepareError(False, "Could not recognize album for this path")
+        batch = recognize_darkroom_batch(self._darkroom_path, folder_path)
+        if batch is None:
+            return PrepareError(False, "Could not recognize batch for this path")
 
-        target_dir = self._archive_path / album.relative_subpath
+        target_dir = translate_path(
+            folder_path,
+            roots=self._roots,
+            from_area="darkroom",
+            to_area="archive",
+        )
 
         try:
             leaves, duplicates = preview_merge_into_archive(folder_path, target_dir)
@@ -489,7 +496,7 @@ class ArchiveAction(Action):
 
 @dataclass(frozen=True)
 class PublishPlan(ActionPlan):
-    album_path: Path
+    batch_path: Path
     showroom_path: Path
     darkroom_path: Path
     files: tuple[Path, ...]
@@ -502,7 +509,7 @@ class PublishPlan(ActionPlan):
             f"Darkroom: {self.darkroom_path}",
             f"Showroom: {self.showroom_path}",
             "",
-            f"Album: {self.album_path.relative_to(self.darkroom_path)}",
+            f"Batch: {self.batch_path.relative_to(self.darkroom_path)}",
             f"Showroom: {self.target_dir.relative_to(self.showroom_path)}",
             "",
             f"Files to publish: {len(self.files)}",
@@ -524,24 +531,24 @@ class PublishPlan(ActionPlan):
 class PublishAction(Action):
     def __init__(
         self,
-        album_path: Path,
-        showroom_path: Path,
-        darkroom_path: Path,
+        batch_path: Path,
+        roots: LibraryRoots,
     ) -> None:
-        self._album_path = album_path
-        self._showroom_path = showroom_path
-        self._darkroom_path = darkroom_path
+        self._batch_path = batch_path
+        self._roots = roots
+        self._showroom_path = roots.showroom
+        self._darkroom_path = roots.darkroom
 
     def log_context(self) -> dict[str, object]:
-        return {"album": str(self._album_path)}
+        return {"batch": str(self._batch_path)}
 
     def _prepare(self) -> PublishPlan | PrepareError:
-        album_path = self._album_path
-        album = recognize_darkroom_album(self._darkroom_path, album_path)
-        if album is None:
-            return PrepareError(False, "Could not recognize album")
+        batch_path = self._batch_path
+        batch = recognize_darkroom_batch(self._darkroom_path, batch_path)
+        if batch is None:
+            return PrepareError(False, "Could not recognize batch")
 
-        publish_dir = album_path / PUBLISH_FOLDER
+        publish_dir = batch_path / PUBLISH_FOLDER
         if not publish_dir.exists():
             return PrepareError(False, "PUBLISH directory does not exist")
 
@@ -553,7 +560,12 @@ class PublishAction(Action):
         if dirs_in_publish:
             return PrepareError(False, "PUBLISH directory contains subdirectories")
 
-        target_dir = self._showroom_path / album.year / album.album
+        target_dir = translate_path(
+            batch.batch_path,
+            roots=self._roots,
+            from_area="darkroom",
+            to_area="showroom",
+        )
         conflicts: list[tuple[Path, Path]] = []
         for f in files:
             dest = target_dir / f.name
@@ -561,7 +573,7 @@ class PublishAction(Action):
                 conflicts.append((f, dest))
 
         return PublishPlan(
-            album_path=album_path,
+            batch_path=batch_path,
             showroom_path=self._showroom_path,
             darkroom_path=self._darkroom_path,
             files=tuple(files),
@@ -588,20 +600,22 @@ class PublishAction(Action):
         return ExecutionResult(
             True,
             f"Published {moved} files to showroom",
-            rescan_node_path=self._album_path,
+            rescan_node_path=self._batch_path,
         )
 
 
-class NewAlbumAction(Action):
+class NewBatchAction(Action):
     def __init__(
         self,
         darkroom_path: Path,
+        device: str,
         year: str,
         month: str,
         day: str | None,
         name: str | None,
     ) -> None:
         self._darkroom_path = darkroom_path
+        self._device = device
         self._year = year
         self._month = month
         self._day = day
@@ -610,6 +624,7 @@ class NewAlbumAction(Action):
     def log_context(self) -> dict[str, object]:
         return {
             "darkroom": str(self._darkroom_path),
+            "device": self._device,
             "year": self._year,
             "month": self._month,
         }
@@ -621,7 +636,7 @@ class NewAlbumAction(Action):
         if plan is not None:
             return ExecutionResult(
                 False,
-                "Internal error: new album expects no plan",
+                "Internal error: new batch expects no plan",
             )
         darkroom_path = self._darkroom_path
         year = self._year
@@ -630,7 +645,8 @@ class NewAlbumAction(Action):
         name = self._name
 
         try:
-            album_folder_name = AlbumFolderName(
+            device = validate_device_name(self._device)
+            batch_folder_name = BatchFolderName(
                 year=year, month=month, day=day, name=name
             ).folder_name
         except ValidationError as e:
@@ -638,38 +654,44 @@ class NewAlbumAction(Action):
                 False,
                 format_validation_error(e),
             )
+        except ValueError as e:
+            return ExecutionResult(False, str(e))
 
-        target_dir = darkroom_path / year / album_folder_name
+        target_dir = darkroom_path / device / year / batch_folder_name
+        if not target_dir.resolve().is_relative_to(darkroom_path.resolve()):
+            return ExecutionResult(False, "Batch path must remain inside darkroom")
         if target_dir.exists():
             return ExecutionResult(
                 False,
-                f"Album folder already exists: {target_dir}",
+                f"Batch folder already exists: {target_dir}",
             )
 
-        target_dir.mkdir(parents=True, exist_ok=False)
-        publish_dir = target_dir / PUBLISH_FOLDER
-        publish_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=False)
+            (target_dir / PUBLISH_FOLDER).mkdir()
+        except OSError as e:
+            return ExecutionResult(False, f"Could not create batch folder: {e}")
 
         return ExecutionResult(
             True,
-            f"Created album: {album_folder_name}",
-            # TODO: this rescans the whole year; ideally only the new album
+            f"Created batch: {batch_folder_name}",
+            # TODO: this rescans the whole year; ideally only the new batch
             # node would be added without a full year subtree walk.
-            rescan_node_path=darkroom_path / year,
+            rescan_node_path=target_dir.parent,
         )
 
 
 class RenameAction(Action):
     def __init__(
         self,
-        album_path: Path,
+        batch_path: Path,
         darkroom_path: Path,
         year: str,
         month: str,
         day: str | None,
         name: str | None,
     ) -> None:
-        self._album_path = album_path
+        self._batch_path = batch_path
         self._darkroom_path = darkroom_path
         self._year = year
         self._month = month
@@ -677,7 +699,7 @@ class RenameAction(Action):
         self._name = name
 
     def log_context(self) -> dict[str, object]:
-        return {"album": str(self._album_path)}
+        return {"batch": str(self._batch_path)}
 
     def _prepare(self) -> ActionPlan | PrepareError | None:
         return None
@@ -688,21 +710,21 @@ class RenameAction(Action):
                 False,
                 "Internal error: rename expects no plan",
             )
-        album_path = self._album_path
+        batch_path = self._batch_path
         darkroom_path = self._darkroom_path
         year = self._year
         month = self._month
         day = self._day
         name = self._name
 
-        if recognize_darkroom_album(darkroom_path, album_path) is None:
+        if recognize_darkroom_batch(darkroom_path, batch_path) is None:
             return ExecutionResult(
                 False,
-                "Could not recognize album",
+                "Could not recognize batch",
             )
 
         try:
-            new_folder_name = AlbumFolderName(
+            new_folder_name = BatchFolderName(
                 year=year, month=month, day=day, name=name
             ).folder_name
         except ValidationError as e:
@@ -711,24 +733,24 @@ class RenameAction(Action):
                 format_validation_error(e),
             )
 
-        if new_folder_name == album_path.name:
+        if new_folder_name == batch_path.name:
             return ExecutionResult(
                 True,
                 f"No change: {new_folder_name}",
             )
 
-        new_path = album_path.parent / new_folder_name
+        new_path = batch_path.parent / new_folder_name
         if new_path.exists():
             return ExecutionResult(
                 False,
                 f"A folder named '{new_folder_name}' already exists",
             )
 
-        album_path.rename(new_path)
+        batch_path.rename(new_path)
         return ExecutionResult(
             True,
             f"Renamed to {new_folder_name}",
-            rescan_node_path=album_path.parent,
+            rescan_node_path=batch_path.parent,
         )
 
 

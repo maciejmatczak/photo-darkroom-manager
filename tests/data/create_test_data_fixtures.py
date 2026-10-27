@@ -20,7 +20,7 @@ def main() -> None:
     _mkdir(data / "showroom")
     _mkdir(data / "archive")
 
-    darkroom_2026 = data / "darkroom" / "2026"
+    darkroom_2026 = data / "darkroom" / "Camera" / "2026"
 
     # 2026-03 publish basic success
     _touch_empty(
@@ -45,6 +45,7 @@ def main() -> None:
         / "showroom"
         / "2026"
         / "2026-03 publish will overwrite conflicts"
+        / "Camera"
         / "same_name_0001.jpg"
     )
 
@@ -53,7 +54,7 @@ def main() -> None:
         darkroom_2026 / "2026-03 publish will fail missing publish dir" / ".gitkeep"
     )
 
-    # 2026-03 publish will fail empty publish dir (album root in git; PUBLISH empty)
+    # 2026-03 publish will fail empty publish dir (batch root in git; PUBLISH empty)
     _touch_empty(
         darkroom_2026 / "2026-03 publish will fail empty publish dir" / ".gitkeep"
     )
@@ -74,7 +75,7 @@ def main() -> None:
         / "export_ignored.jpg"
     )
 
-    # 2026-03 tidy basic moves jpg and xmp (untidy at album root)
+    # 2026-03 tidy basic moves jpg and xmp (untidy at batch root)
     _touch_empty(
         darkroom_2026 / "2026-03 tidy basic moves jpg and xmp" / "IMG_0001.jpg"
     )
@@ -93,10 +94,10 @@ def main() -> None:
         darkroom_2026 / "2026-03 archive basic success" / "VIDEOS" / "clip_0001.mp4"
     )
     _touch_empty(
-        darkroom_2026 / "2026-03 archive basic success" / "iPhone" / "IMG_1001.jpg"
+        darkroom_2026 / "2026-03 archive basic success" / "nested" / "IMG_1001.jpg"
     )
     _touch_empty(
-        darkroom_2026 / "2026-03 archive basic success" / "iPhone" / "IMG_1001.xmp"
+        darkroom_2026 / "2026-03 archive basic success" / "nested" / "IMG_1001.xmp"
     )
 
     # 2026-03 archive will fail on conflict
@@ -111,6 +112,7 @@ def main() -> None:
         / "archive"
         / "2026"
         / "2026-03 archive will fail on conflict"
+        / "Camera"
         / "PHOTOS"
         / "conflict_0001.jpg"
     )

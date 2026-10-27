@@ -1,6 +1,6 @@
 test-config.yaml
 
-# Local git worktrees (superpowers / parallel work)
+# Local git worktrees (parallel work)
 .worktrees/
 
 # Byte-compiled / optimized / DLL files

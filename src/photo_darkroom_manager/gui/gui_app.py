@@ -9,7 +9,7 @@ from photo_darkroom_manager.settings import Settings, load_settings, save_settin
 
 PLACEHOLDER_HELP = (
     "Placeholders:\n"
-    "  {folder}                 absolute path to the album folder\n"
+    "  {folder}                 absolute path to the batch folder\n"
     "  {first_image_in_folder}  absolute path to the first image in the folder\n"
     "\n"
     "{first_image_in_folder} only considers files directly in that folder, "

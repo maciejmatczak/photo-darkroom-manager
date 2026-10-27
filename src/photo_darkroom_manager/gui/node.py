@@ -18,7 +18,7 @@ from photo_darkroom_manager.gui.widgets import (
     stat_badges,
     tree_btn,
 )
-from photo_darkroom_manager.models import AlbumFolderName, format_validation_error
+from photo_darkroom_manager.models import BatchFolderName, format_validation_error
 from photo_darkroom_manager.scan import DarkroomNode
 from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
@@ -155,19 +155,27 @@ class DarkroomNodeUI:
             else "Folder does not exist on disk"
         ).set_enabled(is_dir)
 
-        if node.node_type == "year":
+        if node.node_type == "device":
+            tree_btn(
+                "New Batch",
+                "add",
+                on_click=lambda _d=node.name: self._controller.show_new_batch_dialog(
+                    _d
+                ),
+            ).tooltip(f"New batch for {node.name}")
+        if node.node_type in ("device", "year"):
             return
         if node.name == PUBLISH_FOLDER:
             return
 
-        if node.node_type == "album":
+        if node.node_type == "batch":
             tree_btn(
                 "Rename",
                 "edit",
                 on_click=lambda: self._show_rename_dialog(),
-            ).tooltip("Rename album")
+            ).tooltip("Rename batch")
 
-        if node.node_type in ("album", "subfolder"):
+        if node.node_type in ("batch", "subfolder"):
             tidy_color = "red" if "untidy" in node.issues else "primary"
             tree_btn(
                 "Tidy",
@@ -201,7 +209,7 @@ class DarkroomNodeUI:
                     ),
                 ).tooltip(f"Open in editing app\nCommand: {edit_cmd}")
 
-        if node.node_type == "album":
+        if node.node_type == "batch":
             tree_btn(
                 "Publish",
                 "publish",
@@ -209,9 +217,9 @@ class DarkroomNodeUI:
                     mgr.publish_action(node.path),
                     f"Publishing {node.name}",
                 ),
-            ).tooltip("Publish album")
+            ).tooltip("Publish batch")
 
-        if node.node_type in ("album", "subfolder"):
+        if node.node_type in ("batch", "subfolder"):
             tree_btn(
                 "Archive",
                 "archive",
@@ -256,7 +264,7 @@ class DarkroomNodeUI:
     def _show_rename_dialog(self) -> None:
         node = self.node
         try:
-            parsed = AlbumFolderName.from_str(node.name)
+            parsed = BatchFolderName.from_str(node.name)
         except ValidationError:
             parsed = None
 
@@ -274,7 +282,7 @@ class DarkroomNodeUI:
             d = _optional_number_to_day_str(day_input.value)
             n = name_input.value.strip() or None
             try:
-                folder_name = AlbumFolderName(
+                folder_name = BatchFolderName(
                     year=y, month=m, day=d, name=n
                 ).folder_name
             except ValidationError as e:
@@ -294,7 +302,7 @@ class DarkroomNodeUI:
             )
 
         with ui.dialog() as dialog, ui.card().classes(CSS_DIALOG_CARD):
-            ui.label("Rename Album").classes("text-lg font-bold")
+            ui.label("Rename Batch").classes("text-lg font-bold")
             if parsed is None:
                 ui.label(
                     "Current name could not be parsed — fill fields manually."
