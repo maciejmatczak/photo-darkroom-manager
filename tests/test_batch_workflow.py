@@ -83,7 +83,7 @@ def test_device_symlink_outside_darkroom_rejected(settings, tmp_path: Path) -> N
         (settings.darkroom / "Camera").symlink_to(outside, target_is_directory=True)
     except OSError as error:
         if os.name != "nt":
-            pytest.skip(reason=f"Directory symlinks unavailable: {error}")
+            pytest.skip(f"Directory symlinks unavailable: {error}")
         subprocess.run(
             [
                 "cmd.exe",
