@@ -1,53 +1,55 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from photo_darkroom_manager.paths import translate_path
+from photo_darkroom_manager.paths import Area, translate_path
+
+
+@dataclass(frozen=True)
+class Roots:
+    darkroom: Path = Path("/dr")
+    archive: Path = Path("/ar")
+    showroom: Path = Path("/sr")
+
+
+ROOTS = Roots()
 
 
 @pytest.mark.parametrize("tail", [Path(), Path("PHOTOS/x.raw")])
-def test_translate_path_reorders_and_round_trips(tail: Path) -> None:
+@pytest.mark.parametrize("dest_area", ["archive", "showroom"])
+def test_darkroom_to_destination_and_back(tail: Path, dest_area: Area) -> None:
     source = Path("/dr/Camera/2026/2026-10 Walk") / tail
-    expected = Path("/ar/2026/2026-10 Walk/Camera") / tail
+    dest_root = getattr(ROOTS, dest_area)
+    expected = dest_root / "2026" / "2026-10 Walk" / "Camera" / tail
     actual = translate_path(
-        source,
-        from_root=Path("/dr"),
-        to_root=Path("/ar"),
-        from_layout="device-first",
-        to_layout="batch-first",
+        source, roots=ROOTS, from_area="darkroom", to_area=dest_area
     )
     assert actual == expected
     assert (
-        translate_path(
-            actual,
-            from_root=Path("/ar"),
-            to_root=Path("/dr"),
-            from_layout="batch-first",
-            to_layout="device-first",
-        )
+        translate_path(actual, roots=ROOTS, from_area=dest_area, to_area="darkroom")
         == source
     )
 
 
-def test_same_layout_preserves_relative_path() -> None:
+def test_showroom_to_archive_changes_only_root() -> None:
     assert translate_path(
-        Path("/ar/2026/2026-10 Walk/Camera/PHOTOS/x.raw"),
-        from_root=Path("/ar"),
-        to_root=Path("/sr"),
-        from_layout="batch-first",
-        to_layout="batch-first",
-    ) == Path("/sr/2026/2026-10 Walk/Camera/PHOTOS/x.raw")
+        Path("/sr/2026/2026-10 Walk/Camera/PHOTOS/x.raw"),
+        roots=ROOTS,
+        from_area="showroom",
+        to_area="archive",
+    ) == Path("/ar/2026/2026-10 Walk/Camera/PHOTOS/x.raw")
 
 
 def test_devices_have_distinct_targets(tmp_path: Path) -> None:
+    roots = Roots(tmp_path / "dr", tmp_path / "ar", tmp_path / "sr")
     for device in ("Camera", "Phone"):
         assert (
             translate_path(
                 tmp_path / "dr" / device / "2026" / "2026-10 Walk",
-                from_root=tmp_path / "dr",
-                to_root=tmp_path / "ar",
-                from_layout="device-first",
-                to_layout="batch-first",
+                roots=roots,
+                from_area="darkroom",
+                to_area="archive",
             )
             == tmp_path / "ar" / "2026" / "2026-10 Walk" / device
         )
@@ -67,10 +69,4 @@ def test_devices_have_distinct_targets(tmp_path: Path) -> None:
 )
 def test_translate_rejects_invalid_paths(path: str) -> None:
     with pytest.raises(ValueError):
-        translate_path(
-            Path(path),
-            from_root=Path("/dr"),
-            to_root=Path("/ar"),
-            from_layout="device-first",
-            to_layout="batch-first",
-        )
+        translate_path(Path(path), roots=ROOTS, from_area="darkroom", to_area="archive")

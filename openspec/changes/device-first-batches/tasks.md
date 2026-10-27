@@ -5,7 +5,7 @@
       device targets, invalid paths raise `ValueError`
 - [x] 1.2 Implement `src/photo_darkroom_manager/paths.py`
       (`translate_path`, `Layout`)
-- [ ] 1.3 Replace layout arguments with area translation: callers pass
+- [x] 1.3 Replace layout arguments with area translation: callers pass
       source and target area plus the three roots; layouts become private
       to `paths.py`. Rewrite `tests/test_paths.py` against the spec
       scenarios (darkroom to archive and back, showroom to archive changes
