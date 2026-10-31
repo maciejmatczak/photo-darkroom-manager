@@ -58,10 +58,18 @@ This opens the app at `http://localhost:8090` in your default browser. Any file 
 
 ## CI
 
-On pushes and pull requests to `main` / `dev`, GitHub Actions runs separate jobs: **Ruff** (`ruff check`), **Ruff format** (`ruff format --check`), and **ty** (`ty check` after `uv sync --group dev`). That mirrors the main local checks even if someone skips hooks (`--no-verify`).
+On pushes to `main` / `dev` / `dev-core-split` and on all pull requests, GitHub Actions runs separate jobs: **Ruff** (`ruff check`), **Ruff format** (`ruff format --check`), and **ty** (`ty check` after `uv sync --group dev`). That mirrors the main local checks even if someone skips hooks (`--no-verify`).
 
 ---
 
 ## Project notes
 
 - tidy: organize all photos recurrently into parent folders based on relative image file
+
+## Branches
+
+- `main`: releases.
+- `dev`: day-to-day fixes and small features; must stay shippable.
+- `dev-core-split`: long-lived redesign line (core / GUI / CLI split). PRs
+  for redesign work target it; `dev` is merged into it regularly. Enable
+  `git config rerere.enabled true` to reuse conflict resolutions.
