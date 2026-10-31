@@ -34,12 +34,13 @@ OpenSpec change, and the design lives there, not here.
 
 ## Phase 0: Understand and protect what exists
 
-- [ ] Map what the frontend expects from the core today
-  - [ ] Settings and startup, tree read model, refresh, action protocol
-  - [ ] Business rules living in `gui/` (per-node action availability,
+- [x] Map what the frontend expects from the core today
+      ([frontend-coupling.md](frontend-coupling.md))
+  - [x] Settings and startup, tree read model, refresh, action protocol
+  - [x] Business rules living in `gui/` (per-node action availability,
         path targets, form validation, opening folders)
-  - [ ] Core assumptions about the GUI (in-place node identity on rescan)
-  - [ ] Hint: write it as a short note next to the specs; it is the input
+  - [x] Core assumptions about the GUI (in-place node identity on rescan)
+  - [x] Hint: write it as a short note next to the specs; it is the input
         for Phase 1
 - [ ] Classify the existing test suite
   - [ ] `contract`: user-visible outcomes we keep (files moved, conflicts
