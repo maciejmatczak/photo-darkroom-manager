@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 from pydantic_core import InitErrorDetails
 
-from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
+from photo_darkroom_manager.library import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
 
 
 def format_validation_error(e: ValidationError) -> str:

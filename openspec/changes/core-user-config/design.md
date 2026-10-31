@@ -16,8 +16,8 @@
   calls. The `PHOTO_DARKROOM_MANAGER_LOG_LEVEL` env var overrides the level.
 - The core has no domain exception classes today: validators raise
   `ValueError`, and actions turn failures into `PrepareError` values.
-- The GUI is parked on this branch (ROADMAP Phase 2) but must stay
-  importable; `tests/test_gui.py` is marked `internal`.
+- The GUI is to be parked on this branch (ROADMAP Phase 2); `tests/test_gui.py`
+  is marked `internal`.
 
 ## Goals / Non-Goals
 
@@ -128,6 +128,24 @@ ownership and clearing rules.
 `rescan`, `rescan_subtree` and every action factory call
 `_require_ready()`, raising `EngineNotReadyError(status, detail)`.
 
+### Roots reach actions as explicit arguments
+
+The engine's root properties are `Path | None`; they are defined whenever
+the status is `ready`. Each factory checks readiness, then passes the roots
+an action uses as explicit arguments (`ArchiveAction(folder, darkroom=...,
+archive=...)`); `translate_path` takes `from_root` and `to_root` the same
+way. There is no roots type between the engine and the actions.
+
+Actions do not assume the engine validated anything: each one checks that
+its roots are folders in `prepare` and again in `execute`, and refuses with
+a `PrepareError` or failed result naming the root. The engine check stays
+the early one, since it can report every reason through `status_detail`;
+the action check is what keeps a stale action from touching files after a
+drive goes away. Alternatives: the engine runs actions through
+`engine.prepare/execute` gates (rejected: actions would rely on a caller
+convention), or factories inject a readiness callback into each action
+(rejected: couples actions back to the engine).
+
 ### Exceptions live with their interface
 
 Exceptions are part of the interface of the module that raises them:
@@ -145,8 +163,9 @@ unrelated domains through one file.
 `Engine.__init__` configures logging with the default level first, so
 problems found while loading reach the log, then calls `user_config.load()`
 and logs each problem as a warning. It then seeds `self.log_level` from the
-env var, else the configuration's valid log level, else `INFO`, and
-reapplies it with `configure_logging`. From then on the log level is engine
+env var (ignored with a warning if invalid), else the configuration's valid
+log level, else `INFO`, and reapplies it with `configure_logging`. The env
+override is read by the engine, not by `logging_config`. From then on the log level is engine
 state: `set_log_level(level)` validates, updates the attribute and
 reconfigures logging, and never touches `user_config`; configuration edits
 do not change it. Persisting a new default is a separate, explicit
@@ -157,16 +176,30 @@ do not change it. Persisting a new default is a separate, explicit
 Move `PUBLISH_FOLDER`, `PHOTOS_FOLDER`, `VIDEOS_FOLDER` to a new
 `library.py` (library layout conventions); `models.py` imports them, so a
 small dedicated module avoids import cycles through `media.py`.
-`settings.py` is reduced to config-path and logs-dir discovery, or folded
-into `user_config.py`.
+`settings.py` is deleted (see below).
+
+### The engine owns application paths
+
+Where the config file and the logs live is application knowledge, so the
+engine owns it: `engine.py` holds `APP_NAME`, the env var names,
+`default_config_path()` and `default_logs_dir()`.
+`Engine(config_path=None, logs_dir=None)` uses them only when no path is
+given. The services stay self-contained: `UserConfig(path)` loads and saves
+only the path it is given, and `configure_logging(level, logs_dir=...)`
+neither discovers directories nor reads env vars. Alternatives: keep a
+`settings.py` discovery module (rejected: a central module every domain
+reaches into for app-level names), or let `UserConfig` find its own default
+path (rejected: puts application policy into the service).
 
 ### Parked GUI
 
-Only keep it importable and its tests green: `gui_app.py` builds an
-`Engine`, shows the settings page pre-filled from `user_config.get(...)`
-when not `ready` (with `status_detail`), and saves through `set(...)` per
-field (showing `ConfigValueError` messages) plus `save()`. `gui/node.py`
-reads commands from the engine properties.
+The GUI is not adapted. It moves unchanged, with its tests, to
+`docs/core-split/legacy-gui/` as reference material for ROADMAP Phase 4: excluded
+from the package, ruff, ty and pytest, and allowed to drift. The GUI
+console scripts are removed; there is no runnable client until the CLI.
+Alternatives: minimal rewiring per change (rejected: parking means not
+touching it); deleting it and pointing at a tag (rejected: harder to
+consult while designing the new clients).
 
 ## Risks / Trade-offs
 

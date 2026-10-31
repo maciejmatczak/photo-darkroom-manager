@@ -12,18 +12,17 @@ from photo_darkroom_manager.actions import (
     PublishPlan,
     TidyPlan,
 )
-from photo_darkroom_manager.manager import DarkroomManager
 from photo_darkroom_manager.models import validate_device_name
 
 
 @pytest.mark.parametrize("existing", [False, True])
-def test_new_batch_existing_and_custom_device(settings, existing: bool) -> None:
+def test_new_batch_existing_and_custom_device(roots, existing: bool) -> None:
     if existing:
-        (settings.darkroom / "Camera").mkdir()
-    result = NewBatchAction(
-        settings.darkroom, "Camera", "2026", "10", None, None
-    ).execute(None)
-    batch = settings.darkroom / "Camera/2026/2026-10"
+        (roots.darkroom / "Camera").mkdir()
+    result = NewBatchAction(roots.darkroom, "Camera", "2026", "10", None, None).execute(
+        None
+    )
+    batch = roots.darkroom / "Camera/2026/2026-10"
     assert result.success
     assert result.rescan_node_path == batch.parent
     assert (batch / "PUBLISH").is_dir()
@@ -53,12 +52,12 @@ def test_new_batch_existing_and_custom_device(settings, existing: bool) -> None:
         "Camera.",
     ],
 )
-def test_invalid_device_creates_nothing(settings, name: str) -> None:
-    result = NewBatchAction(settings.darkroom, name, "2026", "10", None, None).execute(
+def test_invalid_device_creates_nothing(roots, name: str) -> None:
+    result = NewBatchAction(roots.darkroom, name, "2026", "10", None, None).execute(
         None
     )
     assert not result.success
-    assert list(settings.darkroom.iterdir()) == []
+    assert list(roots.darkroom.iterdir()) == []
 
 
 @pytest.mark.parametrize("name", ["Camera", "My Camera", "Aparat Łukasza"])
@@ -66,21 +65,21 @@ def test_device_names_allow_unicode_and_trim_whitespace(name: str) -> None:
     assert validate_device_name(f"  {name}  ") == name
 
 
-def test_blocking_device_file_preserved(settings) -> None:
-    blocking = settings.darkroom / "Camera"
+def test_blocking_device_file_preserved(roots) -> None:
+    blocking = roots.darkroom / "Camera"
     blocking.write_bytes(b"keep")
-    result = NewBatchAction(
-        settings.darkroom, "Camera", "2026", "10", None, None
-    ).execute(None)
+    result = NewBatchAction(roots.darkroom, "Camera", "2026", "10", None, None).execute(
+        None
+    )
     assert not result.success
     assert blocking.read_bytes() == b"keep"
 
 
-def test_device_symlink_outside_darkroom_rejected(settings, tmp_path: Path) -> None:
+def test_device_symlink_outside_darkroom_rejected(roots, tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     try:
-        (settings.darkroom / "Camera").symlink_to(outside, target_is_directory=True)
+        (roots.darkroom / "Camera").symlink_to(outside, target_is_directory=True)
     except OSError as error:
         if os.name != "nt":
             raise pytest.skip.Exception(
@@ -93,32 +92,32 @@ def test_device_symlink_outside_darkroom_rejected(settings, tmp_path: Path) -> N
                 "/c",
                 "mklink",
                 "/J",
-                str(settings.darkroom / "Camera"),
+                str(roots.darkroom / "Camera"),
                 str(outside),
             ],
             check=True,
             capture_output=True,
         )
-    result = NewBatchAction(
-        settings.darkroom, "Camera", "2026", "10", None, None
-    ).execute(None)
+    result = NewBatchAction(roots.darkroom, "Camera", "2026", "10", None, None).execute(
+        None
+    )
     assert not result.success
     assert list(outside.iterdir()) == []
 
 
-def test_list_devices_includes_empty_directories(settings) -> None:
-    mgr = DarkroomManager(settings)
+def test_list_devices_includes_empty_directories(roots, engine) -> None:
+    mgr = engine
     assert mgr.list_devices() == []
-    (settings.darkroom / "Phone").mkdir()
-    (settings.darkroom / "Camera").mkdir()
-    (settings.darkroom / "notes.txt").write_text("not a device")
+    (roots.darkroom / "Phone").mkdir()
+    (roots.darkroom / "Camera").mkdir()
+    (roots.darkroom / "notes.txt").write_text("not a device")
     assert mgr.list_devices() == ["Camera", "Phone"]
-    (settings.darkroom / "New camera").mkdir()
+    (roots.darkroom / "New camera").mkdir()
     assert mgr.list_devices() == ["Camera", "New camera", "Phone"]
 
 
-def test_scan_device_year_batch_and_scoped_refresh(settings) -> None:
-    mgr = DarkroomManager(settings)
+def test_scan_device_year_batch_and_scoped_refresh(roots, engine) -> None:
+    mgr = engine
     assert mgr.rescan().children == []
     assert (
         mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None).success
@@ -147,22 +146,22 @@ def test_scan_device_year_batch_and_scoped_refresh(settings) -> None:
     assert [n.name for n in device.children] == ["2026", "2027"]
 
 
-def test_devices_publish_and_archive_independently(settings) -> None:
-    mgr = DarkroomManager(settings)
+def test_devices_publish_and_archive_independently(roots, engine) -> None:
+    mgr = engine
     for device in ("Camera", "Phone"):
         assert (
             mgr.new_batch_action(device, "2026", "10", None, "Walk")
             .execute(None)
             .success
         )
-        batch = settings.darkroom / device / "2026/2026-10 Walk"
+        batch = roots.darkroom / device / "2026/2026-10 Walk"
         (batch / "PUBLISH/export.jpg").write_bytes(device.encode())
         (batch / "PHOTOS/nested").mkdir(parents=True)
         (batch / "PHOTOS/nested/original.raw").write_bytes(b"raw")
         publish = mgr.publish_action(batch)
         plan = publish.prepare()
         assert isinstance(plan, PublishPlan)
-        expected = settings.showroom / "2026/2026-10 Walk" / device
+        expected = roots.showroom / "2026/2026-10 Walk" / device
         assert plan.target_dir == expected == mgr.showroom_path(darkroom_path=batch)
         assert publish.execute(plan).success
         assert (expected / "export.jpg").read_bytes() == device.encode()
@@ -172,7 +171,7 @@ def test_devices_publish_and_archive_independently(settings) -> None:
         archive_plan = archive.prepare()
         assert isinstance(archive_plan, ArchivePlan)
         expected_archive = (
-            settings.archive / "2026/2026-10 Walk" / device / "PHOTOS/nested"
+            roots.archive / "2026/2026-10 Walk" / device / "PHOTOS/nested"
         )
         assert (
             archive_plan.target_dir
@@ -183,10 +182,10 @@ def test_devices_publish_and_archive_independently(settings) -> None:
         assert (expected_archive / "original.raw").read_bytes() == b"raw"
 
 
-def test_fully_archived_batch_disappears_from_darkroom_tree(settings) -> None:
-    mgr = DarkroomManager(settings)
+def test_fully_archived_batch_disappears_from_darkroom_tree(roots, engine) -> None:
+    mgr = engine
     mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None)
-    batch = settings.darkroom / "Camera/2026/2026-10"
+    batch = roots.darkroom / "Camera/2026/2026-10"
     (batch / "original.raw").write_bytes(b"raw")
     action = mgr.archive_action(batch)
     plan = action.prepare()
@@ -196,23 +195,23 @@ def test_fully_archived_batch_disappears_from_darkroom_tree(settings) -> None:
     assert mgr.rescan().children[0].children[0].children == []
 
 
-def test_rename_leaves_archive_and_showroom_at_old_name(settings) -> None:
-    mgr = DarkroomManager(settings)
+def test_rename_leaves_archive_and_showroom_at_old_name(roots, engine) -> None:
+    mgr = engine
     mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None)
-    old = settings.darkroom / "Camera/2026/2026-10"
-    for root in (settings.archive, settings.showroom):
+    old = roots.darkroom / "Camera/2026/2026-10"
+    for root in (roots.archive, roots.showroom):
         (root / "2026/2026-10/Camera").mkdir(parents=True)
     assert mgr.rename_action(old, "2026", "10", None, "Walk").execute(None).success
     assert (old.parent / "2026-10 Walk").is_dir()
-    for root in (settings.archive, settings.showroom):
+    for root in (roots.archive, roots.showroom):
         assert (root / "2026/2026-10/Camera").is_dir()
         assert not (root / "2026/2026-10 Walk").exists()
 
 
-def test_tidy_loose_media_preserves_publish(settings) -> None:
-    mgr = DarkroomManager(settings)
+def test_tidy_loose_media_preserves_publish(roots, engine) -> None:
+    mgr = engine
     mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None)
-    batch = settings.darkroom / "Camera/2026/2026-10"
+    batch = roots.darkroom / "Camera/2026/2026-10"
     for filename in (
         "shot.cr3",
         "shot.jpg",

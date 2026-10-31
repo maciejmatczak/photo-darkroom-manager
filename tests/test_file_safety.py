@@ -1,6 +1,6 @@
 """Contract: file actions never lose user files and report what changed.
 
-Each test runs an action through the public manager factories and
+Each test runs an action through the public engine factories and
 ``prepare()`` / ``execute()``, then compares the whole workspace (darkroom,
 showroom and archive) before and after.
 """
@@ -10,8 +10,8 @@ from collections import Counter
 from pathlib import Path
 
 from photo_darkroom_manager.actions import ActionPlan, PrepareError
-from photo_darkroom_manager.manager import DarkroomManager
-from photo_darkroom_manager.settings import PHOTOS_FOLDER
+from photo_darkroom_manager.engine import Engine
+from photo_darkroom_manager.library import PHOTOS_FOLDER
 
 BATCHES = Path("Camera") / "2026"
 TIDY_BASIC = BATCHES / "2026-03 tidy basic moves jpg and xmp"
@@ -20,12 +20,13 @@ ARCHIVE_CONFLICT = BATCHES / "2026-03 archive will fail on conflict"
 PUBLISH_BASIC = BATCHES / "2026-03 publish basic success"
 
 
-def _roots(manager: DarkroomManager) -> list[Path]:
-    s = manager.settings
-    return [s.darkroom, s.showroom, s.archive]
+def _roots(manager: Engine) -> list[Path]:
+    roots = [manager.darkroom, manager.showroom, manager.archive]
+    assert all(r is not None for r in roots)
+    return [r for r in roots if r is not None]
 
 
-def _contents(manager: DarkroomManager) -> Counter[tuple[str, str]]:
+def _contents(manager: Engine) -> Counter[tuple[str, str]]:
     """Multiset of (file name, content hash) across all three roots."""
     out: Counter[tuple[str, str]] = Counter()
     for root in _roots(manager):
@@ -35,7 +36,7 @@ def _contents(manager: DarkroomManager) -> Counter[tuple[str, str]]:
     return out
 
 
-def _snapshot(manager: DarkroomManager) -> dict[Path, bytes]:
+def _snapshot(manager: Engine) -> dict[Path, bytes]:
     """Exact layout: every file path and its bytes, across all three roots."""
     return {
         p: p.read_bytes()
@@ -52,7 +53,7 @@ def _run(action):
 
 
 def test_tidy_keeps_every_file(photo_setup) -> None:
-    mgr = DarkroomManager(photo_setup.settings)
+    mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(TIDY_BASIC)
     before = _contents(mgr)
     result = _run(mgr.tidy_action(batch))
@@ -61,7 +62,7 @@ def test_tidy_keeps_every_file(photo_setup) -> None:
 
 
 def test_archive_keeps_every_file(photo_setup) -> None:
-    mgr = DarkroomManager(photo_setup.settings)
+    mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BASIC)
     before = _contents(mgr)
     result = _run(mgr.archive_action(batch))
@@ -70,7 +71,7 @@ def test_archive_keeps_every_file(photo_setup) -> None:
 
 
 def test_publish_keeps_every_file(photo_setup) -> None:
-    mgr = DarkroomManager(photo_setup.settings)
+    mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(PUBLISH_BASIC)
     before = _contents(mgr)
     result = _run(mgr.publish_action(batch))
@@ -79,7 +80,7 @@ def test_publish_keeps_every_file(photo_setup) -> None:
 
 
 def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
-    mgr = DarkroomManager(photo_setup.settings)
+    mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BASIC)
     photos = batch / PHOTOS_FOLDER
     others = {p for p in batch.rglob("*") if p.is_file() and photos not in p.parents}
@@ -91,7 +92,7 @@ def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
 
 
 def test_refused_prepare_leaves_disk_unchanged(photo_setup) -> None:
-    mgr = DarkroomManager(photo_setup.settings)
+    mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(ARCHIVE_CONFLICT)
     before = _snapshot(mgr)
     out = mgr.archive_action(batch).prepare()
@@ -101,8 +102,8 @@ def test_refused_prepare_leaves_disk_unchanged(photo_setup) -> None:
 
 def test_tree_changing_actions_report_what_to_refresh(photo_setup) -> None:
     """Each successful file action names a darkroom path covering its change."""
-    mgr = DarkroomManager(photo_setup.settings)
-    darkroom = photo_setup.settings.darkroom
+    mgr = photo_setup.engine
+    darkroom = photo_setup.roots.darkroom
     cases = [
         (mgr.tidy_action, TIDY_BASIC),
         (mgr.archive_action, ARCHIVE_BASIC),

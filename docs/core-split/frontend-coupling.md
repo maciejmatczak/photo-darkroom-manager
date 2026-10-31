@@ -44,6 +44,11 @@ other core modules import nothing from `gui/` and nothing from NiceGUI.
 Wanted instead: the core loads settings without crashing, reports validity
 per setting, accepts updates in memory and saves them explicitly.
 
+Done in `core-user-config`: settings and startup are core-owned.
+`Engine()` loads `engine.user_config` tolerantly (problems per key), exposes
+config-backed properties and a derived `status` / `status_detail`, and owns
+the runtime log level. The GUI code above is parked in `legacy-gui/`.
+
 ## 2. Tree read model
 
 - The GUI renders `DarkroomNode` directly and reads `path`, `name`,

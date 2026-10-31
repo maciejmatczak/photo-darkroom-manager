@@ -17,10 +17,6 @@ dependencies = [
     "structlog>=26.1.0",
 ]
 
-[project.scripts]
-photo-darkroom-manager = "photo_darkroom_manager.gui.gui_app:main"
-dr-mng = "photo_darkroom_manager.gui.gui_app:main"
-
 [dependency-groups]
 dev = ["pre-commit~=4.5.1", "pytest~=8.4.0", "ruff~=0.15.8", "ty~=0.0.28"]
 
@@ -31,6 +27,9 @@ packages = ["src/photo_darkroom_manager"]
 target-version = "py314"
 line-length = 88
 src = ["src"]
+# Parked GUI: reference material only, not source code.
+extend-exclude = ["docs/core-split/legacy-gui"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = [
@@ -53,3 +52,6 @@ markers = [
     "contract: user-visible behaviour the core redesign must keep",
     "internal: private helpers or behaviour planned to change",
 ]
+
+[tool.ty.src]
+exclude = ["docs/core-split/legacy-gui"]

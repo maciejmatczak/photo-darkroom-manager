@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from photo_darkroom_manager.actions import PrepareError, PublishAction, PublishPlan
-from photo_darkroom_manager.settings import PUBLISH_FOLDER
+from photo_darkroom_manager.library import PUBLISH_FOLDER
 
 PUBLISH_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 publish basic success"
 PUBLISH_BATCH_OVERWRITE_REL = (
@@ -45,15 +45,14 @@ def test_publish_prepare_happy_empty_conflicts(photo_setup) -> None:
     expected_names = _file_names_in_publish(publish_dir)
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     out = act.prepare()
     assert isinstance(out, PublishPlan)
     assert out.conflict_pairs == ()
     assert frozenset(f.name for f in out.files) == expected_names
-    expected_target = (
-        photo_setup.settings.showroom / PUBLISH_BATCH_BASIC_DEST
-    ).resolve()
+    expected_target = (photo_setup.roots.showroom / PUBLISH_BATCH_BASIC_DEST).resolve()
     assert out.target_dir == expected_target
 
 
@@ -63,7 +62,8 @@ def test_publish_prepare_conflict_pairs_when_showroom_has_same_name(
     batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_OVERWRITE_REL)
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     out = act.prepare()
     assert isinstance(out, PublishPlan)
@@ -78,7 +78,8 @@ def test_publish_prepare_fails_when_publish_dir_missing(photo_setup) -> None:
     assert not (batch / PUBLISH_FOLDER).exists()
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     out = act.prepare()
     assert isinstance(out, PrepareError)
@@ -92,7 +93,8 @@ def test_publish_prepare_fails_when_publish_dir_empty(photo_setup) -> None:
     assert _file_names_in_publish(publish_dir) == frozenset()
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     out = act.prepare()
     assert isinstance(out, PrepareError)
@@ -106,7 +108,8 @@ def test_publish_prepare_fails_when_publish_has_subdir(photo_setup) -> None:
     assert nested
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     out = act.prepare()
     assert isinstance(out, PrepareError)
@@ -119,7 +122,8 @@ def test_publish_execute_moves_files_to_showroom(photo_setup) -> None:
     names = _file_names_in_publish(publish_dir)
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     plan = act.prepare()
     assert isinstance(plan, PublishPlan)
@@ -127,7 +131,7 @@ def test_publish_execute_moves_files_to_showroom(photo_setup) -> None:
     assert result.success
     assert f"{len(names)} file" in result.message
 
-    showroom_batch = photo_setup.settings.showroom / PUBLISH_BATCH_BASIC_DEST
+    showroom_batch = photo_setup.roots.showroom / PUBLISH_BATCH_BASIC_DEST
     for name in names:
         assert (showroom_batch / name).is_file()
         assert not (publish_dir / name).exists()
@@ -139,7 +143,8 @@ def test_publish_execute_unlinks_dest_then_replaces_on_conflict(photo_setup) -> 
     publish_dir = batch / PUBLISH_FOLDER
     act = PublishAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        showroom=photo_setup.roots.showroom,
     )
     plan = act.prepare()
     assert isinstance(plan, PublishPlan)
@@ -149,9 +154,7 @@ def test_publish_execute_unlinks_dest_then_replaces_on_conflict(photo_setup) -> 
     assert result.success
 
     dest = (
-        photo_setup.settings.showroom
-        / PUBLISH_BATCH_OVERWRITE_DEST
-        / "same_name_0001.jpg"
+        photo_setup.roots.showroom / PUBLISH_BATCH_OVERWRITE_DEST / "same_name_0001.jpg"
     )
     assert dest.is_file()
     assert not (publish_dir / "same_name_0001.jpg").exists()

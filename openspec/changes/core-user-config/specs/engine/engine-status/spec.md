@@ -62,6 +62,11 @@ with the status and its detail as the reason.
 - **WHEN** the status is `invalid` and a client requests a scan or action
 - **THEN** the request SHALL be rejected, carrying the status and detail
 
+#### Scenario: Root lost after the engine check
+- **WHEN** an action was created while `ready` and a library root it uses
+  is no longer a folder when the action is prepared or executed
+- **THEN** the action SHALL refuse, naming that root, and change no files
+
 ### Requirement: Runtime log level
 The engine SHALL hold its log level as runtime state, starting from the
 configuration's log level when the engine starts, unless an environment

@@ -38,9 +38,12 @@ configuration before a CLI can sit on top of it.
 - Typed exceptions for single-value commands, defined in the module that
   raises them (`ConfigValueError` in the user configuration module).
 
+- The parked GUI moves out of the source tree, unchanged, to
+  `docs/core-split/legacy-gui/` as reference; its console scripts go.
+
 Non-goals: partial operation (the engine is either ready or not), a schema
 or layered configuration system, change notifications, the CLI itself, and
-rewiring the parked GUI beyond keeping it importable.
+adapting the GUI to the new API.
 
 ## Capabilities
 
@@ -59,12 +62,15 @@ how roots are configured is not specified there.
 
 ## Impact
 
-- Code: `settings.py` (split into user config and library constants),
+- Code: `settings.py` (deleted: config model to `user_config.py`, path
+  discovery to `engine.py`, folder constants to `library.py`),
   `manager.py` (becomes `engine.py` with `user_config`, properties, status,
-  log level), `logging_config.py` (driven by the engine),
-  `gui/gui_app.py` and `gui/node.py` (minimal rewiring; GUI is parked), a
-  new `library.py` (folder constants), and every module importing them.
-- Tests: `tests/test_settings.py` "invalid raises" tests (marked
-  `internal`) are replaced; new contract tests for load, set, save, status
+  log level), `logging_config.py` (driven by the engine; takes the logs dir and level
+  explicitly, no env or path discovery),
+  a new `library.py` (folder constants), and every module importing them.
+  `gui/` moves to `docs/core-split/legacy-gui/`; `pyproject.toml` drops the
+  GUI scripts and excludes that folder from ruff and ty.
+- Tests: `tests/test_settings.py` is removed (path tests move to
+  `tests/test_engine.py`, "invalid raises" tests are replaced); new contract tests for load, set, save, status
   and log level.
 - No new dependencies; config file format (YAML keys) stays the same.

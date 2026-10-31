@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from photo_darkroom_manager.actions import ArchiveAction, ArchivePlan, PrepareError
-from photo_darkroom_manager.settings import PHOTOS_FOLDER
+from photo_darkroom_manager.library import PHOTOS_FOLDER
 
 ARCHIVE_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 archive basic success"
 ARCHIVE_BATCH_CONFLICT_REL = (
@@ -27,15 +27,14 @@ def test_archive_prepare_happy_batch_root(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
     act = ArchiveAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     out = act.prepare()
     assert isinstance(out, ArchivePlan)
     assert out.leaf_count == 4
     assert out.folder_path == batch
-    expected_target = (
-        photo_setup.settings.archive / ARCHIVE_BATCH_BASIC_DEST
-    ).resolve()
+    expected_target = (photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST).resolve()
     assert out.target_dir == expected_target
 
 
@@ -43,7 +42,8 @@ def test_archive_prepare_blocked_by_duplicate_in_archive(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_CONFLICT_REL)
     act = ArchiveAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     out = act.prepare()
     assert isinstance(out, PrepareError)
@@ -56,7 +56,8 @@ def test_archive_prepare_unrecognized_batch_path(photo_setup) -> None:
     year_only = photo_setup.darkroom_has_dir(Path("Camera") / "2026")
     act = ArchiveAction(
         year_only,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     out = act.prepare()
     assert isinstance(out, PrepareError)
@@ -66,7 +67,7 @@ def test_archive_prepare_unrecognized_batch_path(photo_setup) -> None:
 def test_archive_prepare_does_not_create_archive_directories(photo_setup) -> None:
     """Prepare must not mkdir under archive; destination dirs are created on execute."""
     photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
-    archive_root = photo_setup.settings.archive
+    archive_root = photo_setup.roots.archive
 
     def archive_tree_snapshot() -> frozenset[Path]:
         return frozenset(p.relative_to(archive_root) for p in archive_root.rglob("*"))
@@ -74,7 +75,8 @@ def test_archive_prepare_does_not_create_archive_directories(photo_setup) -> Non
     before = archive_tree_snapshot()
     act = ArchiveAction(
         photos,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     out = act.prepare()
     assert isinstance(out, ArchivePlan)
@@ -87,13 +89,14 @@ def test_archive_prepare_subfolder_photos(photo_setup) -> None:
     photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
     act = ArchiveAction(
         photos,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     out = act.prepare()
     assert isinstance(out, ArchivePlan)
     assert out.leaf_count == 1
     expected_rel = ARCHIVE_BATCH_BASIC_DEST / PHOTOS_FOLDER
-    assert out.target_dir == (photo_setup.settings.archive / expected_rel).resolve()
+    assert out.target_dir == (photo_setup.roots.archive / expected_rel).resolve()
 
 
 def test_archive_execute_moves_all_leaves(photo_setup) -> None:
@@ -101,7 +104,8 @@ def test_archive_execute_moves_all_leaves(photo_setup) -> None:
     expected_rels = _relative_leaf_paths(batch)
     act = ArchiveAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     plan = act.prepare()
     assert isinstance(plan, ArchivePlan)
@@ -110,7 +114,7 @@ def test_archive_execute_moves_all_leaves(photo_setup) -> None:
     assert result.success
     assert f"{len(expected_rels)} file" in result.message
 
-    arch_batch = photo_setup.settings.archive / ARCHIVE_BATCH_BASIC_DEST
+    arch_batch = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST
     for rel in expected_rels:
         assert (arch_batch / rel).is_file()
 
@@ -124,12 +128,13 @@ def test_archive_execute_blocked_when_conflict_appears_after_prepare(
     block_rel = sorted(expected_rels)[0]
     act = ArchiveAction(
         batch,
-        photo_setup.settings,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
     )
     plan = act.prepare()
     assert isinstance(plan, ArchivePlan)
 
-    block_at = photo_setup.settings.archive / ARCHIVE_BATCH_BASIC_DEST / block_rel
+    block_at = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST / block_rel
     block_at.parent.mkdir(parents=True, exist_ok=True)
     block_at.write_bytes(b"")
 

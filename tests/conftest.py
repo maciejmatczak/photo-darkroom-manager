@@ -1,12 +1,61 @@
 """Shared pytest fixtures."""
 
 import shutil
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
-from photo_darkroom_manager.settings import Settings
+from photo_darkroom_manager.engine import CONFIG_PATH_ENV, LOG_LEVEL_ENV, Engine
+from photo_darkroom_manager.logging_config import reset_logging_state_for_tests
+
+MakeEngine = Callable[..., Engine]
+
+
+@dataclass(frozen=True, slots=True)
+class Roots:
+    """Temp library roots a test engine is configured with."""
+
+    darkroom: Path
+    showroom: Path
+    archive: Path
+
+
+def write_config(path: Path, roots: Roots | None = None, **values: object) -> Path:
+    """Write a YAML config with *roots* and extra *values*; return *path*."""
+    data: dict[str, object] = {}
+    if roots is not None:
+        data |= {
+            "darkroom": str(roots.darkroom),
+            "showroom": str(roots.showroom),
+            "archive": str(roots.archive),
+        }
+    data |= values
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def engine_for(roots: Roots, **values: object) -> Engine:
+    """Engine over a config next to the darkroom root, naming *roots*."""
+    config = roots.darkroom.parent / "config.yaml"
+    return Engine(write_config(config, roots, **values))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Keep tests away from the user's config, logs and env overrides."""
+    monkeypatch.delenv(CONFIG_PATH_ENV, raising=False)
+    monkeypatch.delenv(LOG_LEVEL_ENV, raising=False)
+    monkeypatch.setattr(
+        "photo_darkroom_manager.engine.default_logs_dir",
+        lambda: tmp_path / "logs",
+    )
+    yield
+    reset_logging_state_for_tests()
 
 
 def _remove_gitkeep_files(root: Path) -> None:
@@ -19,11 +68,12 @@ def _remove_gitkeep_files(root: Path) -> None:
 class PhotoSetup:
     """Writable three-root layout (darkroom / showroom / archive) plus helpers."""
 
-    settings: Settings
+    roots: Roots
+    engine: Engine
 
     def darkroom_has_dir(self, relative: Path) -> Path:
         """Resolve ``relative`` under darkroom; assert it exists as a directory."""
-        path = self.settings.darkroom / relative
+        path = self.roots.darkroom / relative
         assert path.is_dir(), (
             "Missing tests/data darkroom fixtures; run "
             "`uv run python tests/data/create_test_data_fixtures.py` "
@@ -52,13 +102,12 @@ def photo_setup(tmp_path: Path, data_dir: Path) -> PhotoSetup:
         root
         / "darkroom/Camera/2026/2026-03 publish will fail empty publish dir/PUBLISH"
     ).mkdir(exist_ok=True)
-    return PhotoSetup(
-        settings=Settings(
-            darkroom=root / "darkroom",
-            showroom=root / "showroom",
-            archive=root / "archive",
-        )
+    roots = Roots(
+        darkroom=(root / "darkroom").resolve(),
+        showroom=(root / "showroom").resolve(),
+        archive=(root / "archive").resolve(),
     )
+    return PhotoSetup(roots=roots, engine=engine_for(roots))
 
 
 @pytest.fixture
@@ -83,10 +132,24 @@ def archive_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def settings(darkroom_root: Path, showroom_root: Path, archive_root: Path) -> Settings:
-    return Settings(
-        darkroom=darkroom_root, showroom=showroom_root, archive=archive_root
+def roots(darkroom_root: Path, showroom_root: Path, archive_root: Path) -> Roots:
+    return Roots(
+        darkroom=darkroom_root.resolve(),
+        showroom=showroom_root.resolve(),
+        archive=archive_root.resolve(),
     )
+
+
+@pytest.fixture
+def engine(roots: Roots) -> Engine:
+    """Ready engine over the temp ``roots``."""
+    return engine_for(roots)
+
+
+@pytest.fixture
+def make_engine() -> MakeEngine:
+    """Factory: ``make_engine(roots, **values)`` -> ready engine."""
+    return engine_for
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

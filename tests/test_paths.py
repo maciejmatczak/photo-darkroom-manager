@@ -23,11 +23,21 @@ def test_darkroom_to_destination_and_back(tail: Path, dest_area: Area) -> None:
     dest_root = getattr(ROOTS, dest_area)
     expected = dest_root / "2026" / "2026-10 Walk" / "Camera" / tail
     actual = translate_path(
-        source, roots=ROOTS, from_area="darkroom", to_area=dest_area
+        source,
+        from_area="darkroom",
+        from_root=ROOTS.darkroom,
+        to_area=dest_area,
+        to_root=getattr(ROOTS, dest_area),
     )
     assert actual == expected
     assert (
-        translate_path(actual, roots=ROOTS, from_area=dest_area, to_area="darkroom")
+        translate_path(
+            actual,
+            from_area=dest_area,
+            from_root=getattr(ROOTS, dest_area),
+            to_area="darkroom",
+            to_root=ROOTS.darkroom,
+        )
         == source
     )
 
@@ -35,9 +45,10 @@ def test_darkroom_to_destination_and_back(tail: Path, dest_area: Area) -> None:
 def test_showroom_to_archive_changes_only_root() -> None:
     assert translate_path(
         Path("/sr/2026/2026-10 Walk/Camera/PHOTOS/x.raw"),
-        roots=ROOTS,
         from_area="showroom",
+        from_root=ROOTS.showroom,
         to_area="archive",
+        to_root=ROOTS.archive,
     ) == Path("/ar/2026/2026-10 Walk/Camera/PHOTOS/x.raw")
 
 
@@ -47,9 +58,10 @@ def test_devices_have_distinct_targets(tmp_path: Path) -> None:
         assert (
             translate_path(
                 tmp_path / "dr" / device / "2026" / "2026-10 Walk",
-                roots=roots,
                 from_area="darkroom",
+                from_root=roots.darkroom,
                 to_area="archive",
+                to_root=roots.archive,
             )
             == tmp_path / "ar" / "2026" / "2026-10 Walk" / device
         )
@@ -69,4 +81,10 @@ def test_devices_have_distinct_targets(tmp_path: Path) -> None:
 )
 def test_translate_rejects_invalid_paths(path: str) -> None:
     with pytest.raises(ValueError):
-        translate_path(Path(path), roots=ROOTS, from_area="darkroom", to_area="archive")
+        translate_path(
+            Path(path),
+            from_area="darkroom",
+            from_root=ROOTS.darkroom,
+            to_area="archive",
+            to_root=ROOTS.archive,
+        )

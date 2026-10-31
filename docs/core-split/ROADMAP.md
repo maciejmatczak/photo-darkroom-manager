@@ -62,7 +62,7 @@ OpenSpec change, and the design lives there, not here.
 
 ## Phase 1: Core boundary and state
 
-- [ ] Settings owned by the core
+- [x] Settings owned by the core (`core-user-config`)
   - Load never crashes the app: each setting has a value and a validity
     state the frontend can show and fix
   - Update in memory, save to file explicitly
@@ -77,7 +77,8 @@ OpenSpec change, and the design lives there, not here.
 
 ## Phase 2: CLI as the only interface
 
-- [ ] Park the GUI; it may break on this branch
+- [x] Park the GUI: moved unchanged to `legacy-gui/` as reference, not
+      kept working
 - [ ] Reshape the existing manager, scan and action functions into the core
 - [ ] Experimental CLI over the core API, also a candidate tool surface
       for agents

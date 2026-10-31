@@ -1,20 +1,9 @@
 """Pure path translation between library areas."""
 
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 
 Area = Literal["darkroom", "archive", "showroom"]
-
-
-class LibraryRoots(Protocol):
-    """Root folder of each library area; ``Settings`` satisfies this."""
-
-    @property
-    def darkroom(self) -> Path: ...
-    @property
-    def archive(self) -> Path: ...
-    @property
-    def showroom(self) -> Path: ...
 
 
 # Darkroom is device-first (DEVICE/YEAR/BATCH); destinations are batch-first
@@ -25,9 +14,10 @@ _DEVICE_FIRST: frozenset[Area] = frozenset({"darkroom"})
 def translate_path(
     path: Path,
     *,
-    roots: LibraryRoots,
     from_area: Area,
+    from_root: Path,
     to_area: Area,
+    to_root: Path,
 ) -> Path:
     """Map *path* in one area to the matching path in another area.
 
@@ -35,8 +25,6 @@ def translate_path(
     preserves the selected tail. Paths need not exist. Organizational paths
     above a device's batch have no unique counterpart and are rejected.
     """
-    from_root = getattr(roots, from_area)
-    to_root = getattr(roots, to_area)
     parts = path.relative_to(from_root).parts
     if len(parts) < 3 or ".." in parts:
         raise ValueError("Expected a device/year/batch path without traversal")

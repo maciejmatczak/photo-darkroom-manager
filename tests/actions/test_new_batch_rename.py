@@ -6,11 +6,12 @@ from typing import cast
 import pytest
 
 from photo_darkroom_manager.actions import ActionPlan, NewBatchAction, RenameAction
-from photo_darkroom_manager.settings import PUBLISH_FOLDER
+from photo_darkroom_manager.library import PUBLISH_FOLDER
 
 
 def test_new_batch_execute_creates_year_batch_and_publish(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     act = NewBatchAction(darkroom, "Camera", "2026", "04", "15", "Spring Outing")
     result = act.execute(None)
     assert result.success
@@ -22,6 +23,7 @@ def test_new_batch_execute_creates_year_batch_and_publish(tmp_path: Path) -> Non
 
 def test_new_batch_execute_without_day(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     act = NewBatchAction(darkroom, "Camera", "2026", "05", None, "No Day")
     result = act.execute(None)
     assert result.success
@@ -34,6 +36,7 @@ def test_new_batch_execute_without_name_uses_date_only(
     tmp_path: Path, no_title: str | None
 ) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     act = NewBatchAction(darkroom, "Camera", "2026", "06", None, no_title)
     result = act.execute(None)
     assert result.success
@@ -43,6 +46,7 @@ def test_new_batch_execute_without_name_uses_date_only(
 
 def test_new_batch_execute_fails_when_folder_already_exists(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     existing = darkroom / "Camera" / "2026" / "2026-07 Exists"
     existing.mkdir(parents=True)
     act = NewBatchAction(darkroom, "Camera", "2026", "07", None, "Exists")
@@ -55,6 +59,7 @@ def test_new_batch_execute_fails_when_folder_already_exists(tmp_path: Path) -> N
 @pytest.mark.internal
 def test_new_batch_execute_rejects_non_none_plan(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     act = NewBatchAction(darkroom, "Camera", "2026", "08", None, "X")
     result = act.execute(cast(ActionPlan, object()))
     assert not result.success
@@ -63,6 +68,7 @@ def test_new_batch_execute_rejects_non_none_plan(tmp_path: Path) -> None:
 
 def test_new_batch_execute_fails_on_invalid_month(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     act = NewBatchAction(darkroom, "Camera", "2026", "13", None, "X")
     result = act.execute(None)
     assert not result.success
@@ -71,6 +77,7 @@ def test_new_batch_execute_fails_on_invalid_month(tmp_path: Path) -> None:
 
 def test_rename_execute_renames_batch_folder(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     old = darkroom / "Camera" / "2026" / "2026-03 rename me"
     old.mkdir(parents=True)
     act = RenameAction(old, darkroom, "2026", "03", None, "renamed batch")
@@ -84,6 +91,7 @@ def test_rename_execute_renames_batch_folder(tmp_path: Path) -> None:
 
 def test_rename_execute_fails_on_invalid_month(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     batch = darkroom / "Camera" / "2026" / "2026-03 a"
     batch.mkdir(parents=True)
     act = RenameAction(batch, darkroom, "2026", "99", None, None)
@@ -93,6 +101,7 @@ def test_rename_execute_fails_on_invalid_month(tmp_path: Path) -> None:
 
 def test_rename_execute_fails_when_target_name_exists(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     year = darkroom / "Camera" / "2026"
     year.mkdir(parents=True)
     (year / "2026-03 source").mkdir()
@@ -106,6 +115,7 @@ def test_rename_execute_fails_when_target_name_exists(tmp_path: Path) -> None:
 
 def test_rename_execute_fails_when_batch_not_recognized(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     year_only = darkroom / "Camera" / "2026"
     year_only.mkdir(parents=True)
     act = RenameAction(year_only, darkroom, "2026", "03", None, "new")
@@ -117,6 +127,7 @@ def test_rename_execute_fails_when_batch_not_recognized(tmp_path: Path) -> None:
 @pytest.mark.internal
 def test_rename_execute_rejects_non_none_plan(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     batch = darkroom / "Camera" / "2026" / "2026-03 x"
     batch.mkdir(parents=True)
     act = RenameAction(batch, darkroom, "2026", "03", None, "y")
@@ -127,6 +138,7 @@ def test_rename_execute_rejects_non_none_plan(tmp_path: Path) -> None:
 
 def test_rename_execute_noop_when_unchanged(tmp_path: Path) -> None:
     darkroom = tmp_path / "darkroom"
+    darkroom.mkdir(exist_ok=True)
     batch = darkroom / "Camera" / "2026" / "2026-03 same"
     batch.mkdir(parents=True)
     act = RenameAction(batch, darkroom, "2026", "03", None, "same")

@@ -1,8 +1,9 @@
-"""Tests for DarkroomManager and module helpers."""
+"""Tests for Engine and module helpers."""
 
 from pathlib import Path
 
 import pytest
+from conftest import Roots
 
 from photo_darkroom_manager.actions import (
     ArchiveAction,
@@ -11,15 +12,11 @@ from photo_darkroom_manager.actions import (
     RenameAction,
     TidyAction,
 )
-from photo_darkroom_manager.manager import (
-    DarkroomManager,
-    _require_one,
-)
+from photo_darkroom_manager.engine import _require_one
 from photo_darkroom_manager.scan import DarkroomNode
-from photo_darkroom_manager.settings import Settings
 
 
-def _three_roots(tmp_path: Path) -> Settings:
+def _three_roots(tmp_path: Path) -> Roots:
     root = tmp_path / "workspace"
     darkroom = root / "darkroom"
     showroom = root / "showroom"
@@ -27,7 +24,7 @@ def _three_roots(tmp_path: Path) -> Settings:
     darkroom.mkdir(parents=True)
     showroom.mkdir()
     archive.mkdir()
-    return Settings(darkroom=darkroom, showroom=showroom, archive=archive)
+    return Roots(darkroom.resolve(), showroom.resolve(), archive.resolve())
 
 
 @pytest.mark.internal
@@ -45,12 +42,14 @@ def test_require_one_rejects_zero_or_two() -> None:
 
 
 @pytest.mark.parametrize("tail", [Path(), Path("PHOTOS/nested")])
-def test_manager_maps_between_all_roots(tmp_path: Path, tail: Path) -> None:
-    settings = _three_roots(tmp_path)
-    mgr = DarkroomManager(settings)
-    working = settings.darkroom / "Camera/2026/2026-10 Walk" / tail
-    archived = settings.archive / "2026/2026-10 Walk/Camera" / tail
-    published = settings.showroom / "2026/2026-10 Walk/Camera" / tail
+def test_manager_maps_between_all_roots(
+    tmp_path: Path, tail: Path, make_engine
+) -> None:
+    roots = _three_roots(tmp_path)
+    mgr = make_engine(roots)
+    working = roots.darkroom / "Camera/2026/2026-10 Walk" / tail
+    archived = roots.archive / "2026/2026-10 Walk/Camera" / tail
+    published = roots.showroom / "2026/2026-10 Walk/Camera" / tail
     assert mgr.darkroom_path(archive_path=archived) == working
     assert mgr.darkroom_path(showroom_path=published) == working
     assert mgr.archive_path(darkroom_path=working) == archived
@@ -60,16 +59,16 @@ def test_manager_maps_between_all_roots(tmp_path: Path, tail: Path) -> None:
 
 
 @pytest.mark.internal
-def test_path_helpers_reject_zero_or_two_kwargs(tmp_path: Path) -> None:
-    settings = _three_roots(tmp_path)
-    mgr = DarkroomManager(settings)
-    p = settings.darkroom / "2026" / "a"
+def test_path_helpers_reject_zero_or_two_kwargs(tmp_path: Path, make_engine) -> None:
+    roots = _three_roots(tmp_path)
+    mgr = make_engine(roots)
+    p = roots.darkroom / "2026" / "a"
     with pytest.raises(ValueError, match="exactly one"):
         mgr.darkroom_path()
     with pytest.raises(ValueError, match="exactly one"):
         mgr.darkroom_path(
-            archive_path=settings.archive / "x",
-            showroom_path=settings.showroom / "x",
+            archive_path=roots.archive / "x",
+            showroom_path=roots.showroom / "x",
         )
     with pytest.raises(ValueError, match="exactly one"):
         mgr.showroom_path()
@@ -83,24 +82,24 @@ def test_path_helpers_reject_zero_or_two_kwargs(tmp_path: Path) -> None:
 
 @pytest.mark.internal
 def test_rescan_sets_tree_and_scanning_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_engine
 ) -> None:
-    settings = _three_roots(tmp_path)
-    mgr = DarkroomManager(settings)
+    roots = _three_roots(tmp_path)
+    mgr = make_engine(roots)
 
     fake_node = DarkroomNode(
-        path=settings.darkroom,
+        path=roots.darkroom,
         name="darkroom",
         node_type="root",
     )
 
     def scan_and_assert_scanning(p: Path) -> DarkroomNode:
         assert mgr.scanning is True
-        assert p == settings.darkroom
+        assert p == roots.darkroom
         return fake_node
 
     monkeypatch.setattr(
-        "photo_darkroom_manager.manager.scan_darkroom",
+        "photo_darkroom_manager.engine.scan_darkroom",
         scan_and_assert_scanning,
     )
 
@@ -112,10 +111,12 @@ def test_rescan_sets_tree_and_scanning_flag(
 
 
 @pytest.mark.internal
-def test_factory_methods_return_actions_with_expected_paths(tmp_path: Path) -> None:
-    settings = _three_roots(tmp_path)
-    mgr = DarkroomManager(settings)
-    folder = settings.darkroom / "Camera" / "2026" / "2026-09 batch"
+def test_factory_methods_return_actions_with_expected_paths(
+    tmp_path: Path, make_engine
+) -> None:
+    roots = _three_roots(tmp_path)
+    mgr = make_engine(roots)
+    folder = roots.darkroom / "Camera" / "2026" / "2026-09 batch"
     batch = folder
 
     t = mgr.tidy_action(folder)
@@ -125,14 +126,14 @@ def test_factory_methods_return_actions_with_expected_paths(tmp_path: Path) -> N
     ar = mgr.archive_action(folder)
     assert isinstance(ar, ArchiveAction)
     assert ar._folder_path == folder
-    assert ar._darkroom_path == settings.darkroom
-    assert ar._archive_path == settings.archive
+    assert ar._darkroom_path == roots.darkroom
+    assert ar._archive_path == roots.archive
 
     pub = mgr.publish_action(batch)
     assert isinstance(pub, PublishAction)
     assert pub._batch_path == batch
-    assert pub._showroom_path == settings.showroom
-    assert pub._darkroom_path == settings.darkroom
+    assert pub._showroom_path == roots.showroom
+    assert pub._darkroom_path == roots.darkroom
 
     ren = mgr.rename_action(batch, "2026", "03", None, "new name")
     assert isinstance(ren, RenameAction)
@@ -141,11 +142,11 @@ def test_factory_methods_return_actions_with_expected_paths(tmp_path: Path) -> N
     assert ren._month == "03"
     assert ren._day is None
     assert ren._name == "new name"
-    assert ren._darkroom_path == settings.darkroom
+    assert ren._darkroom_path == roots.darkroom
 
     na = mgr.new_batch_action("Camera", "2026", "09", None, "Title")
     assert isinstance(na, NewBatchAction)
-    assert na._darkroom_path == settings.darkroom
+    assert na._darkroom_path == roots.darkroom
     assert na._year == "2026"
     assert na._month == "09"
     assert na._day is None

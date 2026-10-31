@@ -1,4 +1,4 @@
-"""structlog setup: file + stderr sinks, level resolution, log retention."""
+"""structlog setup: file + stderr sinks, levels, log retention."""
 
 from __future__ import annotations
 
@@ -16,9 +16,6 @@ from structlog.processors import TimeStamper, format_exc_info
 from structlog.stdlib import ProcessorFormatter
 from structlog.types import Processor
 
-from photo_darkroom_manager.settings import get_logs_dir
-
-LOG_LEVEL_ENV = "PHOTO_DARKROOM_MANAGER_LOG_LEVEL"
 RETENTION_DAYS = 30
 APP_LOGGER_NAME = "photo_darkroom_manager"
 LOG_FILE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}_\d+\.log$")
@@ -27,16 +24,6 @@ THIRD_PARTY_LOGGERS = ("nicegui", "uvicorn", "uvicorn.error", "uvicorn.access")
 
 _configured = False
 _log_file_path: Path | None = None
-
-
-def resolve_log_level(log_level: str | None = None) -> str:
-    """Env override, then *log_level*, then INFO."""
-    env = os.environ.get(LOG_LEVEL_ENV)
-    if env is not None and env.strip():
-        return env.strip().upper()
-    if log_level is not None:
-        return log_level.upper()
-    return "INFO"
 
 
 def build_log_file_path(logs_dir: Path) -> Path:
@@ -76,17 +63,20 @@ def _apply_log_levels(level_name: str) -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def configure_logging(log_level: str | None = None) -> Path | None:
-    """Configure structlog + stdlib handlers (idempotent after first call)."""
+def configure_logging(log_level: str = "INFO", *, logs_dir: Path) -> Path | None:
+    """Configure structlog + stdlib handlers under *logs_dir*.
+
+    Repeat calls only re-apply *log_level*; handlers and the log file from
+    the first call are kept.
+    """
     global _configured, _log_file_path
 
-    level_name = resolve_log_level(log_level)
+    level_name = log_level.upper()
 
     if _configured:
         _apply_log_levels(level_name)
         return _log_file_path
 
-    logs_dir = get_logs_dir()
     logs_dir.mkdir(parents=True, exist_ok=True)
     cleanup_old_logs(logs_dir)
 

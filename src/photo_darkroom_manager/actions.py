@@ -19,6 +19,11 @@ from photo_darkroom_manager.file_utils import (
     merge_tree_into_archive,
     preview_merge_into_archive,
 )
+from photo_darkroom_manager.library import (
+    PHOTOS_FOLDER,
+    PUBLISH_FOLDER,
+    VIDEOS_FOLDER,
+)
 from photo_darkroom_manager.media import (
     ALL_IMAGE_EXTENSIONS,
     is_file_a_photo,
@@ -30,12 +35,7 @@ from photo_darkroom_manager.models import (
     recognize_darkroom_batch,
     validate_device_name,
 )
-from photo_darkroom_manager.paths import LibraryRoots, translate_path
-from photo_darkroom_manager.settings import (
-    PHOTOS_FOLDER,
-    PUBLISH_FOLDER,
-    VIDEOS_FOLDER,
-)
+from photo_darkroom_manager.paths import translate_path
 
 _PREVIEW_PATH_LINES = 35
 
@@ -108,6 +108,18 @@ def _format_tidy_move_lines(root: Path, pairs: Sequence[tuple[Path, Path]]) -> s
 def _format_extension_stats(paths: Sequence[Path]) -> str:
     counts = Counter(f".{_file_extension(p)}" for p in paths)
     return "\n".join(f"  {ext}: {n}" for ext, n in sorted(counts.items()))
+
+
+def _unavailable_root(**roots: Path) -> str | None:
+    """Message for the first library root that is not a folder, if any.
+
+    Actions check their roots themselves at prepare and execute: a root
+    validated earlier may be gone by now (e.g. an unplugged drive).
+    """
+    for name, root in roots.items():
+        if not root.is_dir():
+            return f"{name.capitalize()} folder is not available: {root}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -354,6 +366,8 @@ class TidyAction(Action):
                 False,
                 "Internal error: invalid plan for tidy",
             )
+        if not plan.folder_path.is_dir():
+            return ExecutionResult(False, f"Not a directory: {plan.folder_path}")
 
         conflicts = _find_tidy_conflicts(plan.moves)
         if conflicts:
@@ -400,17 +414,25 @@ class ArchiveAction(Action):
     def __init__(
         self,
         folder_path: Path,
-        roots: LibraryRoots,
+        *,
+        darkroom: Path,
+        archive: Path,
     ) -> None:
         self._folder_path = folder_path
-        self._roots = roots
-        self._darkroom_path = roots.darkroom
-        self._archive_path = roots.archive
+        self._darkroom_path = darkroom
+        self._archive_path = archive
+
+    def _unavailable_root(self) -> str | None:
+        return _unavailable_root(
+            darkroom=self._darkroom_path, archive=self._archive_path
+        )
 
     def log_context(self) -> dict[str, object]:
         return {"folder": str(self._folder_path)}
 
     def _prepare(self) -> ArchivePlan | PrepareError:
+        if problem := self._unavailable_root():
+            return PrepareError(False, problem)
         folder_path = self._folder_path
         batch = recognize_darkroom_batch(self._darkroom_path, folder_path)
         if batch is None:
@@ -418,9 +440,10 @@ class ArchiveAction(Action):
 
         target_dir = translate_path(
             folder_path,
-            roots=self._roots,
             from_area="darkroom",
+            from_root=self._darkroom_path,
             to_area="archive",
+            to_root=self._archive_path,
         )
 
         try:
@@ -455,6 +478,8 @@ class ArchiveAction(Action):
                 False,
                 "Internal error: invalid plan for archive",
             )
+        if problem := self._unavailable_root():
+            return ExecutionResult(False, problem)
         try:
             plan.target_dir.parent.mkdir(parents=True, exist_ok=True)
             merge_result = merge_tree_into_archive(plan.folder_path, plan.target_dir)
@@ -532,17 +557,25 @@ class PublishAction(Action):
     def __init__(
         self,
         batch_path: Path,
-        roots: LibraryRoots,
+        *,
+        darkroom: Path,
+        showroom: Path,
     ) -> None:
         self._batch_path = batch_path
-        self._roots = roots
-        self._showroom_path = roots.showroom
-        self._darkroom_path = roots.darkroom
+        self._showroom_path = showroom
+        self._darkroom_path = darkroom
+
+    def _unavailable_root(self) -> str | None:
+        return _unavailable_root(
+            darkroom=self._darkroom_path, showroom=self._showroom_path
+        )
 
     def log_context(self) -> dict[str, object]:
         return {"batch": str(self._batch_path)}
 
     def _prepare(self) -> PublishPlan | PrepareError:
+        if problem := self._unavailable_root():
+            return PrepareError(False, problem)
         batch_path = self._batch_path
         batch = recognize_darkroom_batch(self._darkroom_path, batch_path)
         if batch is None:
@@ -562,9 +595,10 @@ class PublishAction(Action):
 
         target_dir = translate_path(
             batch.batch_path,
-            roots=self._roots,
             from_area="darkroom",
+            from_root=self._darkroom_path,
             to_area="showroom",
+            to_root=self._showroom_path,
         )
         conflicts: list[tuple[Path, Path]] = []
         for f in files:
@@ -587,6 +621,8 @@ class PublishAction(Action):
                 False,
                 "Internal error: invalid plan for publish",
             )
+        if problem := self._unavailable_root():
+            return ExecutionResult(False, problem)
         plan.target_dir.mkdir(parents=True, exist_ok=True)
 
         moved = 0
@@ -630,6 +666,8 @@ class NewBatchAction(Action):
         }
 
     def _prepare(self) -> ActionPlan | PrepareError | None:
+        if problem := _unavailable_root(darkroom=self._darkroom_path):
+            return PrepareError(False, problem)
         return None
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
@@ -638,6 +676,8 @@ class NewBatchAction(Action):
                 False,
                 "Internal error: new batch expects no plan",
             )
+        if problem := _unavailable_root(darkroom=self._darkroom_path):
+            return ExecutionResult(False, problem)
         darkroom_path = self._darkroom_path
         year = self._year
         month = self._month
@@ -702,6 +742,8 @@ class RenameAction(Action):
         return {"batch": str(self._batch_path)}
 
     def _prepare(self) -> ActionPlan | PrepareError | None:
+        if problem := _unavailable_root(darkroom=self._darkroom_path):
+            return PrepareError(False, problem)
         return None
 
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult:
@@ -710,6 +752,8 @@ class RenameAction(Action):
                 False,
                 "Internal error: rename expects no plan",
             )
+        if problem := _unavailable_root(darkroom=self._darkroom_path):
+            return ExecutionResult(False, problem)
         batch_path = self._batch_path
         darkroom_path = self._darkroom_path
         year = self._year

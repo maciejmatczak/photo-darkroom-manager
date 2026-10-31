@@ -12,13 +12,11 @@ import pytest
 
 from photo_darkroom_manager.logging_config import (
     LOG_FILE_PATTERN,
-    LOG_LEVEL_ENV,
     RETENTION_DAYS,
     build_log_file_path,
     cleanup_old_logs,
     configure_logging,
     reset_logging_state_for_tests,
-    resolve_log_level,
 )
 
 
@@ -26,21 +24,6 @@ from photo_darkroom_manager.logging_config import (
 def _reset_logging() -> Iterator[None]:
     yield
     reset_logging_state_for_tests()
-
-
-def test_resolve_log_level_defaults_to_info() -> None:
-    assert resolve_log_level(None) == "INFO"
-
-
-def test_resolve_log_level_uses_argument() -> None:
-    assert resolve_log_level("DEBUG") == "DEBUG"
-
-
-def test_resolve_log_level_env_overrides_argument(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LOG_LEVEL_ENV, "WARNING")
-    assert resolve_log_level("DEBUG") == "WARNING"
 
 
 def test_build_log_file_path_pattern(tmp_path: Path) -> None:
@@ -67,18 +50,12 @@ def test_cleanup_old_logs_removes_stale_files(tmp_path: Path) -> None:
     assert recent.exists()
 
 
-def test_configure_logging_is_idempotent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "photo_darkroom_manager.logging_config.get_logs_dir",
-        lambda: tmp_path / "logs",
-    )
+def test_configure_logging_is_idempotent(tmp_path: Path) -> None:
 
-    first = configure_logging()
+    first = configure_logging(logs_dir=tmp_path / "logs")
     assert first is not None
     handler_count = len(logging.getLogger().handlers)
 
-    second = configure_logging()
+    second = configure_logging(logs_dir=tmp_path / "other")
     assert second == first
     assert len(logging.getLogger().handlers) == handler_count

@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from photo_darkroom_manager.library import PUBLISH_FOLDER
 from photo_darkroom_manager.models import (
     BatchFolderName,
     DarkroomBatch,
     recognize_darkroom_batch,
 )
-from photo_darkroom_manager.settings import PUBLISH_FOLDER
 
 
 def test_darkroom_year_batch_valid() -> None:

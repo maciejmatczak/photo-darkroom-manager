@@ -3,8 +3,10 @@
 from pathlib import Path
 
 import pytest
+from conftest import Roots
 
-from photo_darkroom_manager.manager import DarkroomManager
+from photo_darkroom_manager.engine import Engine
+from photo_darkroom_manager.library import PHOTOS_FOLDER, PUBLISH_FOLDER
 from photo_darkroom_manager.scan import (
     DarkroomNode,
     FolderStats,
@@ -17,7 +19,6 @@ from photo_darkroom_manager.scan import (
     rescan_subtree,
     scan_darkroom,
 )
-from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, Settings
 
 
 @pytest.mark.internal
@@ -457,6 +458,7 @@ def test_reaggregate_ancestors_clears_issue_when_last_sibling_fixed(
 def test_manager_tidy_calls_rescan_subtree_not_full_rescan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    make_engine,
 ) -> None:
     """Executing a tidy action via the manager must use scoped rescan only."""
     darkroom = tmp_path / "darkroom"
@@ -468,8 +470,7 @@ def test_manager_tidy_calls_rescan_subtree_not_full_rescan(
     for d in (showroom, archive):
         d.mkdir()
 
-    settings = Settings(darkroom=darkroom, showroom=showroom, archive=archive)
-    mgr = DarkroomManager(settings)
+    mgr = make_engine(Roots(darkroom, showroom, archive))
     mgr.rescan()
     assert mgr.tree is not None
 
@@ -479,11 +480,11 @@ def test_manager_tidy_calls_rescan_subtree_not_full_rescan(
     full_rescan_called = []
     original_rescan = mgr.__class__.rescan
 
-    def spy_rescan(self: DarkroomManager) -> object:
+    def spy_rescan(self: Engine) -> object:
         full_rescan_called.append(True)
         return original_rescan(self)
 
-    monkeypatch.setattr(DarkroomManager, "rescan", spy_rescan)
+    monkeypatch.setattr(Engine, "rescan", spy_rescan)
 
     # Move file to PHOTOS/ (simulate what TidyAction does)
     photos = batch_dir / PHOTOS_FOLDER

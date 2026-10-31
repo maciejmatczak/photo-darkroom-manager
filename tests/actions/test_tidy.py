@@ -11,7 +11,7 @@ from photo_darkroom_manager.actions import (
     _collect_files_to_tidy,
     collect_files_to_tidy,
 )
-from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
+from photo_darkroom_manager.library import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
 
 TIDY_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 tidy basic moves jpg and xmp"
 
