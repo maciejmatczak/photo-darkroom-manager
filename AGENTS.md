@@ -9,6 +9,17 @@ Wrap all generated markdown files at 80 columns.
 Never commit automatically. When a coherent unit of work is done and verified,
 propose a commit (scope and message) and wait for the user to approve it.
 
+## Design approaches
+
+### Core services
+
+When a domain responsibility has several operations sharing state or rules,
+consider grouping them into a service-like component that owns them, in the
+spirit of a service layer between components; a plain function or attribute
+is often enough. If a service fits, name it after the domain rather than the
+pattern, keep it deep and unaware of its callers, and present it next to at
+least one alternative so the choice is made, not assumed.
+
 ## Branching (redesign line)
 
 This checkout is on `dev-core-split`, a long-lived side line for the core
