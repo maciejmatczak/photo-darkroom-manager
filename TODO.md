@@ -8,7 +8,7 @@
     - It seems to me the biggest culprit right now is not having a middleware class some sort of a controller like in the classical MVC so that the actions from the specific note on the UI are also triggering the model recalculation but only from the one node.
     - Example: tidying files in one node should only trigger local node scan, not the whole tree.
 - [ ] batch title validation: support diacritic characters (OpenSpec change
-  `album-title-diacritics`, needs rebasing onto `library-layout`)
+  `album-title-diacritics`, needs rebasing onto `app/library-layout`)
 - [ ] bug?: config resets on one of the directory going bad
 - [ ] **Cull / edit commands:** replace ad-hoc shell-style parsing (`shlex.split(posix=False)` + stripping outer quotes) with something easier to reason about and harder to misconfigure—e.g. structured settings (executable path + argument list / template per arg), or a documented minimal parser—so we are not fighting Windows quoting and `shlex` semantics forever
 - [ ] enh: modify executed action to be more eager: move/archive if possible, leave only the failed ones for the next run
