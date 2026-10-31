@@ -144,6 +144,7 @@ def test_load_settings_returns_none_when_missing(
     assert load_settings() is None
 
 
+@pytest.mark.internal
 def test_load_settings_invalid_yaml_syntax_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -154,6 +155,7 @@ def test_load_settings_invalid_yaml_syntax_raises(
         load_settings()
 
 
+@pytest.mark.internal
 def test_load_settings_valid_yaml_invalid_settings_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

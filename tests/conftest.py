@@ -87,3 +87,15 @@ def settings(darkroom_root: Path, showroom_root: Path, archive_root: Path) -> Se
     return Settings(
         darkroom=darkroom_root, showroom=showroom_root, archive=archive_root
     )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark every test ``contract`` unless it is explicitly ``internal``.
+
+    ``contract`` tests pin user-visible behaviour the core redesign must keep;
+    ``internal`` tests cover private helpers or behaviour planned to change
+    (see docs/core-split/ROADMAP.md, Phase 0). Select with ``-m contract``.
+    """
+    for item in items:
+        if item.get_closest_marker("internal") is None:
+            item.add_marker(pytest.mark.contract)

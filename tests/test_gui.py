@@ -2,6 +2,7 @@
 
 import asyncio
 
+import pytest
 from nicegui import ui
 from nicegui.testing.user_simulation import user_simulation
 
@@ -9,6 +10,8 @@ from photo_darkroom_manager.gui.layout import DarkroomUI
 from photo_darkroom_manager.gui.node import DarkroomNodeUI
 from photo_darkroom_manager.manager import DarkroomManager
 from photo_darkroom_manager.scan import DarkroomNode
+
+pytestmark = pytest.mark.internal
 
 
 def test_new_batch_form_creates_custom_and_existing_devices(settings) -> None:

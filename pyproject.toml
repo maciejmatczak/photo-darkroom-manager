@@ -48,3 +48,8 @@ known-first-party = ["photo_darkroom_manager"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = [
+    "contract: user-visible behaviour the core redesign must keep",
+    "internal: private helpers or behaviour planned to change",
+]

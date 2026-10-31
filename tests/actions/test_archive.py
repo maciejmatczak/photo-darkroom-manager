@@ -29,7 +29,7 @@ def test_archive_prepare_happy_batch_root(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, ArchivePlan)
     assert out.leaf_count == 4
     assert out.folder_path == batch
@@ -45,7 +45,7 @@ def test_archive_prepare_blocked_by_duplicate_in_archive(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PrepareError)
     assert not out.success
     assert "Archive blocked" in out.message
@@ -58,7 +58,7 @@ def test_archive_prepare_unrecognized_batch_path(photo_setup) -> None:
         year_only,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PrepareError)
     assert out.message == "Could not recognize batch for this path"
 
@@ -76,7 +76,7 @@ def test_archive_prepare_does_not_create_archive_directories(photo_setup) -> Non
         photos,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, ArchivePlan)
     after = archive_tree_snapshot()
     assert before == after
@@ -89,7 +89,7 @@ def test_archive_prepare_subfolder_photos(photo_setup) -> None:
         photos,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, ArchivePlan)
     assert out.leaf_count == 1
     expected_rel = ARCHIVE_BATCH_BASIC_DEST / PHOTOS_FOLDER
@@ -103,10 +103,10 @@ def test_archive_execute_moves_all_leaves(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    plan = act._prepare()
+    plan = act.prepare()
     assert isinstance(plan, ArchivePlan)
     assert plan.leaf_count == len(expected_rels)
-    result = act._execute(plan)
+    result = act.execute(plan)
     assert result.success
     assert f"{len(expected_rels)} file" in result.message
 
@@ -126,14 +126,14 @@ def test_archive_execute_blocked_when_conflict_appears_after_prepare(
         batch,
         photo_setup.settings,
     )
-    plan = act._prepare()
+    plan = act.prepare()
     assert isinstance(plan, ArchivePlan)
 
     block_at = photo_setup.settings.archive / ARCHIVE_BATCH_BASIC_DEST / block_rel
     block_at.parent.mkdir(parents=True, exist_ok=True)
     block_at.write_bytes(b"")
 
-    result = act._execute(plan)
+    result = act.execute(plan)
     assert not result.success
     assert result.rescan_node_path is None
     assert "Archive blocked" in result.message

@@ -17,17 +17,20 @@ from photo_darkroom_manager.actions import (
 )
 
 
+@pytest.mark.internal
 def test_execution_result_rescan_node_path_defaults_none() -> None:
     result = ExecutionResult(True, "ok")
     assert result.rescan_node_path is None
 
 
+@pytest.mark.internal
 def test_resolve_command_empty_template(tmp_path: Path) -> None:
     r = _resolve_command("   ", tmp_path)
     assert isinstance(r, PrepareError)
     assert "empty" in r.message.lower()
 
 
+@pytest.mark.internal
 def test_resolve_command_folder_placeholder(tmp_path: Path) -> None:
     out = _resolve_command('echo "{folder}"', tmp_path)
     assert isinstance(out, list)
@@ -35,6 +38,7 @@ def test_resolve_command_folder_placeholder(tmp_path: Path) -> None:
     assert str(tmp_path.resolve()) in joined
 
 
+@pytest.mark.internal
 def test_resolve_command_strips_cmd_style_outer_quotes(tmp_path: Path) -> None:
     """posix=False keeps "" around tokens; argv must not contain those quotes."""
     exe = r"C:\Program Files\FastRawViewer.exe"
@@ -47,18 +51,21 @@ def test_resolve_command_strips_cmd_style_outer_quotes(tmp_path: Path) -> None:
     assert not str(out[1]).startswith('"')
 
 
+@pytest.mark.internal
 def test_resolve_command_unknown_placeholder(tmp_path: Path) -> None:
     r = _resolve_command("{not_a_real_key}", tmp_path)
     assert isinstance(r, PrepareError)
     assert "placeholder" in r.message.lower()
 
 
+@pytest.mark.internal
 def test_resolve_command_no_first_image(tmp_path: Path) -> None:
     r = _resolve_command("{first_image_in_folder}", tmp_path)
     assert isinstance(r, PrepareError)
     assert "image" in r.message.lower()
 
 
+@pytest.mark.internal
 def test_resolve_command_first_image_pick_min_name(tmp_path: Path) -> None:
     (tmp_path / "z.jpg").write_bytes(b"")
     (tmp_path / "a.jpg").write_bytes(b"")
@@ -68,15 +75,18 @@ def test_resolve_command_first_image_pick_min_name(tmp_path: Path) -> None:
     assert "a.jpg" in joined
 
 
+@pytest.mark.internal
 def test_resolve_command_shlex_bad_quotes(tmp_path: Path) -> None:
     r = _resolve_command('echo "unclosed', tmp_path)
     assert isinstance(r, PrepareError)
 
 
+@pytest.mark.internal
 def test_find_first_image_none_when_empty(tmp_path: Path) -> None:
     assert _find_first_image(tmp_path) is None
 
 
+@pytest.mark.internal
 def test_find_first_image_returns_min_by_name(tmp_path: Path) -> None:
     (tmp_path / "m.raw").write_bytes(b"")
     (tmp_path / "a.jpg").write_bytes(b"")
@@ -87,13 +97,13 @@ def test_find_first_image_returns_min_by_name(tmp_path: Path) -> None:
 
 def test_open_external_prepare_ok_without_first_image_key(tmp_path: Path) -> None:
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    prep = act._prepare()
+    prep = act.prepare()
     assert prep is None
 
 
 def test_open_external_prepare_error_propagates(tmp_path: Path) -> None:
     act = OpenExternalAppAction("{first_image_in_folder}", tmp_path)
-    prep = act._prepare()
+    prep = act.prepare()
     assert isinstance(prep, PrepareError)
 
 
@@ -115,7 +125,7 @@ def test_open_external_execute_uses_devnull_and_wait(
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    result = act._execute(None)
+    result = act.execute(None)
     assert result.success
     assert result.rescan_node_path is None
     assert captured["stdout"] is subprocess.DEVNULL
@@ -139,7 +149,7 @@ def test_open_external_execute_timeout_means_still_running(
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    result = act._execute(None)
+    result = act.execute(None)
     assert result.success
     assert result.rescan_node_path is None
 
@@ -157,7 +167,7 @@ def test_open_external_execute_nonzero_exit(
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    result = act._execute(None)
+    result = act.execute(None)
     assert not result.success
     assert result.rescan_node_path is None
     assert "7" in result.message

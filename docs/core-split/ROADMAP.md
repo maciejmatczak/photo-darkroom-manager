@@ -16,11 +16,16 @@ OpenSpec change, and the design lives there, not here.
   - Settings, the indexed folder tree with stats, issues and available
     actions, and running jobs, all in one place
   - In memory now, with a storage seam for a database index later
+  - Jobs: formalized representation of triggered actions
 - Thin clients over it
   - CLI first: experimental access to the core, possibly for agents
   - GUI later: the same look, rendering core state and sending intents
-- Safe work on user files
-  - Preview the impact, run as an observable job, report what happened
+- Trustworthy asset operations, as in a DAM
+  - The user's photos and videos are the assets; the folder layout is
+    their lifecycle (darkroom → showroom → archive)
+  - Every operation previews its impact on assets, runs as an observable
+    job, and leaves an audit trail of what moved where
+  - No asset is ever lost: conflicts block, failures are reported exactly
 
 ## Guiding principles
 
@@ -42,16 +47,18 @@ OpenSpec change, and the design lives there, not here.
   - [x] Core assumptions about the GUI (in-place node identity on rescan)
   - [x] Hint: write it as a short note next to the specs; it is the input
         for Phase 1
-- [ ] Classify the existing test suite
-  - [ ] `contract`: user-visible outcomes we keep (files moved, conflicts
+- [x] Classify the existing test suite (`pytest -m contract` / `-m internal`)
+  - [x] `contract`: user-visible outcomes we keep (files moved, conflicts
         refused, stats and issues reported, settings validated)
-  - [ ] `internal`: tests of private helpers or behaviour we plan to change
+  - [x] `internal`: tests of private helpers or behaviour we plan to change
         (see `IMPROVE_ARCHITECTURE.md`)
-  - [ ] Hint: pytest markers first, since files mix both; folders only if
+  - [x] Hint: pytest markers first, since files mix both; folders only if
         the split stays clean
-- [ ] Fill contract gaps only where cheap
-  - [ ] Hint: assert outcomes on disk and result kinds, not preview strings
+- [x] Fill contract gaps only where cheap
+  - [x] Hint: assert outcomes on disk and result kinds, not preview strings
         or object identity; do not freeze behaviour we know is wrong
+  - [x] Action tests use public `prepare()` / `execute()`; file-safety
+        tests in `tests/test_file_safety.py`
 
 ## Phase 1: Core boundary and state
 

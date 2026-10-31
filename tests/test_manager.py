@@ -30,11 +30,13 @@ def _three_roots(tmp_path: Path) -> Settings:
     return Settings(darkroom=darkroom, showroom=showroom, archive=archive)
 
 
+@pytest.mark.internal
 def test_require_one_accepts_single_path() -> None:
     _require_one(Path("/a"), None)
     _require_one(None, Path("/b"))
 
 
+@pytest.mark.internal
 def test_require_one_rejects_zero_or_two() -> None:
     with pytest.raises(ValueError, match="exactly one"):
         _require_one(None, None)
@@ -57,6 +59,7 @@ def test_manager_maps_between_all_roots(tmp_path: Path, tail: Path) -> None:
     assert mgr.showroom_path(archive_path=archived) == published
 
 
+@pytest.mark.internal
 def test_path_helpers_reject_zero_or_two_kwargs(tmp_path: Path) -> None:
     settings = _three_roots(tmp_path)
     mgr = DarkroomManager(settings)
@@ -78,6 +81,7 @@ def test_path_helpers_reject_zero_or_two_kwargs(tmp_path: Path) -> None:
         mgr.archive_path(darkroom_path=p, showroom_path=p)
 
 
+@pytest.mark.internal
 def test_rescan_sets_tree_and_scanning_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -107,6 +111,7 @@ def test_rescan_sets_tree_and_scanning_flag(
     assert mgr.scanning is False
 
 
+@pytest.mark.internal
 def test_factory_methods_return_actions_with_expected_paths(tmp_path: Path) -> None:
     settings = _three_roots(tmp_path)
     mgr = DarkroomManager(settings)

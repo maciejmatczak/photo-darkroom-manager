@@ -20,6 +20,7 @@ from photo_darkroom_manager.scan import (
 from photo_darkroom_manager.settings import PHOTOS_FOLDER, PUBLISH_FOLDER, Settings
 
 
+@pytest.mark.internal
 def test_count_files_photo_video_other_including_xmp_as_other(tmp_path: Path) -> None:
     d = tmp_path / "count"
     d.mkdir()
@@ -33,6 +34,7 @@ def test_count_files_photo_video_other_including_xmp_as_other(tmp_path: Path) ->
     assert st.other_file_count == 2
 
 
+@pytest.mark.internal
 def test_rollup_subtree_stats_bottom_up_matches_full_tree(tmp_path: Path) -> None:
     """Roll up deepest-first so each parent sees already-totaled children."""
     p = tmp_path / "p"
@@ -63,6 +65,7 @@ def test_rollup_subtree_stats_bottom_up_matches_full_tree(tmp_path: Path) -> Non
     assert parent.stats.other_file_count == 4
 
 
+@pytest.mark.internal
 def test_rollup_subtree_stats_sums_one_level_only(tmp_path: Path) -> None:
     """Rolled-up child stats must not be fed back through a full recursive sum."""
     p = tmp_path / "p"
@@ -85,6 +88,7 @@ def test_rollup_subtree_stats_sums_one_level_only(tmp_path: Path) -> None:
     assert parent.stats.image_count == 2
 
 
+@pytest.mark.internal
 def test_detect_untidy_true_when_misplaced_photo_at_batch_root(tmp_path: Path) -> None:
     batch = tmp_path / "2026-01 batch"
     batch.mkdir(parents=True)
@@ -92,6 +96,7 @@ def test_detect_untidy_true_when_misplaced_photo_at_batch_root(tmp_path: Path) -
     assert _detect_untidy(batch) is True
 
 
+@pytest.mark.internal
 def test_detect_untidy_false_when_photos_only_in_photos_folder(tmp_path: Path) -> None:
     photos = tmp_path / "2026-01 tidy" / PHOTOS_FOLDER
     photos.mkdir(parents=True)
@@ -99,6 +104,7 @@ def test_detect_untidy_false_when_photos_only_in_photos_folder(tmp_path: Path) -
     assert _detect_untidy(photos) is False
 
 
+@pytest.mark.internal
 def test_propagate_issues_untidy_bubbles_to_ancestors() -> None:
     root = DarkroomNode(
         path=Path("root"), name="darkroom", node_type="root", stats=FolderStats()
@@ -227,6 +233,7 @@ def test_scan_untidy_batch_propagates_to_root(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.internal
 def test_scan_darkroom_sets_parent_pointers(tmp_path: Path) -> None:
     dr = tmp_path / "darkroom"
     batch = dr / "Camera" / "2026" / "2026-01 check"
@@ -245,6 +252,7 @@ def test_scan_darkroom_sets_parent_pointers(tmp_path: Path) -> None:
     assert photos_node.parent is al
 
 
+@pytest.mark.internal
 def test_scan_darkroom_root_has_no_parent(tmp_path: Path) -> None:
     dr = tmp_path / "darkroom"
     dr.mkdir()
@@ -252,6 +260,7 @@ def test_scan_darkroom_root_has_no_parent(tmp_path: Path) -> None:
     assert tree.parent is None
 
 
+@pytest.mark.internal
 def test_scan_parent_excluded_from_repr_and_eq(tmp_path: Path) -> None:
     """parent must be repr=False / compare=False to avoid infinite recursion."""
     dr = tmp_path / "darkroom"
@@ -274,6 +283,7 @@ def test_scan_parent_excluded_from_repr_and_eq(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.internal
 def test_aggregate_issues_keeps_sibling_issue_on_ancestor(tmp_path: Path) -> None:
     """Clearing one batch's untidy must not clear an ancestor that still has a
     sibling batch with the issue."""
@@ -362,6 +372,7 @@ def test_rescan_subtree_creates_new_children_after_tidy(tmp_path: Path) -> None:
         assert child.parent is batch
 
 
+@pytest.mark.internal
 def test_rescan_subtree_preserves_node_identity_and_parent(tmp_path: Path) -> None:
     dr = tmp_path / "darkroom"
     batch_dir = dr / "Camera" / "2026" / "2026-04 identity"
@@ -442,6 +453,7 @@ def test_reaggregate_ancestors_clears_issue_when_last_sibling_fixed(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.internal
 def test_manager_tidy_calls_rescan_subtree_not_full_rescan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

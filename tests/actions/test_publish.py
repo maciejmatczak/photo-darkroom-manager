@@ -47,7 +47,7 @@ def test_publish_prepare_happy_empty_conflicts(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PublishPlan)
     assert out.conflict_pairs == ()
     assert frozenset(f.name for f in out.files) == expected_names
@@ -65,7 +65,7 @@ def test_publish_prepare_conflict_pairs_when_showroom_has_same_name(
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PublishPlan)
     assert len(out.conflict_pairs) == 1
     src, dst = out.conflict_pairs[0]
@@ -80,7 +80,7 @@ def test_publish_prepare_fails_when_publish_dir_missing(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PrepareError)
     assert out.message == "PUBLISH directory does not exist"
 
@@ -94,7 +94,7 @@ def test_publish_prepare_fails_when_publish_dir_empty(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PrepareError)
     assert out.message == "PUBLISH directory is empty"
 
@@ -108,7 +108,7 @@ def test_publish_prepare_fails_when_publish_has_subdir(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    out = act._prepare()
+    out = act.prepare()
     assert isinstance(out, PrepareError)
     assert out.message == "PUBLISH directory contains subdirectories"
 
@@ -121,9 +121,9 @@ def test_publish_execute_moves_files_to_showroom(photo_setup) -> None:
         batch,
         photo_setup.settings,
     )
-    plan = act._prepare()
+    plan = act.prepare()
     assert isinstance(plan, PublishPlan)
-    result = act._execute(plan)
+    result = act.execute(plan)
     assert result.success
     assert f"{len(names)} file" in result.message
 
@@ -141,11 +141,11 @@ def test_publish_execute_unlinks_dest_then_replaces_on_conflict(photo_setup) -> 
         batch,
         photo_setup.settings,
     )
-    plan = act._prepare()
+    plan = act.prepare()
     assert isinstance(plan, PublishPlan)
     assert len(plan.conflict_pairs) == 1
 
-    result = act._execute(plan)
+    result = act.execute(plan)
     assert result.success
 
     dest = (

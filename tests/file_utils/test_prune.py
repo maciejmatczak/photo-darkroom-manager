@@ -6,6 +6,8 @@ import pytest
 
 from photo_darkroom_manager.file_utils import _prune_empty_dirs_under, _rmdir_empty_dir
 
+pytestmark = pytest.mark.internal
+
 
 def test_rmdir_empty_dir_removes_empty_directory(tmp_path: Path) -> None:
     d = tmp_path / "empty"
