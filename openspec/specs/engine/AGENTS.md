@@ -9,6 +9,10 @@ guarantees, stated as observable behavior of the engine's interface:
   for every action and client.
 - Requests: an action request is either executed or rejected with a reason,
   and only one action runs at a time.
+- User config: loading, reading, updating and saving the user's
+  configuration, and how its problems are reported.
+- Engine status: the configured values the engine works with, whether it
+  can work and why not, and its runtime log level.
 
 **Belongs here** if a client could depend on it without knowing how the
 engine is built.
