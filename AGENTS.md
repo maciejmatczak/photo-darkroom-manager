@@ -20,6 +20,17 @@ is often enough. If a service fits, name it after the domain rather than the
 pattern, keep it deep and unaware of its callers, and present it next to at
 least one alternative so the choice is made, not assumed.
 
+### Modules and their tests
+
+A deep module that needs several files becomes a package (for example
+`src/photo_darkroom_manager/library/`). Its tests mirror it: when the
+module needs more than one test file, they go in a folder of the same name
+(`tests/library/`, with `__init__.py`), one test file per submodule
+(`test_layout.py`, `test_media.py`, `test_tree.py`, ...). Tests follow the
+code they exercise, not the caller that uses it: a helper's tests live with
+the module that owns the helper. Tests through the engine that span
+several domains stay at the top of `tests/`.
+
 ## Branching (redesign line)
 
 This checkout is on `dev-core-split`, a long-lived side line for the core

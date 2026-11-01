@@ -13,7 +13,6 @@ from photo_darkroom_manager.actions import (
     TidyAction,
 )
 from photo_darkroom_manager.engine import _require_one
-from photo_darkroom_manager.scan import DarkroomNode
 
 
 def _three_roots(tmp_path: Path) -> Roots:
@@ -81,36 +80,6 @@ def test_path_helpers_reject_zero_or_two_kwargs(tmp_path: Path, make_engine) -> 
 
 
 @pytest.mark.internal
-def test_rescan_sets_tree_and_scanning_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_engine
-) -> None:
-    roots = _three_roots(tmp_path)
-    mgr = make_engine(roots)
-
-    fake_node = DarkroomNode(
-        path=roots.darkroom,
-        name="darkroom",
-        node_type="root",
-    )
-
-    def scan_and_assert_scanning(p: Path) -> DarkroomNode:
-        assert mgr.scanning is True
-        assert p == roots.darkroom
-        return fake_node
-
-    monkeypatch.setattr(
-        "photo_darkroom_manager.engine.scan_darkroom",
-        scan_and_assert_scanning,
-    )
-
-    assert mgr.scanning is False
-    out = mgr.rescan()
-    assert out is fake_node
-    assert mgr.tree is fake_node
-    assert mgr.scanning is False
-
-
-@pytest.mark.internal
 def test_factory_methods_return_actions_with_expected_paths(
     tmp_path: Path, make_engine
 ) -> None:
@@ -119,23 +88,23 @@ def test_factory_methods_return_actions_with_expected_paths(
     folder = roots.darkroom / "Camera" / "2026" / "2026-09 batch"
     batch = folder
 
-    t = mgr.tidy_action(folder)
+    t = mgr.action_tidy(folder)
     assert isinstance(t, TidyAction)
     assert t._folder_path == folder
 
-    ar = mgr.archive_action(folder)
+    ar = mgr.action_archive(folder)
     assert isinstance(ar, ArchiveAction)
     assert ar._folder_path == folder
     assert ar._darkroom_path == roots.darkroom
     assert ar._archive_path == roots.archive
 
-    pub = mgr.publish_action(batch)
+    pub = mgr.action_publish(batch)
     assert isinstance(pub, PublishAction)
     assert pub._batch_path == batch
     assert pub._showroom_path == roots.showroom
     assert pub._darkroom_path == roots.darkroom
 
-    ren = mgr.rename_action(batch, "2026", "03", None, "new name")
+    ren = mgr.action_rename(batch, "2026", "03", None, "new name")
     assert isinstance(ren, RenameAction)
     assert ren._batch_path == batch
     assert ren._year == "2026"
@@ -144,7 +113,7 @@ def test_factory_methods_return_actions_with_expected_paths(
     assert ren._name == "new name"
     assert ren._darkroom_path == roots.darkroom
 
-    na = mgr.new_batch_action("Camera", "2026", "09", None, "Title")
+    na = mgr.action_new_batch("Camera", "2026", "09", None, "Title")
     assert isinstance(na, NewBatchAction)
     assert na._darkroom_path == roots.darkroom
     assert na._year == "2026"

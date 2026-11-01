@@ -26,7 +26,7 @@ def test_configuration_change_is_visible_at_once(
     engine: Engine, tmp_path: Path
 ) -> None:
     new = tmp_path / "new-archive"
-    engine.user_config.set("archive", new)
+    engine.config_set("archive", new)
     assert engine.archive == new.resolve()
 
 
@@ -58,7 +58,7 @@ def test_unplugged_drive(tmp_path: Path, roots: Roots) -> None:
 def test_status_follows_fixes(tmp_path: Path, roots: Roots) -> None:
     engine = _engine(tmp_path, roots, log_level="VERBOSE")
     assert engine.status == "invalid"
-    engine.user_config.set("log_level", "INFO")
+    engine.config_set("log_level", "INFO")
     assert engine.status == "ready"
 
 
@@ -85,13 +85,13 @@ def test_not_ready_rejects_work(tmp_path: Path, roots: Roots) -> None:
     engine = _engine(tmp_path, roots, log_level="VERBOSE")
     batch = roots.darkroom / "Camera/2026/2026-10"
     work = [
-        engine.rescan,
-        lambda: engine.tidy_action(batch),
-        lambda: engine.archive_action(batch),
-        lambda: engine.publish_action(batch),
-        lambda: engine.rename_action(batch, "2026", "10", None, "x"),
-        lambda: engine.new_batch_action("Camera", "2026", "10", None, None),
-        lambda: engine.open_external_app_action("edit {folder}", batch),
+        engine.library_scan,
+        lambda: engine.action_tidy(batch),
+        lambda: engine.action_archive(batch),
+        lambda: engine.action_publish(batch),
+        lambda: engine.action_rename(batch, "2026", "10", None, "x"),
+        lambda: engine.action_new_batch("Camera", "2026", "10", None, None),
+        lambda: engine.action_open_external_app("edit {folder}", batch),
     ]
     for request in work:
         with pytest.raises(EngineNotReadyError) as exc:
@@ -104,13 +104,13 @@ def test_temporary_debug_logging(tmp_path: Path, roots: Roots) -> None:
     engine = _engine(tmp_path, roots, log_level="INFO")
     engine.set_log_level("debug")
     assert engine.log_level == "DEBUG"
-    assert engine.user_config.get("log_level") == "INFO"
+    assert engine.config_get("log_level") == "INFO"
     assert "INFO" in (tmp_path / "c.yaml").read_text()
 
 
 def test_configuration_edit_at_runtime(tmp_path: Path, roots: Roots) -> None:
     engine = _engine(tmp_path, roots, log_level="INFO")
-    engine.user_config.set("log_level", "ERROR")
+    engine.config_set("log_level", "ERROR")
     assert engine.log_level == "INFO"
 
 
@@ -154,7 +154,9 @@ def test_config_path_env_override(
     cfg = tmp_path / "myconfig.yaml"
     monkeypatch.setenv(CONFIG_PATH_ENV, str(cfg))
     assert default_config_path() == cfg.resolve()
-    assert Engine().user_config.path == cfg.resolve()
+    detail = Engine().status_detail
+    assert detail is not None
+    assert str(cfg.resolve()) in detail
 
 
 def test_default_logs_dir_uses_platformdirs() -> None:

@@ -1,16 +1,40 @@
-"""Tests for photo_darkroom_manager.models."""
+"""Tests for library layout models."""
 
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from photo_darkroom_manager.library import PUBLISH_FOLDER
-from photo_darkroom_manager.models import (
+from photo_darkroom_manager.library import (
+    PUBLISH_FOLDER,
     BatchFolderName,
     DarkroomBatch,
+    NodeKind,
+    child_kind,
     recognize_darkroom_batch,
 )
+
+
+@pytest.mark.internal
+@pytest.mark.parametrize(
+    ("parent", "name", "kind"),
+    [
+        ("root", "Camera", "device"),
+        ("root", "2026", "device"),
+        ("device", "2026", "year"),
+        ("device", "Misc", None),
+        ("device", "26", None),
+        ("year", "2026-10 Walk", "batch"),
+        ("year", "2026-10", "batch"),
+        ("year", "Undated", None),
+        ("batch", PUBLISH_FOLDER, "publish"),
+        ("batch", "PHOTOS", "subfolder"),
+        ("publish", "extra", "subfolder"),
+        ("subfolder", PUBLISH_FOLDER, "subfolder"),
+    ],
+)
+def test_child_kind(parent: NodeKind, name: str, kind: NodeKind | None) -> None:
+    assert child_kind(parent, name) == kind
 
 
 def test_darkroom_year_batch_valid() -> None:

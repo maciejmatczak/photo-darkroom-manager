@@ -12,7 +12,7 @@ from photo_darkroom_manager.actions import (
     PublishPlan,
     TidyPlan,
 )
-from photo_darkroom_manager.models import validate_device_name
+from photo_darkroom_manager.library import validate_device_name
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -105,52 +105,60 @@ def test_device_symlink_outside_darkroom_rejected(roots, tmp_path: Path) -> None
     assert list(outside.iterdir()) == []
 
 
-def test_list_devices_includes_empty_directories(roots, engine) -> None:
+def test_library_devices_includes_empty_directories(roots, engine) -> None:
     mgr = engine
-    assert mgr.list_devices() == []
+    assert mgr.library_devices() == []
     (roots.darkroom / "Phone").mkdir()
     (roots.darkroom / "Camera").mkdir()
     (roots.darkroom / "notes.txt").write_text("not a device")
-    assert mgr.list_devices() == ["Camera", "Phone"]
+    assert mgr.library_devices() == ["Camera", "Phone"]
     (roots.darkroom / "New camera").mkdir()
-    assert mgr.list_devices() == ["Camera", "New camera", "Phone"]
+    assert mgr.library_devices() == ["Camera", "New camera", "Phone"]
 
 
 def test_scan_device_year_batch_and_scoped_refresh(roots, engine) -> None:
     mgr = engine
-    assert mgr.rescan().children == []
-    assert (
-        mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None).success
+    mgr.library_scan()
+    assert mgr.library_node("").children == ()
+    result = mgr.action_execute(
+        mgr.action_new_batch("Camera", "2026", "10", None, None), None
     )
-    tree = mgr.rescan()
+    assert result.success
+    assert result.library_refreshed == ""
+    tree = mgr.library_node("")
     device = tree.children[0]
     year = device.children[0]
     batch = year.children[0]
-    assert [n.node_type for n in (tree, device, year, batch)] == [
+    assert [n.kind for n in (tree, device, year, batch)] == [
         "root",
         "device",
         "year",
         "batch",
     ]
-    assert device.parent is tree and year.parent is device and batch.parent is year
-    (batch.path / "loose.jpg").write_bytes(b"image")
-    mgr.rescan_subtree(batch)
+    assert [n.id for n in (device, year, batch)] == [
+        "Camera",
+        "Camera/2026",
+        "Camera/2026/2026-10",
+    ]
+    (roots.darkroom / batch.id / "loose.jpg").write_bytes(b"image")
+    assert mgr.library_refresh(batch.id) == batch.id
     assert all(
-        n.stats.image_count == 1 and "untidy" in n.issues
+        mgr.library_node(n.id).total.image_count == 1
+        and "untidy" in mgr.library_node(n.id).issues
         for n in (tree, device, year, batch)
     )
-    assert (
-        mgr.new_batch_action("Camera", "2027", "01", None, None).execute(None).success
+    result = mgr.action_execute(
+        mgr.action_new_batch("Camera", "2027", "01", None, None), None
     )
-    mgr.rescan_subtree(device)
-    assert [n.name for n in device.children] == ["2026", "2027"]
+    assert result.library_refreshed == "Camera"
+    assert [n.name for n in mgr.library_node("Camera").children] == ["2026", "2027"]
 
 
 def test_devices_publish_and_archive_independently(roots, engine) -> None:
     mgr = engine
     for device in ("Camera", "Phone"):
         assert (
-            mgr.new_batch_action(device, "2026", "10", None, "Walk")
+            mgr.action_new_batch(device, "2026", "10", None, "Walk")
             .execute(None)
             .success
         )
@@ -158,7 +166,7 @@ def test_devices_publish_and_archive_independently(roots, engine) -> None:
         (batch / "PUBLISH/export.jpg").write_bytes(device.encode())
         (batch / "PHOTOS/nested").mkdir(parents=True)
         (batch / "PHOTOS/nested/original.raw").write_bytes(b"raw")
-        publish = mgr.publish_action(batch)
+        publish = mgr.action_publish(batch)
         plan = publish.prepare()
         assert isinstance(plan, PublishPlan)
         expected = roots.showroom / "2026/2026-10 Walk" / device
@@ -167,7 +175,7 @@ def test_devices_publish_and_archive_independently(roots, engine) -> None:
         assert (expected / "export.jpg").read_bytes() == device.encode()
         assert not (expected / "PUBLISH").exists()
         nested = batch / "PHOTOS/nested"
-        archive = mgr.archive_action(nested)
+        archive = mgr.action_archive(nested)
         archive_plan = archive.prepare()
         assert isinstance(archive_plan, ArchivePlan)
         expected_archive = (
@@ -184,24 +192,25 @@ def test_devices_publish_and_archive_independently(roots, engine) -> None:
 
 def test_fully_archived_batch_disappears_from_darkroom_tree(roots, engine) -> None:
     mgr = engine
-    mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None)
+    mgr.action_new_batch("Camera", "2026", "10", None, None).execute(None)
     batch = roots.darkroom / "Camera/2026/2026-10"
     (batch / "original.raw").write_bytes(b"raw")
-    action = mgr.archive_action(batch)
+    action = mgr.action_archive(batch)
     plan = action.prepare()
     assert isinstance(plan, ArchivePlan)
     assert action.execute(plan).success
     assert not batch.exists()
-    assert mgr.rescan().children[0].children[0].children == []
+    mgr.library_scan()
+    assert mgr.library_node("Camera/2026").children == ()
 
 
 def test_rename_leaves_archive_and_showroom_at_old_name(roots, engine) -> None:
     mgr = engine
-    mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None)
+    mgr.action_new_batch("Camera", "2026", "10", None, None).execute(None)
     old = roots.darkroom / "Camera/2026/2026-10"
     for root in (roots.archive, roots.showroom):
         (root / "2026/2026-10/Camera").mkdir(parents=True)
-    assert mgr.rename_action(old, "2026", "10", None, "Walk").execute(None).success
+    assert mgr.action_rename(old, "2026", "10", None, "Walk").execute(None).success
     assert (old.parent / "2026-10 Walk").is_dir()
     for root in (roots.archive, roots.showroom):
         assert (root / "2026/2026-10/Camera").is_dir()
@@ -210,7 +219,7 @@ def test_rename_leaves_archive_and_showroom_at_old_name(roots, engine) -> None:
 
 def test_tidy_loose_media_preserves_publish(roots, engine) -> None:
     mgr = engine
-    mgr.new_batch_action("Camera", "2026", "10", None, None).execute(None)
+    mgr.action_new_batch("Camera", "2026", "10", None, None).execute(None)
     batch = roots.darkroom / "Camera/2026/2026-10"
     for filename in (
         "shot.cr3",
@@ -221,10 +230,10 @@ def test_tidy_loose_media_preserves_publish(roots, engine) -> None:
         "PUBLISH/export.jpg",
     ):
         (batch / filename).write_bytes(b"media")
-    action = mgr.tidy_action(batch)
+    action = mgr.action_tidy(batch)
     plan = action.prepare()
     assert isinstance(plan, TidyPlan)
-    assert action.execute(plan).success
+    assert mgr.action_execute(action, plan).success
     assert (batch / "PUBLISH/export.jpg").read_bytes() == b"media"
     for filename in ("shot.cr3", "shot.jpg", "shot.xmp", "other.jpg"):
         assert (batch / "PHOTOS" / filename).is_file()

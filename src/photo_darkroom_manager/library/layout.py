@@ -1,12 +1,39 @@
+"""Darkroom layout: folder names, node kinds and batch naming rules."""
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError, field_validator
 from pydantic_core import InitErrorDetails
 
-from photo_darkroom_manager.library import PHOTOS_FOLDER, PUBLISH_FOLDER, VIDEOS_FOLDER
+# Well-known folder names used throughout the darkroom workflow.
+PUBLISH_FOLDER = "PUBLISH"
+PHOTOS_FOLDER = "PHOTOS"
+VIDEOS_FOLDER = "VIDEOS"
+
+NodeKind = Literal["root", "device", "year", "batch", "publish", "subfolder"]
+
+BATCH_PATTERN = re.compile(r"^\d{4}-\d{2}")
+
+
+def child_kind(parent_kind: NodeKind, name: str) -> NodeKind | None:
+    """Kind of a child folder *name* under a *parent_kind* node.
+
+    ``None`` means the folder is not part of the tree (e.g. a year folder
+    whose name has no date prefix).
+    """
+    if parent_kind == "root":
+        return "device"
+    if parent_kind == "device":
+        return "year" if name.isdigit() and len(name) == 4 else None
+    if parent_kind == "year":
+        return "batch" if BATCH_PATTERN.match(name) else None
+    if parent_kind == "batch" and name == PUBLISH_FOLDER:
+        return "publish"
+    return "subfolder"
 
 
 def format_validation_error(e: ValidationError) -> str:

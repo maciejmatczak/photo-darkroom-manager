@@ -73,4 +73,5 @@ target folders, and adapting the parked GUI.
 - Tests: new contract tests for the library index and node actions;
   `test_scan.py`, `test_manager.py`, `test_engine.py`, `test_models.py`,
   `test_media.py`, the action tests and `conftest.py` move to the new API.
+  The library's tests move to `tests/library/`, one file per submodule.
 - No new dependencies; configuration file and on-disk layout unchanged.

@@ -20,18 +20,16 @@ from photo_darkroom_manager.file_utils import (
     preview_merge_into_archive,
 )
 from photo_darkroom_manager.library import (
+    ALL_IMAGE_EXTENSIONS,
     PHOTOS_FOLDER,
     PUBLISH_FOLDER,
     VIDEOS_FOLDER,
-)
-from photo_darkroom_manager.media import (
-    ALL_IMAGE_EXTENSIONS,
+    BatchFolderName,
+    NodeId,
+    collect_files_to_tidy,
+    format_validation_error,
     is_file_a_photo,
     is_file_a_video,
-)
-from photo_darkroom_manager.models import (
-    BatchFolderName,
-    format_validation_error,
     recognize_darkroom_batch,
     validate_device_name,
 )
@@ -142,6 +140,8 @@ class ExecutionResult(ActionResult):
 
     rescan_node_path: Path | None = None
     """Subtree root to rescan after this action; None means no rescan needed."""
+    library_refreshed: NodeId | None = None
+    """Id the engine rescanned after the action; None when it rescanned nothing."""
 
 
 class ActionPlan:
@@ -227,74 +227,6 @@ class Action(ABC):
 
     @abstractmethod
     def _execute(self, plan: ActionPlan | None) -> ExecutionResult: ...
-
-
-def _collect_files_to_tidy(folder: Path) -> tuple[list[Path], list[Path]]:
-    """Collect misplaced photos and videos in a single directory.
-
-    Groups files by stem so sidecars move together. Uses correct-state predicate:
-    photos belong in PHOTOS/, videos in VIDEOS/.
-    """
-    seen_stems: set[str] = set()
-    photo_paths: list[Path] = []
-    video_paths: list[Path] = []
-
-    try:
-        items = folder.iterdir()
-    except PermissionError:
-        return [], []
-
-    for item in items:
-        if not item.is_file():
-            continue
-        stem = item.name.split(".")[0]
-        if stem in seen_stems:
-            continue
-        seen_stems.add(stem)
-
-        all_related = list(folder.glob(f"{stem}.*"))
-        suffixes = [f.name.split(".", 1)[-1] for f in all_related]
-
-        if (
-            is_file_a_photo(suffixes)
-            and not is_file_a_video(suffixes)
-            and folder.name != PHOTOS_FOLDER
-        ):
-            photo_paths.extend(all_related)
-        elif (
-            is_file_a_video(suffixes)
-            and not is_file_a_photo(suffixes)
-            and folder.name != VIDEOS_FOLDER
-        ):
-            video_paths.extend(all_related)
-
-    return photo_paths, video_paths
-
-
-def collect_files_to_tidy(
-    folder_path: Path, *, recursive: bool = False
-) -> tuple[list[Path], list[Path]]:
-    """Collect misplaced photos and videos under folder_path.
-
-    Skips PUBLISH/ entirely. When recursive=True, walks all subdirectories.
-    """
-    if PUBLISH_FOLDER in folder_path.parts:
-        return [], []
-
-    photo_paths, video_paths = _collect_files_to_tidy(folder_path)
-
-    if recursive:
-        try:
-            children = sorted(folder_path.iterdir())
-        except PermissionError:
-            return photo_paths, video_paths
-        for child in children:
-            if child.is_dir() and child.name != PUBLISH_FOLDER:
-                p, v = collect_files_to_tidy(child, recursive=True)
-                photo_paths.extend(p)
-                video_paths.extend(v)
-
-    return photo_paths, video_paths
 
 
 @dataclass(frozen=True)

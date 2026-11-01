@@ -6,7 +6,7 @@ candidate is described in terms of **locality** and **leverage** — see
 
 | # | Candidate | Status |
 | --- | --- | --- |
-| 1 | `scan` imports tidy detection from `actions` | Open |
+| 1 | `scan` imports tidy detection from `actions` | Done |
 | 2 | Manager path helpers fake a sum type | Partly done |
 | 3 | Open-external discards its prepared command | Partly done |
 | 4 | `file_utils` prune helpers tested via private import | Open |
@@ -15,7 +15,9 @@ candidate is described in terms of **locality** and **leverage** — see
 
 ## 1. `scan` imports tidy detection from `actions` — the read model depends on the write model
 
-**Status**: Open.
+**Status**: Done in `core-library-index`. `collect_files_to_tidy` and
+`is_untidy` live in `library/media.py`; `TidyAction` and the library scan
+both import them, and tests use the public names.
 
 **Files**: `src/photo_darkroom_manager/scan.py`,
 `src/photo_darkroom_manager/actions.py`, `tests/actions/test_tidy.py`,

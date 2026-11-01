@@ -73,13 +73,13 @@ library/
                 recognize_darkroom_batch (from library.py, models.py)
   media.py      file kinds, collect_files_to_tidy, is_untidy (from
                 media.py and actions.py)
-  tree.py       NodeId, NodeKind, NodeIssue, NodeAction, FolderStats,
+  tree.py       NodeId, NodeKind, NodeIssue, NodeAction, FileCounts,
                 NodeView, node_actions(kind), LibraryTree
   _scan.py      scan_subtree(root, node_id, kind) -> node facts
 ```
 
 `LibraryTree` is a model: the darkroom root plus a private
-`dict[NodeId, _Folder]`, where `_Folder` stores kind, direct counts, own
+`dict[NodeId, _Node]`, where `_Node` stores kind, direct counts, own
 issues, child ids, and cached totals. Its methods work on its own data:
 `view(id)`, `contains(id)`, `nearest(id)` and `replace_subtree(id,
 facts)`, which swaps a subtree's entries and recomputes totals and

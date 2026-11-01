@@ -66,11 +66,13 @@ OpenSpec change, and the design lives there, not here.
   - Load never crashes the app: each setting has a value and a validity
     state the frontend can show and fix
   - Update in memory, save to file explicitly
-- [ ] Tree index owned by the core
+- [x] Tree index owned by the core (`core-library-index`)
   - In-memory graph of devices, years, batches, folders, files and stats
   - Each node carries its manifest: issues and available actions
   - Refresh any node and its subtree on demand, not only from the root
-  - Behind a storage seam, so a database index can replace it later
+  - Behind a storage seam, so a database index can replace it later; the
+    seam is the private map of node facts in `LibraryTree`, and an
+    interface waits for a second implementation
 - [ ] How clients learn that state changed (open question, decide later)
 - [ ] Package layout where the core never imports a frontend, enforced
       by a check

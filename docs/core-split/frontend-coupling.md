@@ -48,6 +48,9 @@ Done in `core-user-config`: settings and startup are core-owned.
 `Engine()` loads `engine.user_config` tolerantly (problems per key), exposes
 config-backed properties and a derived `status` / `status_detail`, and owns
 the runtime log level. The GUI code above is parked in `legacy-gui/`.
+Since `core-library-index` the service is private: clients use
+`config_get`, `config_set`, `config_issues` and `config_save`, and edits
+are refused while the engine is busy.
 
 ## 2. Tree read model
 
@@ -60,6 +63,13 @@ the runtime log level. The GUI code above is parked in `legacy-gui/`.
 - `node.path.is_dir()` and `showroom_target.is_dir()` /
   `archive_target.is_dir()` are filesystem checks done in the GUI while
   rendering buttons. **move**
+
+Done in `core-library-index`: the tree is the `library` package's
+`LibraryTree`, held privately by the engine. Clients read frozen, nested
+`NodeView`s by darkroom-relative id with `engine.library_node(id)`; each
+view carries kind, direct and total counts, own and rolled-up issues
+(`"untidy"` as a typed `NodeIssue`) and its actions. Target folder checks
+stay open (decided when an action is prepared).
 
 ## 3. Refresh
 
@@ -75,6 +85,12 @@ the runtime log level. The GUI code above is parked in `legacy-gui/`.
   object identity. **change**
 - Expansion state inside a rescanned subtree is lost (children rebuilt).
   Note for Phase 4.
+
+Done in `core-library-index`: `engine.library_refresh(id)` rescans by id,
+falls back to the nearest existing ancestor and returns the id it
+rescanned. `engine.action_execute(action, plan)` refreshes after an action
+and reports `ExecutionResult.library_refreshed`. Ids replace object
+identity, and ancestors are updated from stored facts without disk access.
 
 ## 4. Action protocol
 
@@ -121,6 +137,13 @@ All in `gui/node.py` `_action_buttons` unless noted. **move** for all.
 - Opening a folder in the file manager (`widgets.open_directory`:
   `os.startfile` / `open` / `xdg-open`) lives in the GUI, while opening an
   external app is a core action. Two paths for the same kind of thing.
+
+Done in `core-library-index`: action availability per node kind is the
+library's actions manifest (`node_actions(kind)`, on every `NodeView`),
+with `PUBLISH` in a batch as its own `publish` kind. It ignores
+configuration: whether to show Cull / Edit without a command is the
+client's call. The device list is `engine.library_devices()`. Target paths,
+the forms' rules and opening a folder stay open.
 
 ## 6. What the core does not need from the GUI
 

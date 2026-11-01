@@ -1,8 +1,8 @@
 """Contract: file actions never lose user files and report what changed.
 
-Each test runs an action through the public engine factories and
-``prepare()`` / ``execute()``, then compares the whole workspace (darkroom,
-showroom and archive) before and after.
+Each test runs an action through the public engine factories,
+``prepare()`` and ``engine.action_execute()``, then compares the whole
+workspace (darkroom, showroom and archive) before and after.
 """
 
 import hashlib
@@ -46,17 +46,17 @@ def _snapshot(manager: Engine) -> dict[Path, bytes]:
     }
 
 
-def _run(action):
+def _run(manager: Engine, action):
     plan = action.prepare()
     assert isinstance(plan, ActionPlan), plan
-    return action.execute(plan)
+    return manager.action_execute(action, plan)
 
 
 def test_tidy_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(TIDY_BASIC)
     before = _contents(mgr)
-    result = _run(mgr.tidy_action(batch))
+    result = _run(mgr, mgr.action_tidy(batch))
     assert result.success
     assert _contents(mgr) == before
 
@@ -65,7 +65,7 @@ def test_archive_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BASIC)
     before = _contents(mgr)
-    result = _run(mgr.archive_action(batch))
+    result = _run(mgr, mgr.action_archive(batch))
     assert result.success
     assert _contents(mgr) == before
 
@@ -74,7 +74,7 @@ def test_publish_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(PUBLISH_BASIC)
     before = _contents(mgr)
-    result = _run(mgr.publish_action(batch))
+    result = _run(mgr, mgr.action_publish(batch))
     assert result.success
     assert _contents(mgr) == before
 
@@ -85,7 +85,7 @@ def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
     photos = batch / PHOTOS_FOLDER
     others = {p for p in batch.rglob("*") if p.is_file() and photos not in p.parents}
     assert others
-    result = _run(mgr.archive_action(photos))
+    result = _run(mgr, mgr.action_archive(photos))
     assert result.success
     assert not photos.exists() or not any(photos.rglob("*.*"))
     assert all(p.is_file() for p in others)
@@ -95,7 +95,7 @@ def test_refused_prepare_leaves_disk_unchanged(photo_setup) -> None:
     mgr = photo_setup.engine
     batch = photo_setup.darkroom_has_dir(ARCHIVE_CONFLICT)
     before = _snapshot(mgr)
-    out = mgr.archive_action(batch).prepare()
+    out = mgr.action_archive(batch).prepare()
     assert isinstance(out, PrepareError)
     assert _snapshot(mgr) == before
 
@@ -105,13 +105,13 @@ def test_tree_changing_actions_report_what_to_refresh(photo_setup) -> None:
     mgr = photo_setup.engine
     darkroom = photo_setup.roots.darkroom
     cases = [
-        (mgr.tidy_action, TIDY_BASIC),
-        (mgr.archive_action, ARCHIVE_BASIC),
-        (mgr.publish_action, PUBLISH_BASIC),
+        (mgr.action_tidy, TIDY_BASIC),
+        (mgr.action_archive, ARCHIVE_BASIC),
+        (mgr.action_publish, PUBLISH_BASIC),
     ]
     for factory, rel in cases:
         target = photo_setup.darkroom_has_dir(rel)
-        result = _run(factory(target))
+        result = _run(mgr, factory(target))
         assert result.success, rel
         hint = result.rescan_node_path
         assert hint is not None, rel
