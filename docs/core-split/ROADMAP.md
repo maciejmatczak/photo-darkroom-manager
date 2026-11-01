@@ -10,6 +10,9 @@ only state intent and get detailed when we reach them. A drastic change in one
 phase should not need a rewrite of the others. Each phase can become an
 OpenSpec change, and the design lives there, not here.
 
+Each item states the outcome that makes it done; a phase is done when all
+its items are.
+
 ## Vision
 
 - One core that knows the darkroom
@@ -39,77 +42,93 @@ OpenSpec change, and the design lives there, not here.
 
 ## Phase 0: Understand and protect what exists
 
-- [x] Map what the frontend expects from the core today
+- [x] A written map of what the frontend expects from the core today
       ([frontend-coupling.md](frontend-coupling.md))
-  - [x] Settings and startup, tree read model, refresh, action protocol
-  - [x] Business rules living in `gui/` (per-node action availability,
-        path targets, form validation, opening folders)
-  - [x] Core assumptions about the GUI (in-place node identity on rescan)
-  - [x] Hint: write it as a short note next to the specs; it is the input
-        for Phase 1
-- [x] Classify the existing test suite (`pytest -m contract` / `-m internal`)
+  - [x] Covers settings and startup, the tree read model, refresh and the
+        action protocol
+  - [x] Lists the business rules living in `gui/` (per-node action
+        availability, path targets, form validation, opening folders)
+  - [x] Lists core assumptions about the GUI (in-place node identity on
+        rescan)
+- [x] Every test is marked `contract` or `internal`, and each marker can run
+      on its own (`pytest -m contract` / `-m internal`)
   - [x] `contract`: user-visible outcomes we keep (files moved, conflicts
         refused, stats and issues reported, settings validated)
   - [x] `internal`: tests of private helpers or behaviour we plan to change
         (see `IMPROVE_ARCHITECTURE.md`)
-  - [x] Hint: pytest markers first, since files mix both; folders only if
-        the split stays clean
-- [x] Fill contract gaps only where cheap
-  - [x] Hint: assert outcomes on disk and result kinds, not preview strings
-        or object identity; do not freeze behaviour we know is wrong
+- [x] Cheap contract gaps are filled: tests assert outcomes on disk and
+      result kinds, not preview strings or object identity, and do not
+      freeze behaviour we know is wrong
   - [x] Action tests use public `prepare()` / `execute()`; file-safety
-        tests in `tests/test_file_safety.py`
+        tests live in `tests/test_file_safety.py`
 
 ## Phase 1: Core boundary and state
 
-- [x] Settings owned by the core (`core-user-config`)
-  - Load never crashes the app: each setting has a value and a validity
+- [x] The core owns settings (`core-user-config`)
+  - Loading never crashes the app: each setting has a value and a validity
     state the frontend can show and fix
-  - Update in memory, save to file explicitly
-- [x] Tree index owned by the core (`core-library-index`)
-  - In-memory graph of devices, years, batches, folders, files and stats
+  - Updates stay in memory until saved to file explicitly
+- [x] The core owns the tree index (`core-library-index`)
+  - An in-memory graph of devices, years, batches, folders, files and stats
   - Each node carries its manifest: issues and available actions
-  - Refresh any node and its subtree on demand, not only from the root
-  - Behind a storage seam, so a database index can replace it later; the
-    seam is the private map of node facts in `LibraryTree`, and an
-    interface waits for a second implementation
-- [ ] How the client learns that the library changed
+  - Any node and its subtree can be refreshed on demand, not only the root
+  - A storage seam lets a database index replace it later: the private map
+    of node facts in `LibraryTree`; an interface waits for a second
+    implementation
+- [x] Agreed how the client learns that the library changed; it is built in
+      Phase 3
   - One client per core: the core is a library in the client's process,
     not a service
   - The engine tells its client which part of the library changed,
-    whatever caused it (its own call, a scan or a job in the background);
-    the client re-reads that part and re-renders
-  - Shape and delivery are designed with jobs (Phase 3), the first work
-    that changes the library in the background
-  - Later: several processes (GUI, an agent's CLI) over one database
-    index, where the engine also notices changes made by others
-- [ ] Package layout where the core never imports a frontend, enforced
-      by a check
+    whatever caused it; the client re-reads that part and re-renders
+- [ ] The core never imports a frontend, and a check fails the build if it
+      does
 
 ## Phase 2: CLI as the only interface
 
-- [x] Park the GUI: moved unchanged to `legacy-gui/` as reference, not
+- [x] The GUI is parked: moved unchanged to `legacy-gui/` as reference, not
       kept working
-- [ ] Reshape the existing manager, scan and action functions into the core
-- [ ] Experimental CLI over the core API, also a candidate tool surface
-      for agents
+- [x] The old manager and scan code live in the core: the `Engine` and the
+      `library` package; actions are created and run through the engine
+- [ ] An experimental CLI drives the core API end to end (configure, scan,
+      inspect a node, run an action) and is usable by an agent as a tool
+      surface
 
 ## Phase 3: Jobs and safe file operations
 
-- Every action runs as a job: progress, result, report, no frozen client
-- Rethink "plan, then apply": research how DAM tools preview and confirm
-  bulk file operations before settling the UX
-- File safety: know what was done when a job fails; rollback if feasible
+- [ ] Research how DAM tools preview and confirm bulk file operations, and
+      write down the approach we pick
+- [ ] Propose the jobs change in OpenSpec, deciding whether jobs survive an
+      app restart and how the client is told what changed
+- Every action runs as a job: the client sees its progress, result and
+  report, and never freezes while it runs
+- The client is told which part of the library changed, after its own
+  calls and after background work, and re-renders only that part; the
+  shape and delivery of that notice are designed here
+  - Later: several processes (GUI, an agent's CLI) over one database
+    index, where the engine also notices changes made by others
+- "Plan, then apply" is settled, after researching how DAM tools preview
+  and confirm bulk file operations
+- A failed job reports exactly what was done; rollback where feasible
 
 ## Phase 4: Bring the GUI back
 
-- GUI as a client of core state and jobs, same look as today
-- How it stays in sync with the core tree is decided here
+- [ ] Compare the parked GUI with the core API, using
+      [frontend-coupling.md](frontend-coupling.md), and list what the core
+      does not offer yet
+- [ ] Propose the GUI change in OpenSpec, built from that list
+- The GUI is a client of core state and jobs and looks as it does today
+- It stays in sync with the core through the change notice from Phase 3
 
 ## Phase 5: Land it
 
-- Sync `dev`, full test and smoke run, update docs and specs
-- Merge into `dev` as a major release, delete the branch
+- [ ] Decide the package split (one package with extras, or several) and
+      write down why
+- [ ] Write a release checklist: smoke run steps, and the docs and specs to
+      update
+- `dev` is merged in, the full test suite and a smoke run pass, and docs and
+  specs match the code
+- `dev-core-split` is merged into `dev` as a major release and deleted
 
 ## Later, not on this branch
 
@@ -117,12 +136,10 @@ OpenSpec change, and the design lives there, not here.
 
 ## Open questions
 
-- Change notification: how the engine delivers "this part changed" to
-  its client (decided with jobs)
 - Do jobs survive an app restart?
 - Package split: one package with extras, or several?
 
 ## Next actionable step
 
-Phase 0: the expectations map and the test classification. Both are cheap,
-and together they define what Phase 1 must preserve and what it may change.
+Close Phase 1 with the import check, then start the Phase 2 CLI over the
+engine's API.
