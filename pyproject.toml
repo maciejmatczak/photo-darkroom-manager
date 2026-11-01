@@ -18,7 +18,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pre-commit~=4.5.1", "pytest~=8.4.0", "ruff~=0.15.8", "ty~=0.0.28"]
+dev = [
+    "import-linter~=2.15",
+    "pre-commit~=4.5.1",
+    "pytest~=8.4.0",
+    "ruff~=0.15.8",
+    "ty~=0.0.28",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/photo_darkroom_manager"]
@@ -44,6 +50,22 @@ select = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["photo_darkroom_manager"]
+
+[tool.importlinter]
+root_package = "photo_darkroom_manager"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Frontends sit on the core; the core knows no frontend"
+type = "layers"
+layers = ["cli | gui", "core"]
+containers = ["photo_darkroom_manager"]
+
+[[tool.importlinter.contracts]]
+name = "The core imports no UI library"
+type = "forbidden"
+source_modules = ["photo_darkroom_manager.core"]
+forbidden_modules = ["nicegui", "webview"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from photo_darkroom_manager.engine import CONFIG_PATH_ENV, LOG_LEVEL_ENV, Engine
-from photo_darkroom_manager.logging_config import reset_logging_state_for_tests
+from photo_darkroom_manager.core.engine import CONFIG_PATH_ENV, LOG_LEVEL_ENV, Engine
+from photo_darkroom_manager.core.logging_config import reset_logging_state_for_tests
 
 MakeEngine = Callable[..., Engine]
 
@@ -51,7 +51,7 @@ def _isolate_environment(
     monkeypatch.delenv(CONFIG_PATH_ENV, raising=False)
     monkeypatch.delenv(LOG_LEVEL_ENV, raising=False)
     monkeypatch.setattr(
-        "photo_darkroom_manager.engine.default_logs_dir",
+        "photo_darkroom_manager.core.engine.default_logs_dir",
         lambda: tmp_path / "logs",
     )
     yield

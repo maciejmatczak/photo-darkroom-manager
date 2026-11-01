@@ -60,7 +60,7 @@ its items are.
       result kinds, not preview strings or object identity, and do not
       freeze behaviour we know is wrong
   - [x] Action tests use public `prepare()` / `execute()`; file-safety
-        tests live in `tests/test_file_safety.py`
+        tests live in `tests/core/test_file_safety.py`
 
 ## Phase 1: Core boundary and state
 
@@ -81,8 +81,11 @@ its items are.
     not a service
   - The engine tells its client which part of the library changed,
     whatever caused it; the client re-reads that part and re-renders
-- [ ] The core never imports a frontend, and a check fails the build if it
+- [x] The core never imports a frontend, and a check fails the build if it
       does
+  - `core`, `cli` and `gui` are subpackages; import-linter contracts in CI
+    and pre-commit keep the core free of frontends and UI libraries, and
+    the frontends independent of each other
 
 ## Phase 2: CLI as the only interface
 
@@ -141,5 +144,4 @@ its items are.
 
 ## Next actionable step
 
-Close Phase 1 with the import check, then start the Phase 2 CLI over the
-engine's API.
+Start the Phase 2 CLI over the engine's API.

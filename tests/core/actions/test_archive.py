@@ -1,0 +1,147 @@
+"""Tests for ArchiveAction prepare and execute."""
+
+from pathlib import Path
+
+from photo_darkroom_manager.core.actions import ArchiveAction, ArchivePlan, PrepareError
+from photo_darkroom_manager.core.library import PHOTOS_FOLDER
+
+ARCHIVE_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 archive basic success"
+ARCHIVE_BATCH_CONFLICT_REL = (
+    Path("Camera") / "2026" / "2026-03 archive will fail on conflict"
+)
+
+
+ARCHIVE_BATCH_BASIC_DEST = Path("2026") / "2026-03 archive basic success" / "Camera"
+ARCHIVE_BATCH_CONFLICT_DEST = (
+    Path("2026") / "2026-03 archive will fail on conflict" / "Camera"
+)
+
+
+def _relative_leaf_paths(folder: Path) -> frozenset[Path]:
+    """Paths of every file under *folder*, relative to *folder*."""
+    folder = folder.resolve()
+    return frozenset(p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
+
+
+def test_archive_prepare_happy_batch_root(photo_setup) -> None:
+    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
+    act = ArchiveAction(
+        batch,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    out = act.prepare()
+    assert isinstance(out, ArchivePlan)
+    assert out.leaf_count == 4
+    assert out.folder_path == batch
+    expected_target = (photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST).resolve()
+    assert out.target_dir == expected_target
+
+
+def test_archive_prepare_blocked_by_duplicate_in_archive(photo_setup) -> None:
+    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_CONFLICT_REL)
+    act = ArchiveAction(
+        batch,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    out = act.prepare()
+    assert isinstance(out, PrepareError)
+    assert not out.success
+    assert "Archive blocked" in out.message
+
+
+def test_archive_prepare_unrecognized_batch_path(photo_setup) -> None:
+    """Path under darkroom but not a batch folder (device/year only) → no batch."""
+    year_only = photo_setup.darkroom_has_dir(Path("Camera") / "2026")
+    act = ArchiveAction(
+        year_only,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    out = act.prepare()
+    assert isinstance(out, PrepareError)
+    assert out.message == "Could not recognize batch for this path"
+
+
+def test_archive_prepare_does_not_create_archive_directories(photo_setup) -> None:
+    """Prepare must not mkdir under archive; destination dirs are created on execute."""
+    photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
+    archive_root = photo_setup.roots.archive
+
+    def archive_tree_snapshot() -> frozenset[Path]:
+        return frozenset(p.relative_to(archive_root) for p in archive_root.rglob("*"))
+
+    before = archive_tree_snapshot()
+    act = ArchiveAction(
+        photos,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    out = act.prepare()
+    assert isinstance(out, ArchivePlan)
+    after = archive_tree_snapshot()
+    assert before == after
+
+
+def test_archive_prepare_subfolder_photos(photo_setup) -> None:
+    """UI can pass a subfolder (e.g. PHOTOS/); relative_subpath includes it."""
+    photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
+    act = ArchiveAction(
+        photos,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    out = act.prepare()
+    assert isinstance(out, ArchivePlan)
+    assert out.leaf_count == 1
+    expected_rel = ARCHIVE_BATCH_BASIC_DEST / PHOTOS_FOLDER
+    assert out.target_dir == (photo_setup.roots.archive / expected_rel).resolve()
+
+
+def test_archive_execute_moves_all_leaves(photo_setup) -> None:
+    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
+    expected_rels = _relative_leaf_paths(batch)
+    act = ArchiveAction(
+        batch,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    plan = act.prepare()
+    assert isinstance(plan, ArchivePlan)
+    assert plan.leaf_count == len(expected_rels)
+    result = act.execute(plan)
+    assert result.success
+    assert f"{len(expected_rels)} file" in result.message
+
+    arch_batch = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST
+    for rel in expected_rels:
+        assert (arch_batch / rel).is_file()
+
+
+def test_archive_execute_blocked_when_conflict_appears_after_prepare(
+    photo_setup,
+) -> None:
+    """Prepare passes; a file appears in the archive before execute → no moves."""
+    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
+    expected_rels = _relative_leaf_paths(batch)
+    block_rel = sorted(expected_rels)[0]
+    act = ArchiveAction(
+        batch,
+        darkroom=photo_setup.roots.darkroom,
+        archive=photo_setup.roots.archive,
+    )
+    plan = act.prepare()
+    assert isinstance(plan, ArchivePlan)
+
+    block_at = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST / block_rel
+    block_at.parent.mkdir(parents=True, exist_ok=True)
+    block_at.write_bytes(b"")
+
+    result = act.execute(plan)
+    assert not result.success
+    assert result.rescan_node_path is None
+    assert "Archive blocked" in result.message
+    assert result.details is not None
+
+    assert (batch / block_rel).exists()
