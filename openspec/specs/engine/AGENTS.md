@@ -5,6 +5,8 @@ another front end or an index or database later. These specs cover
 guarantees, stated as observable behavior of the engine's interface:
 
 - Scanning: what a rescan refreshes and what it leaves untouched.
+- Library index: how clients address, read and scan the library tree by
+  node id, and when the scanned tree is dropped.
 - Path resolution: one consistent darkroom, archive, and showroom location
   for every action and client.
 - Requests: an action request is either executed or rejected with a reason,
