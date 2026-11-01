@@ -73,7 +73,16 @@ OpenSpec change, and the design lives there, not here.
   - Behind a storage seam, so a database index can replace it later; the
     seam is the private map of node facts in `LibraryTree`, and an
     interface waits for a second implementation
-- [ ] How clients learn that state changed (open question, decide later)
+- [ ] How the client learns that the library changed
+  - One client per core: the core is a library in the client's process,
+    not a service
+  - The engine tells its client which part of the library changed,
+    whatever caused it (its own call, a scan or a job in the background);
+    the client re-reads that part and re-renders
+  - Shape and delivery are designed with jobs (Phase 3), the first work
+    that changes the library in the background
+  - Later: several processes (GUI, an agent's CLI) over one database
+    index, where the engine also notices changes made by others
 - [ ] Package layout where the core never imports a frontend, enforced
       by a check
 
@@ -108,8 +117,8 @@ OpenSpec change, and the design lives there, not here.
 
 ## Open questions
 
-- Change notification: events, polling, or snapshots with versions?
-- One process for core and clients, or a local core service?
+- Change notification: how the engine delivers "this part changed" to
+  its client (decided with jobs)
 - Do jobs survive an app restart?
 - Package split: one package with extras, or several?
 
