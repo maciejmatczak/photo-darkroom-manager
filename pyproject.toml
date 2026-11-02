@@ -30,7 +30,7 @@ dev = [
 packages = ["src/photo_darkroom_manager"]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py313"
 line-length = 88
 src = ["src"]
 # Parked GUI: reference material only, not source code.
