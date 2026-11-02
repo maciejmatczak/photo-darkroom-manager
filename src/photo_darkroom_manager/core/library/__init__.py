@@ -3,7 +3,12 @@
 Models and functions only; the engine holds the scanned tree.
 """
 
-from photo_darkroom_manager.core.library._scan import scan_subtree
+from photo_darkroom_manager.core.library._resolve import (
+    PathOutsideDarkroomError,
+    canonical_id,
+    resolve_path,
+)
+from photo_darkroom_manager.core.library._scan import scan_chain, scan_subtree
 from photo_darkroom_manager.core.library.layout import (
     BATCH_PATTERN,
     PHOTOS_FOLDER,
@@ -14,6 +19,8 @@ from photo_darkroom_manager.core.library.layout import (
     NodeKind,
     child_kind,
     format_validation_error,
+    is_well_formed_id,
+    node_kind,
     recognize_darkroom_batch,
     validate_device_name,
 )
@@ -59,6 +66,8 @@ __all__ = [
     "NodeIssue",
     "NodeKind",
     "NodeView",
+    "PathOutsideDarkroomError",
+    "canonical_id",
     "child_id",
     "child_kind",
     "collect_files_to_tidy",
@@ -66,9 +75,13 @@ __all__ = [
     "is_file_a_photo",
     "is_file_a_video",
     "is_untidy",
+    "is_well_formed_id",
     "node_actions",
+    "node_kind",
     "parent_id",
     "recognize_darkroom_batch",
+    "resolve_path",
+    "scan_chain",
     "scan_subtree",
     "validate_device_name",
 ]

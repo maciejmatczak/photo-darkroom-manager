@@ -113,6 +113,21 @@ identity, and ancestors are updated from stored facts without disk access.
 - Execution blocks the action flow until done; there is no progress,
   cancel or job history. **change** (jobs)
 
+Done in `experimental-cli`: structured previews are core data.
+- Factories take node ids and are guarded by node kind in the engine
+  (`Engine._target`, `ActionNotAllowedError`).
+- `prepare()` returns an `ActionPlan` or an `ActionResult` with an outcome
+  (`ok`, `noop`, `refused`, `failed`); `None` and `PrepareError` are gone.
+- A plan lists typed steps (`Move` with `overwrite`, `MakeDir`, `Rename`,
+  `OpenFolder`, `Launch`) in `core/actions.py`. It says whether it changes
+  files (`changes_files`, the "needs confirmation" flag) and carries a
+  derived `fingerprint`. `preview_text()` is rendered from the steps.
+- `engine.action_apply(action, confirm=None)` prepares, checks a confirmed
+  fingerprint and executes in one guarded call.
+- `ExecutionResult` reports each step done and failed, files `left`, and
+  the acted-on `node_id` afterwards.
+- Jobs stay open.
+
 ## 5. Business rules living in the GUI
 
 All in `gui/node.py` `_action_buttons` unless noted. **move** for all.
@@ -144,6 +159,26 @@ with `PUBLISH` in a batch as its own `publish` kind. It ignores
 configuration: whether to show Cull / Edit without a command is the
 client's call. The device list is `engine.library_devices()`. Target paths,
 the forms' rules and opening a folder stay open.
+
+Done in `experimental-cli`, each rule now lives in the core:
+- **Opening a folder:** `OpenFolderAction` in `core/actions.py`, through
+  `engine.action_open(id)`; the OS call is `actions._open_folder`.
+- **Cull and edit commands:** taken from configuration by
+  `engine.action_cull(id)` and `engine.action_edit(id)`; a missing command
+  is refused naming `cull_command` or `edit_command`.
+- **New batch form:** `NewBatchAction._folders()` checks the device name
+  (`validate_device_name`), the date (`BatchFolderName.from_date`), an
+  existing batch and a device symlink leaving the darkroom, at prepare and
+  again at execute. `engine.action_new_batch(device, date=, title=)` takes
+  the date as typed.
+- **Rename form:** `RenameAction` keeps an omitted date or title from
+  `BatchFolderName.from_str(current name)`, clears the title only when
+  asked, validates the new name and checks it is free at prepare, and
+  returns `noop` for the same name. `engine.action_rename(id, date=,
+  title=, clear_title=)` takes the date as typed.
+- **Target paths:** each plan's `Move` steps name the showroom or archive
+  files; the separate `showroom_path` / `archive_path` checks are no longer
+  needed to preview an action.
 
 ## 6. What the core does not need from the GUI
 

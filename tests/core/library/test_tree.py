@@ -12,7 +12,9 @@ from photo_darkroom_manager.core.library import (
     LibraryTree,
     NodeAction,
     NodeFacts,
+    NodeKind,
     node_actions,
+    scan_chain,
     scan_subtree,
 )
 
@@ -199,3 +201,94 @@ def test_replace_subtree_drops_removed_descendants(tmp_path: Path) -> None:
 
     assert not tree.contains("Camera/2026/2026-01 a/old")
     assert tree.view("Camera/2026/2026-01 a").children == ()
+
+
+# ---------------------------------------------------------------------------
+# partial trees: scoped loads and incomplete ancestors
+# ---------------------------------------------------------------------------
+
+WALK = "Camera/2026/2026-10 Walk"
+
+
+def _two_devices(darkroom: Path) -> None:
+    (darkroom / WALK / "PHOTOS").mkdir(parents=True)
+    (darkroom / WALK / "PHOTOS" / "a.jpg").write_bytes(b"")
+    (darkroom / "Camera" / "2026" / "2026-09 Other").mkdir()
+    (darkroom / "Camera" / "2026" / "2026-09 Other" / "b.jpg").write_bytes(b"")
+    (darkroom / "Phone" / "2026" / "2026-10 x").mkdir(parents=True)
+    (darkroom / "Phone" / "2026" / "2026-10 x" / "c.jpg").write_bytes(b"")
+
+
+def _load(tree: LibraryTree, darkroom: Path, node_id: str, kind: NodeKind) -> None:
+    tree.load_subtree(
+        node_id,
+        scan_subtree(darkroom, node_id, kind),
+        scan_chain(darkroom, node_id),
+    )
+
+
+def _scoped_tree(darkroom: Path, node_id: str, kind: NodeKind) -> LibraryTree:
+    chain = scan_chain(darkroom, node_id)
+    return LibraryTree(darkroom, chain | scan_subtree(darkroom, node_id, kind))
+
+
+def test_stub_ancestors_cover_only_the_scanned_branch(tmp_path: Path) -> None:
+    _two_devices(tmp_path)
+    tree = _scoped_tree(tmp_path, WALK, "batch")
+
+    root = tree.view("")
+    assert not root.complete
+    assert [c.id for c in root.children] == ["Camera"]
+    assert root.total.image_count == 1
+    batch = tree.view(WALK)
+    assert batch.complete
+    assert [c.name for c in batch.children] == ["PHOTOS"]
+    assert not tree.view("Camera/2026").complete
+
+
+@pytest.mark.internal
+def test_load_subtree_adds_a_branch_to_a_stub(tmp_path: Path) -> None:
+    _two_devices(tmp_path)
+    tree = _scoped_tree(tmp_path, WALK, "batch")
+    _load(tree, tmp_path, "Phone/2026/2026-10 x", "batch")
+    root = tree.view("")
+    assert [c.id for c in root.children] == ["Camera", "Phone"]
+    assert root.total.image_count == 2
+    assert not root.complete
+
+
+def test_stub_becomes_complete_after_its_own_scan(tmp_path: Path) -> None:
+    _two_devices(tmp_path)
+    tree = _scoped_tree(tmp_path, WALK, "batch")
+    _load(tree, tmp_path, "Camera", "device")
+    camera = tree.view("Camera")
+    assert camera.complete
+    assert camera.total.image_count == 2
+    assert not tree.view("").complete
+
+    _load(tree, tmp_path, "", "root")
+    assert tree.view("").complete
+    assert tree.view("").total.image_count == 3
+
+
+def test_stub_becomes_complete_after_a_refresh(tmp_path: Path) -> None:
+    _two_devices(tmp_path)
+    tree = _scoped_tree(tmp_path, WALK, "batch")
+    tree.replace_subtree("Camera/2026", scan_subtree(tmp_path, "Camera/2026", "year"))
+    year = tree.view("Camera/2026")
+    assert year.complete
+    assert [c.name for c in year.children] == ["2026-09 Other", "2026-10 Walk"]
+    assert not tree.view("Camera").complete
+
+
+@pytest.mark.internal
+def test_load_subtree_adds_a_new_branch_to_a_complete_tree(tmp_path: Path) -> None:
+    _two_devices(tmp_path)
+    tree = _scan_tree(tmp_path)
+    (tmp_path / "Camera" / "2027" / "2027-01 new").mkdir(parents=True)
+    _load(tree, tmp_path, "Camera/2027/2027-01 new", "batch")
+    assert [c.name for c in tree.view("Camera").children] == ["2026", "2027"]
+    assert tree.view("Camera/2027/2027-01 new").complete
+    assert not tree.view("Camera/2027").complete
+    assert tree.view("Camera/2026").complete
+    assert tree.view("Phone").complete

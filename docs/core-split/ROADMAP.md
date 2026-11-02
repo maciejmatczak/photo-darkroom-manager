@@ -93,9 +93,9 @@ its items are.
       kept working
 - [x] The old manager and scan code live in the core: the `Engine` and the
       `library` package; actions are created and run through the engine
-- [ ] An experimental CLI drives the core API end to end (configure, scan,
+- [x] An experimental CLI drives the core API end to end (configure, scan,
       inspect a node, run an action) and is usable by an agent as a tool
-      surface
+      surface (`experimental-cli`: `darkroom` / `dr`, see `DEV.md`)
 
 ## Phase 3: Jobs and safe file operations
 
@@ -144,4 +144,5 @@ its items are.
 
 ## Next actionable step
 
-Start the Phase 2 CLI over the engine's API.
+Phase 3: research how DAM tools preview and confirm bulk file operations,
+starting from the plans, fingerprints and outcomes the CLI now uses.

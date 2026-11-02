@@ -14,9 +14,9 @@ import pytest
 from photo_darkroom_manager.core.actions import (
     Action,
     ActionPlan,
+    ActionResult,
     ArchiveAction,
     NewBatchAction,
-    PrepareError,
     PublishAction,
     RenameAction,
 )
@@ -53,12 +53,12 @@ CASES: dict[str, tuple[str, Build]] = {
     ),
     "new_batch/darkroom": (
         "darkroom",
-        lambda s: NewBatchAction(s.roots.darkroom, "Camera", "2027", "01", None, None),
+        lambda s: NewBatchAction(s.roots.darkroom, "Camera", date="2027-01"),
     ),
     "rename/darkroom": (
         "darkroom",
         lambda s: RenameAction(
-            s.roots.darkroom / ARCHIVE_BASIC, s.roots.darkroom, "2026", "04", None, None
+            s.roots.darkroom / ARCHIVE_BASIC, s.roots.darkroom, date="2026-04"
         ),
     ),
 }
@@ -75,7 +75,8 @@ def test_prepare_refuses_missing_root(photo_setup, case: str) -> None:
     action = build(photo_setup)
     _unplug(getattr(photo_setup.roots, area))
     out = action.prepare()
-    assert isinstance(out, PrepareError)
+    assert isinstance(out, ActionResult)
+    assert out.outcome == "refused"
     assert area.capitalize() in out.message
 
 
@@ -84,12 +85,12 @@ def test_execute_refuses_root_lost_after_prepare(photo_setup, case: str) -> None
     area, build = CASES[case]
     action = build(photo_setup)
     plan = action.prepare()
-    assert plan is None or isinstance(plan, ActionPlan)
+    assert isinstance(plan, ActionPlan), plan
     moved = _unplug(getattr(photo_setup.roots, area))
     before = sorted(p.relative_to(moved) for p in moved.rglob("*"))
 
     result = action.execute(plan)
 
-    assert not result.success
+    assert result.outcome == "refused"
     assert area.capitalize() in result.message
     assert sorted(p.relative_to(moved) for p in moved.rglob("*")) == before

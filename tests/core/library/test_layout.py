@@ -11,6 +11,7 @@ from photo_darkroom_manager.core.library import (
     DarkroomBatch,
     NodeKind,
     child_kind,
+    node_kind,
     recognize_darkroom_batch,
 )
 
@@ -35,6 +36,47 @@ from photo_darkroom_manager.core.library import (
 )
 def test_child_kind(parent: NodeKind, name: str, kind: NodeKind | None) -> None:
     assert child_kind(parent, name) == kind
+
+
+@pytest.mark.internal
+@pytest.mark.parametrize(
+    ("node_id", "kind"),
+    [
+        ("", "root"),
+        ("Camera", "device"),
+        ("Camera/2026", "year"),
+        ("Camera/2026/2026-10 Walk", "batch"),
+        ("Camera/2026/2026-10 Walk/PUBLISH", "publish"),
+        ("Camera/2026/2026-10 Walk/PHOTOS", "subfolder"),
+        ("Camera/2026/2026-10 Walk/PUBLISH/extra", "subfolder"),
+        ("Camera/2026/2026-10 Walk/PHOTOS/a/b", "subfolder"),
+        ("Camera/notes", None),
+        ("Camera/2026/Undated", None),
+        ("Camera/2026/Undated/PHOTOS", None),
+    ],
+)
+def test_node_kind(node_id: str, kind: NodeKind | None) -> None:
+    assert node_kind(node_id) == kind
+
+
+@pytest.mark.internal
+@pytest.mark.parametrize(
+    "node_id",
+    [
+        "..",
+        "Camera/..",
+        "Camera/2026/2026-10 Walk/../x",
+        ".",
+        "Camera/./2026",
+        "/Camera",
+        "Camera/",
+        "Camera//2026",
+        "Camera\\2026",
+        "C:/Camera",
+    ],
+)
+def test_node_kind_rejects_malformed_ids(node_id: str) -> None:
+    assert node_kind(node_id) is None
 
 
 def test_darkroom_year_batch_valid() -> None:

@@ -1,148 +1,218 @@
-"""Tests for NewBatchAction and RenameAction execute paths."""
+"""Tests for NewBatchAction and RenameAction."""
 
 from pathlib import Path
-from typing import cast
 
 import pytest
 
-from photo_darkroom_manager.core.actions import ActionPlan, NewBatchAction, RenameAction
+from photo_darkroom_manager.core.actions import (
+    ActionPlan,
+    ActionResult,
+    MakeDir,
+    NewBatchAction,
+    Rename,
+    RenameAction,
+)
 from photo_darkroom_manager.core.library import PUBLISH_FOLDER
 
 
-def test_new_batch_execute_creates_year_batch_and_publish(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    act = NewBatchAction(darkroom, "Camera", "2026", "04", "15", "Spring Outing")
-    result = act.execute(None)
-    assert result.success
+@pytest.fixture
+def darkroom(tmp_path: Path) -> Path:
+    path = tmp_path / "darkroom"
+    path.mkdir()
+    return path
+
+
+def _plan(action) -> ActionPlan:
+    plan = action.prepare()
+    assert isinstance(plan, ActionPlan), plan
+    return plan
+
+
+def _refused(action) -> ActionResult:
+    out = action.prepare()
+    assert isinstance(out, ActionResult), out
+    assert out.outcome == "refused"
+    return out
+
+
+def _snapshot(root: Path) -> list[Path]:
+    return sorted(p.relative_to(root) for p in root.rglob("*"))
+
+
+# ---------------------------------------------------------------------------
+# app/action-create-batch
+# ---------------------------------------------------------------------------
+
+
+def test_new_batch_creates_year_batch_and_publish(darkroom: Path) -> None:
+    act = NewBatchAction(darkroom, "Camera", date="2026-04-15", title="Spring Outing")
+    result = act.execute(_plan(act))
+    assert result.outcome == "ok"
     batch_dir = darkroom / "Camera" / "2026" / "2026-04-15 Spring Outing"
     assert batch_dir.is_dir()
     assert (batch_dir / PUBLISH_FOLDER).is_dir()
     assert "2026-04-15 Spring Outing" in result.message
+    assert result.node_path == batch_dir
 
 
-def test_new_batch_execute_without_day(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    act = NewBatchAction(darkroom, "Camera", "2026", "05", None, "No Day")
-    result = act.execute(None)
-    assert result.success
-    batch_dir = darkroom / "Camera" / "2026" / "2026-05 No Day"
-    assert (batch_dir / PUBLISH_FOLDER).is_dir()
+def test_new_batch_without_day(darkroom: Path) -> None:
+    act = NewBatchAction(darkroom, "Camera", date="2026-05", title="No Day")
+    assert act.execute(_plan(act)).success
+    assert (darkroom / "Camera" / "2026" / "2026-05 No Day" / PUBLISH_FOLDER).is_dir()
 
 
 @pytest.mark.parametrize("no_title", [None, ""])
-def test_new_batch_execute_without_name_uses_date_only(
-    tmp_path: Path, no_title: str | None
+def test_new_batch_without_title_uses_date_only(
+    darkroom: Path, no_title: str | None
 ) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    act = NewBatchAction(darkroom, "Camera", "2026", "06", None, no_title)
-    result = act.execute(None)
-    assert result.success
-    batch_dir = darkroom / "Camera" / "2026" / "2026-06"
-    assert (batch_dir / PUBLISH_FOLDER).is_dir()
+    act = NewBatchAction(darkroom, "Camera", date="2026-06", title=no_title)
+    assert act.execute(_plan(act)).success
+    assert (darkroom / "Camera" / "2026" / "2026-06" / PUBLISH_FOLDER).is_dir()
 
 
-def test_new_batch_execute_fails_when_folder_already_exists(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    existing = darkroom / "Camera" / "2026" / "2026-07 Exists"
-    existing.mkdir(parents=True)
-    act = NewBatchAction(darkroom, "Camera", "2026", "07", None, "Exists")
-    result = act.execute(None)
-    assert not result.success
+def test_new_year_for_a_device(darkroom: Path) -> None:
+    (darkroom / "Camera" / "2026").mkdir(parents=True)
+    plan = _plan(NewBatchAction(darkroom, "Camera", date="2027-01"))
+    assert plan.steps == (
+        MakeDir(darkroom / "Camera" / "2027"),
+        MakeDir(darkroom / "Camera" / "2027" / "2027-01"),
+        MakeDir(darkroom / "Camera" / "2027" / "2027-01" / PUBLISH_FOLDER),
+    )
+    assert plan.changes_files
+    assert not (darkroom / "Camera" / "2027").exists()
+
+
+def test_new_batch_for_a_new_device(darkroom: Path) -> None:
+    plan = _plan(NewBatchAction(darkroom, "Drone", date="2027-01"))
+    assert [s.path for s in plan.steps if isinstance(s, MakeDir)] == [
+        darkroom / "Drone",
+        darkroom / "Drone" / "2027",
+        darkroom / "Drone" / "2027" / "2027-01",
+        darkroom / "Drone" / "2027" / "2027-01" / PUBLISH_FOLDER,
+    ]
+
+
+def test_batch_exists(darkroom: Path) -> None:
+    (darkroom / "Camera" / "2026" / "2026-07 Exists").mkdir(parents=True)
+    before = _snapshot(darkroom)
+    out = _refused(NewBatchAction(darkroom, "Camera", date="2026-07", title="Exists"))
+    assert "already exists" in out.message
+    assert _snapshot(darkroom) == before
+
+
+def test_new_batch_refused_when_created_after_the_preview(darkroom: Path) -> None:
+    act = NewBatchAction(darkroom, "Camera", date="2026-07")
+    plan = _plan(act)
+    (darkroom / "Camera" / "2026" / "2026-07").mkdir(parents=True)
+    result = act.execute(plan)
+    assert result.outcome == "refused"
     assert result.rescan_node_path is None
     assert "already exists" in result.message
 
 
-@pytest.mark.internal
-def test_new_batch_execute_rejects_non_none_plan(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    act = NewBatchAction(darkroom, "Camera", "2026", "08", None, "X")
-    result = act.execute(cast(ActionPlan, object()))
-    assert not result.success
-    assert "new batch expects no plan" in result.message
+@pytest.mark.parametrize("date", ["2026-13", "2026", "2026-10-32", "10-2026"])
+def test_new_batch_refuses_an_invalid_date(darkroom: Path, date: str) -> None:
+    _refused(NewBatchAction(darkroom, "Camera", date=date))
+    assert list(darkroom.iterdir()) == []
 
 
-def test_new_batch_execute_fails_on_invalid_month(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    act = NewBatchAction(darkroom, "Camera", "2026", "13", None, "X")
-    result = act.execute(None)
-    assert not result.success
-    assert result.rescan_node_path is None
+# ---------------------------------------------------------------------------
+# app/action-rename-batch
+# ---------------------------------------------------------------------------
 
 
-def test_rename_execute_renames_batch_folder(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    old = darkroom / "Camera" / "2026" / "2026-03 rename me"
-    old.mkdir(parents=True)
-    act = RenameAction(old, darkroom, "2026", "03", None, "renamed batch")
-    result = act.execute(None)
-    assert result.success
-    assert result.rescan_node_path == darkroom / "Camera" / "2026"
-    new_path = darkroom / "Camera" / "2026" / "2026-03 renamed batch"
+def _batch(darkroom: Path, name: str) -> Path:
+    path = darkroom / "Camera" / "2026" / name
+    path.mkdir(parents=True)
+    return path
+
+
+def test_rename_plan(darkroom: Path) -> None:
+    old = _batch(darkroom, "2026-10 Walk")
+    plan = _plan(RenameAction(old, darkroom, date="2026-10-05"))
+    assert plan.steps == (Rename(old, old.with_name("2026-10-05 Walk")),)
+    assert plan.summary == "Rename 2026-10 Walk to 2026-10-05 Walk"
+    assert old.is_dir()
+
+
+def test_rename_execute_renames_batch_folder(darkroom: Path) -> None:
+    old = _batch(darkroom, "2026-03 rename me")
+    act = RenameAction(old, darkroom, title="renamed batch")
+    result = act.execute(_plan(act))
+    assert result.outcome == "ok"
+    new_path = old.with_name("2026-03 renamed batch")
+    assert result.rescan_node_path == old.parent
+    assert result.node_path == new_path
     assert new_path.is_dir()
     assert not old.exists()
 
 
-def test_rename_execute_fails_on_invalid_month(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    batch = darkroom / "Camera" / "2026" / "2026-03 a"
-    batch.mkdir(parents=True)
-    act = RenameAction(batch, darkroom, "2026", "99", None, None)
-    result = act.execute(None)
-    assert not result.success
+def test_name_taken(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10 Walk")
+    _batch(darkroom, "2026-10 Hike")
+    out = _refused(RenameAction(source, darkroom, title="Hike"))
+    assert "2026-10 Hike" in out.message
+    assert source.is_dir()
 
 
-def test_rename_execute_fails_when_target_name_exists(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    year = darkroom / "Camera" / "2026"
-    year.mkdir(parents=True)
-    (year / "2026-03 source").mkdir()
-    (year / "2026-03 taken").mkdir()
-    act = RenameAction(year / "2026-03 source", darkroom, "2026", "03", None, "taken")
-    result = act.execute(None)
-    assert not result.success
-    assert result.rescan_node_path is None
-    assert "already exists" in result.message
+def test_invalid_month(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10 Walk")
+    out = _refused(RenameAction(source, darkroom, date="2026-13"))
+    assert "month" in out.message
+    assert source.is_dir()
 
 
-def test_rename_execute_fails_when_batch_not_recognized(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
+def test_new_title_only(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10-05 Walk")
+    (step,) = _plan(RenameAction(source, darkroom, title="Hike")).steps
+    assert isinstance(step, Rename)
+    assert step.target.name == "2026-10-05 Hike"
+
+
+def test_new_date_keeps_the_title(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10 Walk")
+    (step,) = _plan(RenameAction(source, darkroom, date="2026-11")).steps
+    assert isinstance(step, Rename)
+    assert step.target.name == "2026-11 Walk"
+
+
+def test_clear_the_title(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10 Walk")
+    (step,) = _plan(RenameAction(source, darkroom, clear_title=True)).steps
+    assert isinstance(step, Rename)
+    assert step.target.name == "2026-10"
+
+
+def test_same_name(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10 Walk")
+    out = RenameAction(source, darkroom, date="2026-10", title="Walk").prepare()
+    assert isinstance(out, ActionResult)
+    assert out.outcome == "noop"
+    assert source.is_dir()
+
+
+def test_unreadable_current_name_needs_a_date(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-10Walk")
+    out = _refused(RenameAction(source, darkroom, title="Walk"))
+    assert "date" in out.message
+    (step,) = _plan(RenameAction(source, darkroom, date="2026-10")).steps
+    assert isinstance(step, Rename)
+    assert step.target.name == "2026-10"
+
+
+def test_rename_fails_when_batch_not_recognized(darkroom: Path) -> None:
     year_only = darkroom / "Camera" / "2026"
     year_only.mkdir(parents=True)
-    act = RenameAction(year_only, darkroom, "2026", "03", None, "new")
-    result = act.execute(None)
-    assert not result.success
-    assert result.message == "Could not recognize batch"
+    out = _refused(RenameAction(year_only, darkroom, title="new"))
+    assert out.message == "Could not recognize batch"
 
 
-@pytest.mark.internal
-def test_rename_execute_rejects_non_none_plan(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    batch = darkroom / "Camera" / "2026" / "2026-03 x"
-    batch.mkdir(parents=True)
-    act = RenameAction(batch, darkroom, "2026", "03", None, "y")
-    result = act.execute(cast(ActionPlan, object()))
-    assert not result.success
-    assert "rename expects no plan" in result.message
-
-
-def test_rename_execute_noop_when_unchanged(tmp_path: Path) -> None:
-    darkroom = tmp_path / "darkroom"
-    darkroom.mkdir(exist_ok=True)
-    batch = darkroom / "Camera" / "2026" / "2026-03 same"
-    batch.mkdir(parents=True)
-    act = RenameAction(batch, darkroom, "2026", "03", None, "same")
-    result = act.execute(None)
-    assert result.success
+def test_rename_refused_when_target_appears_after_the_preview(darkroom: Path) -> None:
+    source = _batch(darkroom, "2026-03 source")
+    act = RenameAction(source, darkroom, title="taken")
+    plan = _plan(act)
+    _batch(darkroom, "2026-03 taken")
+    result = act.execute(plan)
+    assert result.outcome == "refused"
     assert result.rescan_node_path is None
-    assert batch.is_dir()
+    assert source.is_dir()

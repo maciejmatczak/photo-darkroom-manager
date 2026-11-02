@@ -17,6 +17,10 @@ dependencies = [
     "structlog>=26.1.0",
 ]
 
+[project.scripts]
+darkroom = "photo_darkroom_manager.cli:main"
+dr = "photo_darkroom_manager.cli:main"
+
 [dependency-groups]
 dev = [
     "import-linter~=2.15",

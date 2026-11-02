@@ -9,7 +9,7 @@ import hashlib
 from collections import Counter
 from pathlib import Path
 
-from photo_darkroom_manager.core.actions import ActionPlan, PrepareError
+from photo_darkroom_manager.core.actions import ActionPlan, ActionResult
 from photo_darkroom_manager.core.engine import Engine
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
 
@@ -18,6 +18,10 @@ TIDY_BASIC = BATCHES / "2026-03 tidy basic moves jpg and xmp"
 ARCHIVE_BASIC = BATCHES / "2026-03 archive basic success"
 ARCHIVE_CONFLICT = BATCHES / "2026-03 archive will fail on conflict"
 PUBLISH_BASIC = BATCHES / "2026-03 publish basic success"
+
+
+def _id(relative: Path) -> str:
+    return relative.as_posix()
 
 
 def _roots(manager: Engine) -> list[Path]:
@@ -54,27 +58,27 @@ def _run(manager: Engine, action):
 
 def test_tidy_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
-    batch = photo_setup.darkroom_has_dir(TIDY_BASIC)
+    photo_setup.darkroom_has_dir(TIDY_BASIC)
     before = _contents(mgr)
-    result = _run(mgr, mgr.action_tidy(batch))
+    result = _run(mgr, mgr.action_tidy(_id(TIDY_BASIC)))
     assert result.success
     assert _contents(mgr) == before
 
 
 def test_archive_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
-    batch = photo_setup.darkroom_has_dir(ARCHIVE_BASIC)
+    photo_setup.darkroom_has_dir(ARCHIVE_BASIC)
     before = _contents(mgr)
-    result = _run(mgr, mgr.action_archive(batch))
+    result = _run(mgr, mgr.action_archive(_id(ARCHIVE_BASIC)))
     assert result.success
     assert _contents(mgr) == before
 
 
 def test_publish_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
-    batch = photo_setup.darkroom_has_dir(PUBLISH_BASIC)
+    photo_setup.darkroom_has_dir(PUBLISH_BASIC)
     before = _contents(mgr)
-    result = _run(mgr, mgr.action_publish(batch))
+    result = _run(mgr, mgr.action_publish(_id(PUBLISH_BASIC)))
     assert result.success
     assert _contents(mgr) == before
 
@@ -85,7 +89,7 @@ def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
     photos = batch / PHOTOS_FOLDER
     others = {p for p in batch.rglob("*") if p.is_file() and photos not in p.parents}
     assert others
-    result = _run(mgr, mgr.action_archive(photos))
+    result = _run(mgr, mgr.action_archive(_id(ARCHIVE_BASIC / PHOTOS_FOLDER)))
     assert result.success
     assert not photos.exists() or not any(photos.rglob("*.*"))
     assert all(p.is_file() for p in others)
@@ -93,10 +97,11 @@ def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
 
 def test_refused_prepare_leaves_disk_unchanged(photo_setup) -> None:
     mgr = photo_setup.engine
-    batch = photo_setup.darkroom_has_dir(ARCHIVE_CONFLICT)
+    photo_setup.darkroom_has_dir(ARCHIVE_CONFLICT)
     before = _snapshot(mgr)
-    out = mgr.action_archive(batch).prepare()
-    assert isinstance(out, PrepareError)
+    out = mgr.action_archive(_id(ARCHIVE_CONFLICT)).prepare()
+    assert isinstance(out, ActionResult)
+    assert out.outcome == "refused"
     assert _snapshot(mgr) == before
 
 
@@ -111,7 +116,7 @@ def test_tree_changing_actions_report_what_to_refresh(photo_setup) -> None:
     ]
     for factory, rel in cases:
         target = photo_setup.darkroom_has_dir(rel)
-        result = _run(mgr, factory(target))
+        result = _run(mgr, factory(_id(rel)))
         assert result.success, rel
         hint = result.rescan_node_path
         assert hint is not None, rel

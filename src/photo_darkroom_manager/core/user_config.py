@@ -83,6 +83,9 @@ class UnknownConfigKeyError(KeyError):
 
 _FIELDS: dict[str, FieldInfo] = ConfigValues.model_fields
 
+CONFIG_KEYS: tuple[str, ...] = tuple(_FIELDS)
+"""Configuration keys in their defined order."""
+
 
 def validate_value(key: str, value: object) -> object:
     """Validate one field on its own; raise ``ConfigValueError``."""

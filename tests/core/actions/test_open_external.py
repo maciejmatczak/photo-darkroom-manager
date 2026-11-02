@@ -9,24 +9,34 @@ from unittest.mock import Mock
 import pytest
 
 from photo_darkroom_manager.core.actions import (
+    ActionPlan,
+    ActionResult,
+    CullAction,
     ExecutionResult,
+    Launch,
     OpenExternalAppAction,
-    PrepareError,
     _find_first_image,
     _resolve_command,
 )
 
 
+def _plan(action: OpenExternalAppAction) -> ActionPlan:
+    plan = action.prepare()
+    assert isinstance(plan, ActionPlan), plan
+    return plan
+
+
 @pytest.mark.internal
 def test_execution_result_rescan_node_path_defaults_none() -> None:
-    result = ExecutionResult(True, "ok")
+    result = ExecutionResult("ok", "ok")
     assert result.rescan_node_path is None
 
 
 @pytest.mark.internal
 def test_resolve_command_empty_template(tmp_path: Path) -> None:
     r = _resolve_command("   ", tmp_path)
-    assert isinstance(r, PrepareError)
+    assert isinstance(r, ActionResult)
+    assert r.outcome == "refused"
     assert "empty" in r.message.lower()
 
 
@@ -54,14 +64,16 @@ def test_resolve_command_strips_cmd_style_outer_quotes(tmp_path: Path) -> None:
 @pytest.mark.internal
 def test_resolve_command_unknown_placeholder(tmp_path: Path) -> None:
     r = _resolve_command("{not_a_real_key}", tmp_path)
-    assert isinstance(r, PrepareError)
+    assert isinstance(r, ActionResult)
+    assert r.outcome == "refused"
     assert "placeholder" in r.message.lower()
 
 
 @pytest.mark.internal
 def test_resolve_command_no_first_image(tmp_path: Path) -> None:
     r = _resolve_command("{first_image_in_folder}", tmp_path)
-    assert isinstance(r, PrepareError)
+    assert isinstance(r, ActionResult)
+    assert r.outcome == "refused"
     assert "image" in r.message.lower()
 
 
@@ -78,7 +90,8 @@ def test_resolve_command_first_image_pick_min_name(tmp_path: Path) -> None:
 @pytest.mark.internal
 def test_resolve_command_shlex_bad_quotes(tmp_path: Path) -> None:
     r = _resolve_command('echo "unclosed', tmp_path)
-    assert isinstance(r, PrepareError)
+    assert isinstance(r, ActionResult)
+    assert r.outcome == "refused"
 
 
 @pytest.mark.internal
@@ -95,16 +108,44 @@ def test_find_first_image_returns_min_by_name(tmp_path: Path) -> None:
     assert first.name == "a.jpg"
 
 
-def test_open_external_prepare_ok_without_first_image_key(tmp_path: Path) -> None:
-    act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    prep = act.prepare()
-    assert prep is None
+def test_open_external_prepare_plans_one_launch(tmp_path: Path) -> None:
+    plan = _plan(OpenExternalAppAction('edit "{folder}"', tmp_path))
+    assert plan.steps == (Launch(("edit", str(tmp_path.resolve()))),)
+    assert not plan.changes_files
 
 
 def test_open_external_prepare_error_propagates(tmp_path: Path) -> None:
-    act = OpenExternalAppAction("{first_image_in_folder}", tmp_path)
-    prep = act.prepare()
-    assert isinstance(prep, PrepareError)
+    prep = OpenExternalAppAction("{first_image_in_folder}", tmp_path).prepare()
+    assert isinstance(prep, ActionResult)
+    assert prep.outcome == "refused"
+
+
+def test_cull_without_a_command(tmp_path: Path) -> None:
+    prep = CullAction(None, tmp_path).prepare()
+    assert isinstance(prep, ActionResult)
+    assert prep.outcome == "refused"
+    assert "cull_command" in prep.message
+
+
+def test_open_external_executes_exactly_the_planned_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "a.jpg").write_bytes(b"")
+    act = OpenExternalAppAction("view {first_image_in_folder}", tmp_path)
+    plan = _plan(act)
+    (tmp_path / "0-first.jpg").write_bytes(b"")
+    seen: list[object] = []
+
+    def fake_popen(argv, **_kw: object) -> Mock:
+        seen.append(argv)
+        return Mock(wait=Mock(return_value=0))
+
+    monkeypatch.setattr(
+        "photo_darkroom_manager.core.actions.subprocess.Popen", fake_popen
+    )
+    result = act.execute(plan)
+    assert result.outcome == "ok"
+    assert seen == [("view", str((tmp_path / "a.jpg").resolve()))]
 
 
 def test_open_external_execute_uses_devnull_and_wait(
@@ -125,7 +166,7 @@ def test_open_external_execute_uses_devnull_and_wait(
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    result = act.execute(None)
+    result = act.execute(_plan(act))
     assert result.success
     assert result.rescan_node_path is None
     assert captured["stdout"] is subprocess.DEVNULL
@@ -149,7 +190,7 @@ def test_open_external_execute_timeout_means_still_running(
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    result = act.execute(None)
+    result = act.execute(_plan(act))
     assert result.success
     assert result.rescan_node_path is None
 
@@ -167,7 +208,7 @@ def test_open_external_execute_nonzero_exit(
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
-    result = act.execute(None)
+    result = act.execute(_plan(act))
     assert not result.success
     assert result.rescan_node_path is None
     assert "7" in result.message

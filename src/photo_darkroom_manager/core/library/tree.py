@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -79,6 +79,8 @@ class NodeFacts:
     """Files directly in the folder."""
     own_issues: frozenset[NodeIssue]
     children: tuple[NodeId, ...]
+    complete: bool = True
+    """False when *children* lists only the folders a scoped scan passed through."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +99,9 @@ class NodeView:
     """Issues of the node and every descendant."""
     actions: frozenset[NodeAction]
     children: tuple[NodeView, ...]
+    complete: bool
+    """False when part of the subtree was not scanned; then *children* and
+    *total* cover only what was."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +109,7 @@ class _Node:
     facts: NodeFacts
     total: FileCounts
     issues: frozenset[NodeIssue]
+    complete: bool
 
 
 _Nodes = dict[NodeId, _Node]
@@ -164,6 +170,41 @@ class LibraryTree:
             _aggregate(nodes, node_id, nodes[node_id].facts)
         self._nodes = nodes
 
+    def load_subtree(
+        self,
+        node_id: NodeId,
+        facts: Mapping[NodeId, NodeFacts],
+        chain: Mapping[NodeId, NodeFacts],
+    ) -> None:
+        """Store *node_id*'s subtree from *facts*, adding missing ancestors.
+
+        Ancestors not in the tree yet are taken from *chain*, stubs that list
+        only the next folder on the path (see ``scan_chain``); an ancestor
+        already in the tree gains *node_id*'s branch as a child if needed.
+        """
+        if node_id not in facts:
+            raise ValueError(f"facts must contain {node_id!r}")
+        nodes = dict(self._nodes)
+        if node_id in nodes:
+            _remove(nodes, node_id)
+        _insert(nodes, node_id, facts)
+        child = node_id
+        while child:
+            ancestor = parent_id(child)
+            known = nodes.get(ancestor)
+            if known is None:
+                own = chain[ancestor]
+            elif child in known.facts.children:
+                own = known.facts
+            else:
+                children = sorted(
+                    (*known.facts.children, child), key=lambda c: self.path(c)
+                )
+                own = replace(known.facts, children=tuple(children))
+            _aggregate(nodes, ancestor, own)
+            child = ancestor
+        self._nodes = nodes
+
     def _view(self, nodes: _Nodes, node_id: NodeId) -> NodeView:
         node = nodes[node_id]
         facts = node.facts
@@ -177,6 +218,7 @@ class LibraryTree:
             issues=node.issues,
             actions=node_actions(facts.kind),
             children=tuple(self._view(nodes, c) for c in facts.children),
+            complete=node.complete,
         )
 
 
@@ -197,8 +239,10 @@ def _insert(nodes: _Nodes, node_id: NodeId, facts: Mapping[NodeId, NodeFacts]) -
 def _aggregate(nodes: _Nodes, node_id: NodeId, facts: NodeFacts) -> None:
     total = facts.stats
     issues = facts.own_issues
+    complete = facts.complete
     for child in facts.children:
         child_node = nodes[child]
         total += child_node.total
         issues |= child_node.issues
-    nodes[node_id] = _Node(facts, total, issues)
+        complete = complete and child_node.complete
+    nodes[node_id] = _Node(facts, total, issues, complete)

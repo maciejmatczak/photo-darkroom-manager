@@ -17,30 +17,54 @@ from platformdirs import user_config_path, user_log_dir
 from photo_darkroom_manager.core.actions import (
     Action,
     ActionPlan,
+    ActionRequest,
     ArchiveAction,
+    CullAction,
+    EditAction,
     ExecutionResult,
     NewBatchAction,
-    OpenExternalAppAction,
+    OpenFolderAction,
+    ParamValue,
     PublishAction,
     RenameAction,
     TidyAction,
 )
 from photo_darkroom_manager.core.library import (
     LibraryTree,
+    NodeAction,
     NodeId,
+    NodeKind,
     NodeView,
+    PathOutsideDarkroomError,
+    canonical_id,
+    is_well_formed_id,
+    node_actions,
+    node_kind,
     parent_id,
+    resolve_path,
+    scan_chain,
     scan_subtree,
 )
 from photo_darkroom_manager.core.logging_config import configure_logging
 from photo_darkroom_manager.core.paths import Area, translate_path
 from photo_darkroom_manager.core.user_config import (
+    CONFIG_KEYS,
     ConfigIssue,
     ConfigValueError,
     LogLevel,
     UserConfig,
     validate_value,
 )
+
+__all__ = [
+    "ActionNotAllowedError",
+    "Engine",
+    "EngineBusyError",
+    "EngineNotReadyError",
+    "LibraryNotScannedError",
+    "NodeNotFoundError",
+    "PathOutsideDarkroomError",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -118,24 +142,41 @@ class LibraryNotScannedError(RuntimeError):
 
 
 class NodeNotFoundError(LookupError):
-    """A node id is not in the scanned library tree."""
+    """An id names no library node, no folder, or no node of the scanned tree."""
 
     def __init__(self, node_id: NodeId) -> None:
         super().__init__(f"node not in the library: {node_id!r}")
         self.node_id = node_id
 
 
+class ActionNotAllowedError(ValueError):
+    """An action was requested on a node whose kind does not list it."""
+
+    def __init__(self, node_id: NodeId, action: NodeAction, kind: NodeKind) -> None:
+        super().__init__(f"{action} is not allowed for a {kind}: {node_id!r}")
+        self.node_id = node_id
+        self.action = action
+        self.kind = kind
+
+
 class Engine:
     def __init__(
-        self, config_path: Path | None = None, logs_dir: Path | None = None
+        self,
+        config_path: Path | None = None,
+        logs_dir: Path | None = None,
+        *,
+        console_log_level: LogLevel | None = None,
     ) -> None:
         self.logs_dir = logs_dir or default_logs_dir()
-        configure_logging(logs_dir=self.logs_dir)
+        self.console_log_level: LogLevel | None = console_log_level
+        configure_logging(logs_dir=self.logs_dir, console_level=console_log_level)
         self._user_config = UserConfig(config_path or default_config_path())
         for issue in self._user_config.load():
             log.warning("config_issue", key=issue.key, message=issue.message)
         self.log_level: LogLevel = self._initial_log_level()
-        configure_logging(self.log_level, logs_dir=self.logs_dir)
+        configure_logging(
+            self.log_level, logs_dir=self.logs_dir, console_level=console_log_level
+        )
         self._busy_lock = threading.Lock()
         self._busy: EngineBusy | None = None
         self._library: LibraryTree | None = None
@@ -174,6 +215,21 @@ class Engine:
         return "; ".join(reasons) if reasons else None
 
     @property
+    def status_issues(self) -> list[ConfigIssue]:
+        """What keeps the engine from ``ready``, by configuration key."""
+        if not self._user_config.exists:
+            return [ConfigIssue(key, "missing", "file") for key in ROOT_KEYS]
+        return self._problems()
+
+    @property
+    def config_path(self) -> Path:
+        return self._user_config.path
+
+    def config_keys(self) -> tuple[str, ...]:
+        """Configuration keys, in their defined order."""
+        return CONFIG_KEYS
+
+    @property
     def config_issues(self) -> list[ConfigIssue]:
         """Problems of the configuration file not yet fixed by ``config_set``."""
         return self._user_config.issues
@@ -202,7 +258,9 @@ class Engine:
         """Change the running log level; the configuration is not touched."""
         valid = cast(LogLevel, validate_value("log_level", level))
         self.log_level = valid
-        configure_logging(valid, logs_dir=self.logs_dir)
+        configure_logging(
+            valid, logs_dir=self.logs_dir, console_level=self.console_log_level
+        )
 
     def _initial_log_level(self) -> LogLevel:
         """Env override, then the configuration, then ``INFO``."""
@@ -215,18 +273,21 @@ class Engine:
         return self._user_config.get_valid("log_level") or "INFO"
 
     def _reasons(self) -> list[str]:
-        reasons = [f"{i.key}: {i.message}" for i in self._user_config.issues]
+        return [f"{i.key}: {i.message}" for i in self._problems()]
+
+    def _problems(self) -> list[ConfigIssue]:
+        problems = list(self._user_config.issues)
         for key in ROOT_KEYS:
             if any(i.key == key for i in self._user_config.issues):
                 continue
             path = getattr(self, key)
             if path is None:
-                reasons.append(f"{key}: missing")
+                problems.append(ConfigIssue(key, "missing"))
             elif not path.exists():
-                reasons.append(f"{key}: folder does not exist: {path}")
+                problems.append(ConfigIssue(key, f"folder does not exist: {path}"))
             elif not path.is_dir():
-                reasons.append(f"{key}: not a folder: {path}")
-        return reasons
+                problems.append(ConfigIssue(key, f"not a folder: {path}"))
+        return problems
 
     def _require_ready(self) -> None:
         status = self.status
@@ -262,6 +323,10 @@ class Engine:
             with self._busy_lock:
                 self._busy = None
 
+    # ------------------------------------------------------------------
+    # Library
+    # ------------------------------------------------------------------
+
     @property
     def library_scanning(self) -> bool:
         """True while a full scan or a rescan runs."""
@@ -272,22 +337,44 @@ class Engine:
         """True when a scanned library tree is available."""
         return self._library is not None
 
-    def library_scan(self) -> None:
-        """Scan the whole darkroom into a new library tree."""
+    def library_scan(self, node_id: NodeId = "") -> NodeId:
+        """Scan *node_id*'s subtree and its ancestors' folders; return its id.
+
+        ``""`` scans the whole darkroom into a new tree. Any other node is
+        loaded into the current tree, or a new partial one, with ancestors
+        not scanned before as incomplete stubs; the rest is kept as it was.
+        """
         root = self._root("darkroom")
+        node_id, kind = self._node(node_id)
+        if not self._folder(node_id).is_dir():
+            raise NodeNotFoundError(node_id)
         with self._begin("scan"):
-            log.info("library_scan_started", root=str(root))
+            log.info("library_scan_started", root=str(root), node_id=node_id)
             started = time.perf_counter()
-            self._library = LibraryTree(root, scan_subtree(root, "", "root"))
-            batches, issues = _scan_stats(self._library.view(""))
+            facts = scan_subtree(root, node_id, kind)
+            chain = scan_chain(root, node_id)
+            if self._library is None or not node_id:
+                self._library = LibraryTree(root, chain | facts)
+            else:
+                self._library.load_subtree(node_id, facts, chain)
+            batches, issues = _scan_stats(self._library.view(node_id))
             duration_ms = int((time.perf_counter() - started) * 1000)
             log.info(
                 "library_scan_complete",
                 root=str(root),
+                node_id=node_id,
                 batches=batches,
                 issues=issues,
                 duration_ms=duration_ms,
             )
+        return node_id
+
+    def library_resolve(self, path: Path) -> NodeId:
+        """Id of the darkroom folder at *path*, with the on-disk folder names.
+
+        Raises ``PathOutsideDarkroomError`` for a path outside the darkroom.
+        """
+        return resolve_path(self._root("darkroom"), path)
 
     def library_refresh(self, node_id: NodeId) -> NodeId:
         """Rescan *node_id*, or its nearest existing ancestor; return that id.
@@ -331,49 +418,166 @@ class Engine:
         log.info("library_refresh_complete", target=target, duration_ms=duration_ms)
         return target
 
-    def action_execute(
-        self, action: Action, plan: ActionPlan | None
-    ) -> ExecutionResult:
+    def _folder(self, node_id: NodeId) -> Path:
+        root = self._root("darkroom")
+        return root / node_id if node_id else root
+
+    def _node(self, node_id: NodeId) -> tuple[NodeId, NodeKind]:
+        """Canonical id and kind of *node_id*; ``NodeNotFoundError`` if none."""
+        if not is_well_formed_id(node_id):
+            raise NodeNotFoundError(node_id)
+        canonical = canonical_id(self._root("darkroom"), node_id)
+        kind = node_kind(canonical)
+        if kind is None:
+            raise NodeNotFoundError(node_id)
+        return canonical, kind
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def _target(
+        self, node_id: NodeId, action: NodeAction, *, creates: bool = False
+    ) -> tuple[NodeId, Path]:
+        """Guard a request: *node_id* names a node whose kind lists *action*.
+
+        The folder must exist unless the action creates it. Only the id's
+        own folders are read; no scanned tree is needed.
+        """
+        self._require_ready()
+        node_id, kind = self._node(node_id)
+        if action not in node_actions(kind):
+            raise ActionNotAllowedError(node_id, action, kind)
+        path = self._folder(node_id)
+        if not creates and not path.is_dir():
+            raise NodeNotFoundError(node_id)
+        return node_id, path
+
+    def _request(
+        self, action: NodeAction, node_id: NodeId, **params: ParamValue
+    ) -> tuple[ActionRequest, Path]:
+        creates = action == NodeAction.NEW_BATCH
+        node_id, path = self._target(node_id, action, creates=creates)
+        return ActionRequest.of(action, node_id, **params), path
+
+    def action_execute(self, action: Action, plan: ActionPlan) -> ExecutionResult:
         """Run *action* with its *plan*, then rescan the part it affected."""
         with self._begin("action"):
-            result = action.execute(plan)
-            library = self._library
-            if result.rescan_node_path is None or library is None:
-                return result
-            node_id = _node_id(library.root, result.rescan_node_path)
-            return replace(result, library_refreshed=self._refresh(node_id))
+            return self._run(action, plan)
 
-    def action_tidy(self, folder_path: Path) -> Action:
-        self._require_ready()
-        return TidyAction(folder_path)
+    def action_apply(
+        self, action: Action, confirm: str | None = None
+    ) -> ExecutionResult:
+        """Prepare and execute *action* in one guarded call.
 
-    def action_open_external_app(
-        self, command_template: str, folder_path: Path
-    ) -> Action:
-        self._require_ready()
-        return OpenExternalAppAction(command_template, folder_path)
+        With *confirm*, execute only when the new plan has that fingerprint;
+        otherwise refuse, reporting both fingerprints.
+        """
+        with self._begin("action"):
+            prepared = action.prepare()
+            if not isinstance(prepared, ActionPlan):
+                return ExecutionResult(
+                    prepared.outcome, prepared.message, prepared.details
+                )
+            current = prepared.fingerprint
+            if confirm is not None and confirm != current:
+                return ExecutionResult(
+                    "refused",
+                    f"plan changed since {confirm} (now {current}); preview again",
+                    fingerprint=current,
+                )
+            return self._run(action, prepared)
 
-    def action_archive(self, folder_path: Path) -> Action:
+    def _run(self, action: Action, plan: ActionPlan) -> ExecutionResult:
+        """Execute and refresh without entering the busy guard."""
+        result = action.execute(plan)
+        darkroom = self.darkroom
+        if result.node_path is not None and darkroom is not None:
+            result = replace(result, node_id=_node_id(darkroom, result.node_path))
+        library = self._library
+        if result.rescan_node_path is None or library is None:
+            return result
+        node_id = _node_id(library.root, result.rescan_node_path)
+        return replace(result, library_refreshed=self._refresh(node_id))
+
+    def action_open(self, node_id: NodeId) -> Action:
+        request, path = self._request(NodeAction.OPEN, node_id)
+        return OpenFolderAction(path, request=request)
+
+    def action_tidy(self, node_id: NodeId) -> Action:
+        request, path = self._request(NodeAction.TIDY, node_id)
+        return TidyAction(path, request=request)
+
+    def action_cull(self, node_id: NodeId) -> Action:
+        """Launch the configured ``cull_command`` for the node's folder."""
+        request, path = self._request(NodeAction.CULL, node_id)
+        return CullAction(self.cull_command, path, request=request)
+
+    def action_edit(self, node_id: NodeId) -> Action:
+        """Launch the configured ``edit_command`` for the node's folder."""
+        request, path = self._request(NodeAction.EDIT, node_id)
+        return EditAction(self.edit_command, path, request=request)
+
+    def action_archive(self, node_id: NodeId) -> Action:
+        request, path = self._request(NodeAction.ARCHIVE, node_id)
         return ArchiveAction(
-            folder_path, darkroom=self._root("darkroom"), archive=self._root("archive")
+            path,
+            darkroom=self._root("darkroom"),
+            archive=self._root("archive"),
+            request=request,
         )
 
-    def action_publish(self, batch_path: Path) -> Action:
+    def action_publish(self, node_id: NodeId) -> Action:
+        request, path = self._request(NodeAction.PUBLISH, node_id)
         return PublishAction(
-            batch_path,
+            path,
             darkroom=self._root("darkroom"),
             showroom=self._root("showroom"),
+            request=request,
         )
 
     def action_rename(
-        self, batch_path: Path, year: str, month: str, day: str | None, name: str | None
+        self,
+        node_id: NodeId,
+        *,
+        date: str | None = None,
+        title: str | None = None,
+        clear_title: bool = False,
     ) -> Action:
-        return RenameAction(batch_path, self._root("darkroom"), year, month, day, name)
+        """Rename a batch; an omitted date or title keeps the current one."""
+        request, path = self._request(
+            NodeAction.RENAME, node_id, date=date, title=title, clear_title=clear_title
+        )
+        return RenameAction(
+            path,
+            self._root("darkroom"),
+            date=date,
+            title=title,
+            clear_title=clear_title,
+            request=request,
+        )
 
     def action_new_batch(
-        self, device: str, year: str, month: str, day: str | None, name: str | None
+        self, device_id: NodeId, *, date: str, title: str | None = None
     ) -> Action:
-        return NewBatchAction(self._root("darkroom"), device, year, month, day, name)
+        """Create a batch dated *date* (``YYYY-MM[-DD]``) under a device.
+
+        The device folder is created too when it does not exist yet.
+        """
+        request, _ = self._request(
+            NodeAction.NEW_BATCH, device_id, date=date, title=title
+        )
+        return NewBatchAction(
+            self._root("darkroom"),
+            request.node_id,
+            date=date,
+            title=title,
+            request=request,
+        )
+
+    # ------------------------------------------------------------------
+    # Paths between areas
+    # ------------------------------------------------------------------
 
     def darkroom_path(
         self,

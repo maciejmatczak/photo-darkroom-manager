@@ -9,6 +9,7 @@ from photo_darkroom_manager.core.library import (
     PUBLISH_FOLDER,
     LibraryTree,
     NodeView,
+    scan_chain,
     scan_subtree,
 )
 
@@ -192,3 +193,32 @@ def test_sibling_issue_kept_on_ancestor(tmp_path: Path) -> None:
     assert "untidy" not in _child(year, "2026-01 clean").issues
     assert "untidy" in _child(year, "2026-02 messy").issues
     assert "untidy" in year.issues
+
+
+# ---------------------------------------------------------------------------
+# scan_chain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.internal
+def test_scan_chain_reads_ancestors_only(tmp_path: Path) -> None:
+    batch = tmp_path / "Camera" / "2026" / "2026-10 Walk"
+    batch.mkdir(parents=True)
+    (tmp_path / "Camera" / "2026" / "loose.jpg").write_bytes(b"")
+    (tmp_path / "Camera" / "2026" / "2026-09 Other").mkdir()
+    (tmp_path / "Phone").mkdir()
+
+    chain = scan_chain(tmp_path, "Camera/2026/2026-10 Walk")
+
+    assert list(chain) == ["Camera/2026", "Camera", ""]
+    assert chain[""].children == ("Camera",)
+    assert chain["Camera"].children == ("Camera/2026",)
+    assert chain["Camera/2026"].children == ("Camera/2026/2026-10 Walk",)
+    assert chain["Camera/2026"].stats.image_count == 1
+    assert [f.kind for f in chain.values()] == ["year", "device", "root"]
+    assert not any(f.complete for f in chain.values())
+
+
+@pytest.mark.internal
+def test_scan_chain_of_the_root_is_empty(tmp_path: Path) -> None:
+    assert scan_chain(tmp_path, "") == {}

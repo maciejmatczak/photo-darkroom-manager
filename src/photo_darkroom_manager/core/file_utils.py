@@ -5,17 +5,19 @@ import os
 import shutil
 import stat
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
-    "ArchiveMergeResult",
     "MoveIssue",
+    "MoveReport",
+    "collect_leaf_paths",
     "cstm_shutil_move",
     "make_remove_readonly_onexc",
-    "merge_tree_into_archive",
+    "move_files",
     "preview_merge_into_archive",
+    "prune_empty_dirs",
 ]
 
 
@@ -31,12 +33,11 @@ class MoveIssue:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveMergeResult:
-    """Outcome of merging a source tree into an archive destination."""
+class MoveReport:
+    """Which of the requested moves happened, and why the others did not."""
 
-    moved_files: int
-    duplicates: tuple[tuple[Path, Path], ...]
-    issues: tuple[MoveIssue, ...]
+    done: tuple[tuple[Path, Path], ...]
+    failed: tuple[tuple[Path, Path, str], ...]
 
 
 def _paths_blocking_merge(dest: Path) -> bool:
@@ -44,7 +45,7 @@ def _paths_blocking_merge(dest: Path) -> bool:
     return dest.exists() or dest.is_symlink()
 
 
-def _collect_leaf_paths_to_move(source_dir: Path) -> list[Path]:
+def collect_leaf_paths(source_dir: Path) -> list[Path]:
     """List files and non-directory symlinks under *source_dir* (sorted)."""
     out: list[Path] = []
     for p in sorted(source_dir.rglob("*")):
@@ -74,7 +75,7 @@ def _rmdir_empty_dir(path: Path) -> None:
             raise exc2 from exc
 
 
-def _prune_empty_dirs_under(top: Path) -> None:
+def prune_empty_dirs(top: Path) -> None:
     """Remove empty directories under *top*, bottom-up; remove *top* if empty last.
 
     For each walk step, only remove immediate subdirectories (names in ``dirs``).
@@ -97,8 +98,7 @@ def preview_merge_into_archive(
 ) -> tuple[tuple[Path, ...], tuple[tuple[Path, Path], ...]]:
     """Resolve paths and compute leaf files plus blocking destination conflicts.
 
-    Does not move files. Used by :func:`merge_tree_into_archive` and the GUI
-    prepare step so preview and execute stay aligned.
+    Does not move files; the archive action plans its moves from the result.
     """
     source_dir = source_dir.resolve()
     dest_root = dest_root.resolve()
@@ -107,7 +107,7 @@ def preview_merge_into_archive(
     if not source_dir.is_dir():
         raise ValueError(f"Source is not a directory: {source_dir}")
 
-    leaves = _collect_leaf_paths_to_move(source_dir)
+    leaves = collect_leaf_paths(source_dir)
     duplicates: list[tuple[Path, Path]] = []
     for src in leaves:
         rel = src.relative_to(source_dir)
@@ -118,57 +118,28 @@ def preview_merge_into_archive(
     return tuple(leaves), tuple(duplicates)
 
 
-def merge_tree_into_archive(
-    source_dir: Path,
-    dest_root: Path,
-) -> ArchiveMergeResult:
-    """Move every file under *source_dir* into *dest_root*, preserving relative paths.
+def move_files(
+    moves: Iterable[tuple[Path, Path]], *, replace: bool = False
+) -> MoveReport:
+    """Move each (source, target) file, creating target folders as needed.
 
-    Creates *dest_root* and intermediate dirs as needed. If any destination path
-    would be overwritten (including broken symlinks at the destination), no
-    files are moved and *duplicates* lists each (src, dest) pair.
-
-    After successful moves, removes empty directories under *source_dir*,
-    including *source_dir* when empty. Uses :func:`cstm_shutil_move` per file for
-    cross-filesystem semantics.
+    Keeps going after a failed move and reports it. With *replace*, an
+    existing target is removed first; otherwise the caller checks targets.
+    Uses :func:`cstm_shutil_move` per file for cross-filesystem semantics.
     """
-
-    # potentially this can be swapped out with rclone move
-
-    source_dir = source_dir.resolve()
-    dest_root = dest_root.resolve()
-    leaves, duplicates = preview_merge_into_archive(source_dir, dest_root)
-
-    if duplicates:
-        return ArchiveMergeResult(0, duplicates, ())
-
-    # this shenanigans were needed when moving whole directory
-    # (we had there rmtree issue on source cleanup)
-    # not sure if the are still needed here (moving files only)
-    move_issues: list[MoveIssue] = []
-    onexc = make_remove_readonly_onexc(move_issues)
-    moved = 0
-    for src in leaves:
-        rel = src.relative_to(source_dir)
-        dst = dest_root / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
+    done: list[tuple[Path, Path]] = []
+    failed: list[tuple[Path, Path, str]] = []
+    for src, dst in moves:
         try:
-            cstm_shutil_move(
-                str(src),
-                str(dst),
-                onexc=onexc,
-                issues=move_issues,
-            )
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if replace and (dst.exists() or dst.is_symlink()):
+                dst.unlink()
+            cstm_shutil_move(str(src), str(dst))
         except (OSError, shutil.Error) as e:
-            move_issues.append(
-                MoveIssue("merge", "cstm_shutil_move", src, e, recovered=False)
-            )
+            failed.append((src, dst, str(e) or type(e).__name__))
         else:
-            moved += 1
-
-    _prune_empty_dirs_under(source_dir)
-
-    return ArchiveMergeResult(moved, (), tuple(move_issues))
+            done.append((src, dst))
+    return MoveReport(tuple(done), tuple(failed))
 
 
 def make_remove_readonly_onexc(

@@ -36,6 +36,38 @@ def child_kind(parent_kind: NodeKind, name: str) -> NodeKind | None:
     return "subfolder"
 
 
+def is_well_formed_id(node_id: str) -> bool:
+    """True if *node_id* is ``""`` or relative POSIX parts with no traversal.
+
+    Empty, ``.`` and ``..`` parts, backslashes and drives are malformed.
+    """
+    if not node_id:
+        return True
+    return all(
+        part not in ("", ".", "..") and "\\" not in part and ":" not in part
+        for part in node_id.split("/")
+    )
+
+
+def node_kind(node_id: str) -> NodeKind | None:
+    """Kind of the node *node_id* (a darkroom-relative POSIX path), from the id.
+
+    ``None`` means the id names no library node: a folder outside the layout,
+    or a malformed id (see ``is_well_formed_id``). Nothing is read from disk.
+    """
+    kind: NodeKind = "root"
+    if not is_well_formed_id(node_id):
+        return None
+    if not node_id:
+        return kind
+    for part in node_id.split("/"):
+        sub_kind = child_kind(kind, part)
+        if sub_kind is None:
+            return None
+        kind = sub_kind
+    return kind
+
+
 def format_validation_error(e: ValidationError) -> str:
     """Short user-facing message from a Pydantic ``ValidationError``."""
     parts = [str(err.get("msg", "")) for err in e.errors()]
@@ -55,6 +87,19 @@ def _batch_folder_shape_validation_error(raw: str) -> ValidationError:
         "loc": (),
         "input": raw,
         "ctx": {"error": ValueError(msg)},
+    }
+    return ValidationError.from_exception_data("BatchFolderName", [details])
+
+
+_BATCH_DATE_PATTERN = re.compile(r"^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$")
+
+
+def _batch_date_shape_validation_error(raw: str) -> ValidationError:
+    details: InitErrorDetails = {
+        "type": "value_error",
+        "loc": (),
+        "input": raw,
+        "ctx": {"error": ValueError(f"date must be YYYY-MM[-DD], got: {raw!r}")},
     }
     return ValidationError.from_exception_data("BatchFolderName", [details])
 
@@ -142,6 +187,15 @@ class BatchFolderName(BaseModel):
             raise _batch_folder_shape_validation_error(raw)
         year, month, day, name = m.group(1), m.group(2), m.group(3), m.group(4)
         return cls(year=year, month=month, day=day, name=name)
+
+    @classmethod
+    def from_date(cls, date: str, name: str | None = None) -> BatchFolderName:
+        """Build from a ``YYYY-MM[-DD]`` date and a title; ``ValidationError``."""
+        raw = date.strip()
+        m = _BATCH_DATE_PATTERN.match(raw)
+        if not m:
+            raise _batch_date_shape_validation_error(raw)
+        return cls(year=m.group(1), month=m.group(2), day=m.group(3), name=name)
 
 
 def validate_device_name(value: str) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from photo_darkroom_manager.core.library.layout import NodeKind, child_kind
+from photo_darkroom_manager.core.library.layout import NodeKind, child_kind, node_kind
 from photo_darkroom_manager.core.library.media import (
     PHOTO_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -16,6 +16,7 @@ from photo_darkroom_manager.core.library.tree import (
     NodeId,
     NodeIssue,
     child_id,
+    parent_id,
 )
 
 _TIDY_KINDS: frozenset[NodeKind] = frozenset({"batch", "subfolder"})
@@ -58,12 +59,41 @@ def scan_subtree(
     return facts
 
 
+def scan_chain(root: Path, node_id: NodeId) -> dict[NodeId, NodeFacts]:
+    """Stub facts of every ancestor of *node_id*, from the root down.
+
+    Each ancestor's own files and issues come from one listing of its
+    folder; its children are only the next folder on the path, so it is
+    marked incomplete. Siblings' subtrees are never read.
+    """
+    facts: dict[NodeId, NodeFacts] = {}
+    child = node_id
+    while child:
+        ancestor = parent_id(child)
+        kind = node_kind(ancestor)
+        if kind is None:
+            raise ValueError(f"not a library node: {ancestor!r}")
+        path = root / ancestor if ancestor else root
+        facts[ancestor] = NodeFacts(
+            kind=kind,
+            stats=_count_files(path),
+            own_issues=_own_issues(path, kind),
+            children=(child,),
+            complete=False,
+        )
+        child = ancestor
+    return facts
+
+
+def _own_issues(path: Path, kind: NodeKind) -> frozenset[NodeIssue]:
+    if kind in _TIDY_KINDS and is_untidy(path):
+        return frozenset({"untidy"})
+    return frozenset()
+
+
 def _scan(
     path: Path, node_id: NodeId, kind: NodeKind, out: dict[NodeId, NodeFacts]
 ) -> None:
-    issues: set[NodeIssue] = set()
-    if kind in _TIDY_KINDS and is_untidy(path):
-        issues.add("untidy")
     children: list[NodeId] = []
     for sub in _subfolders(path):
         sub_kind = child_kind(kind, sub.name)
@@ -75,6 +105,6 @@ def _scan(
     out[node_id] = NodeFacts(
         kind=kind,
         stats=_count_files(path),
-        own_issues=frozenset(issues),
+        own_issues=_own_issues(path, kind),
         children=tuple(children),
     )

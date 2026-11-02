@@ -7,14 +7,16 @@ import pytest
 from conftest import Roots
 
 from photo_darkroom_manager.core import engine as engine_module
-from photo_darkroom_manager.core.actions import PrepareError, TidyPlan
+from photo_darkroom_manager.core.actions import ActionPlan
 from photo_darkroom_manager.core.engine import (
     Engine,
     EngineBusyError,
     LibraryNotScannedError,
     NodeNotFoundError,
+    PathOutsideDarkroomError,
 )
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
+from photo_darkroom_manager.core.library import _scan as scan_module
 
 BATCH = "Camera/2026/2026-10 Walk"
 
@@ -121,9 +123,9 @@ def test_tidy_updates_the_tree(roots: Roots, engine: Engine) -> None:
     engine.library_scan()
     assert "untidy" in engine.library_node(BATCH).issues
 
-    action = engine.action_tidy(batch)
+    action = engine.action_tidy(BATCH)
     plan = action.prepare()
-    assert isinstance(plan, TidyPlan)
+    assert isinstance(plan, ActionPlan)
     result = engine.action_execute(action, plan)
 
     assert result.success
@@ -134,12 +136,13 @@ def test_tidy_updates_the_tree(roots: Roots, engine: Engine) -> None:
     assert "untidy" not in engine.library_node("").issues
 
 
-def test_opening_an_external_app(roots: Roots, engine: Engine) -> None:
-    batch = _batch(roots)
+def test_opening_an_external_app(roots: Roots, make_engine) -> None:
+    _batch(roots)
+    engine = make_engine(roots, edit_command="echo {folder}")
     engine.library_scan()
-    action = engine.action_open_external_app("echo {folder}", batch)
+    action = engine.action_edit(BATCH)
     plan = action.prepare()
-    assert not isinstance(plan, PrepareError)
+    assert isinstance(plan, ActionPlan)
     result = engine.action_execute(action, plan)
     assert result.success
     assert result.library_refreshed is None
@@ -147,9 +150,7 @@ def test_opening_an_external_app(roots: Roots, engine: Engine) -> None:
 
 @pytest.mark.internal
 def test_action_without_a_scan_refreshes_nothing(roots: Roots, engine: Engine) -> None:
-    result = engine.action_execute(
-        engine.action_new_batch("Camera", "2026", "10", None, None), None
-    )
+    result = engine.action_apply(engine.action_new_batch("Camera", date="2026-10"))
     assert result.success
     assert result.rescan_node_path is not None
     assert result.library_refreshed is None
@@ -178,9 +179,7 @@ def test_during_a_scan(
         with pytest.raises(EngineBusyError):
             engine.library_scan()
         with pytest.raises(EngineBusyError):
-            engine.action_execute(
-                engine.action_new_batch("Camera", "2026", "10", None, None), None
-            )
+            engine.action_apply(engine.action_new_batch("Camera", date="2026-10"))
         return real_scan(root, node_id, kind)
 
     monkeypatch.setattr(engine_module, "scan_subtree", scan_and_probe)
@@ -211,3 +210,98 @@ def test_busy_flag_cleared_after_a_failed_scan(
     monkeypatch.undo()
     engine.library_scan()
     assert engine.library_scanned
+
+
+# ---------------------------------------------------------------------------
+# engine/library-index: scoped scan, incomplete ancestors, resolving paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_devices(roots: Roots) -> Roots:
+    _batch(roots)
+    (roots.darkroom / BATCH / "a.jpg").write_bytes(b"")
+    (roots.darkroom / "Camera/2026/2026-09 Other").mkdir()
+    (roots.darkroom / "Phone/2026/2026-10 x").mkdir(parents=True)
+    (roots.darkroom / "Phone/2026/2026-10 x/b.jpg").write_bytes(b"")
+    return roots
+
+
+def test_one_batch_nothing_scanned_before(
+    two_devices: Roots, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read: list[Path] = []
+    real_count = scan_module._count_files
+    real_subfolders = scan_module._subfolders
+
+    def count(directory: Path):
+        read.append(directory)
+        return real_count(directory)
+
+    def subfolders(directory: Path):
+        read.append(directory)
+        return real_subfolders(directory)
+
+    monkeypatch.setattr(scan_module, "_count_files", count)
+    monkeypatch.setattr(scan_module, "_subfolders", subfolders)
+
+    assert engine.library_scan(BATCH) == BATCH
+
+    batch = engine.library_node(BATCH)
+    assert batch.total.image_count == 1
+    assert batch.complete
+    phone = two_devices.darkroom / "Phone"
+    assert read
+    assert not any(p == phone or phone in p.parents for p in read)
+    assert two_devices.darkroom / "Camera/2026/2026-09 Other" not in read
+
+
+def test_missing_folder(engine: Engine) -> None:
+    with pytest.raises(NodeNotFoundError) as exc:
+        engine.library_scan("Camera/1999")
+    assert exc.value.node_id == "Camera/1999"
+
+
+def test_root_after_scanning_one_batch(two_devices: Roots, engine: Engine) -> None:
+    engine.library_scan(BATCH)
+    root = engine.library_node("")
+    assert not root.complete
+    assert [c.id for c in root.children] == ["Camera"]
+    assert [c.id for c in root.children[0].children] == ["Camera/2026"]
+    assert [c.id for c in root.children[0].children[0].children] == [BATCH]
+
+
+def test_full_scan_completes_the_tree(two_devices: Roots, engine: Engine) -> None:
+    engine.library_scan(BATCH)
+    engine.library_scan()
+    root = engine.library_node("")
+    assert root.complete
+    assert [c.id for c in root.children] == ["Camera", "Phone"]
+
+
+@pytest.mark.internal
+def test_scoped_scan_keeps_the_rest_of_the_tree(
+    two_devices: Roots, engine: Engine
+) -> None:
+    engine.library_scan()
+    (two_devices.darkroom / BATCH / "new.jpg").write_bytes(b"")
+    engine.library_scan(BATCH)
+    root = engine.library_node("")
+    assert root.complete
+    assert root.total.image_count == 3
+    assert [c.id for c in root.children] == ["Camera", "Phone"]
+
+
+@pytest.mark.internal
+def test_scoped_scan_returns_the_on_disk_id(two_devices: Roots, engine: Engine) -> None:
+    assert engine.library_scan(BATCH.lower()) == BATCH
+
+
+def test_batch_path(roots: Roots, engine: Engine) -> None:
+    _batch(roots)
+    assert engine.library_resolve(roots.darkroom / BATCH) == BATCH
+
+
+def test_archive_path(roots: Roots, engine: Engine) -> None:
+    with pytest.raises(PathOutsideDarkroomError):
+        engine.library_resolve(roots.archive / "2026")

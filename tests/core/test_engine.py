@@ -83,15 +83,20 @@ def test_several_problems_at_once(tmp_path: Path, roots: Roots) -> None:
 
 def test_not_ready_rejects_work(tmp_path: Path, roots: Roots) -> None:
     engine = _engine(tmp_path, roots, log_level="VERBOSE")
-    batch = roots.darkroom / "Camera/2026/2026-10"
+    batch = "Camera/2026/2026-10"
+    (roots.darkroom / batch).mkdir(parents=True)
     work = [
         engine.library_scan,
+        lambda: engine.library_scan(batch),
+        lambda: engine.library_resolve(roots.darkroom / batch),
+        lambda: engine.action_open(batch),
         lambda: engine.action_tidy(batch),
         lambda: engine.action_archive(batch),
         lambda: engine.action_publish(batch),
-        lambda: engine.action_rename(batch, "2026", "10", None, "x"),
-        lambda: engine.action_new_batch("Camera", "2026", "10", None, None),
-        lambda: engine.action_open_external_app("edit {folder}", batch),
+        lambda: engine.action_rename(batch, title="x"),
+        lambda: engine.action_new_batch("Camera", date="2026-10"),
+        lambda: engine.action_cull(batch),
+        lambda: engine.action_edit(batch),
     ]
     for request in work:
         with pytest.raises(EngineNotReadyError) as exc:
@@ -162,3 +167,23 @@ def test_config_path_env_override(
 def test_default_logs_dir_uses_platformdirs() -> None:
     # Imported before the isolation fixture patches the module attribute.
     assert default_logs_dir() == Path(user_log_dir(APP_NAME))
+
+
+def test_config_keys_in_defined_order(engine: Engine) -> None:
+    assert engine.config_keys() == (
+        "darkroom",
+        "showroom",
+        "archive",
+        "cull_command",
+        "edit_command",
+        "log_level",
+    )
+
+
+def test_status_issues_name_the_keys_to_fix(tmp_path: Path, roots: Roots) -> None:
+    fresh = Engine(tmp_path / "missing.yaml")
+    assert [i.key for i in fresh.status_issues] == ["darkroom", "showroom", "archive"]
+    gone = Roots(roots.darkroom, roots.showroom, tmp_path / "unplugged")
+    engine = _engine(tmp_path, gone, log_level="VERBOSE")
+    assert [i.key for i in engine.status_issues] == ["log_level", "archive"]
+    assert _engine(tmp_path, roots).status_issues == []

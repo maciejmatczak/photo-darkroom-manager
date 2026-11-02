@@ -59,3 +59,31 @@ def test_configure_logging_is_idempotent(tmp_path: Path) -> None:
     second = configure_logging(logs_dir=tmp_path / "other")
     assert second == first
     assert len(logging.getLogger().handlers) == handler_count
+
+
+def test_console_level_keeps_stderr_quiet_while_the_file_logs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_file = configure_logging(
+        "INFO", logs_dir=tmp_path / "logs", console_level="WARNING"
+    )
+    assert log_file is not None
+    logger = logging.getLogger("photo_darkroom_manager.test")
+    capsys.readouterr()
+
+    logger.info("quiet_record")
+    logger.warning("loud_record")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    err = capsys.readouterr().err
+    assert "quiet_record" not in err
+    assert "loud_record" in err
+    text = log_file.read_text(encoding="utf-8")
+    assert "quiet_record" in text
+    assert "loud_record" in text
+
+
+def test_console_level_can_be_more_verbose_than_the_file(tmp_path: Path) -> None:
+    configure_logging("WARNING", logs_dir=tmp_path / "logs", console_level="DEBUG")
+    assert logging.getLogger("photo_darkroom_manager").isEnabledFor(logging.DEBUG)

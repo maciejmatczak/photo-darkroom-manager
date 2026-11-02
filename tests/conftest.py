@@ -1,6 +1,8 @@
 """Shared pytest fixtures."""
 
+import os
 import shutil
+import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,23 @@ def write_config(path: Path, roots: Roots | None = None, **values: object) -> Pa
     data |= values
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
+
+
+def link_dir(link: Path, target: Path) -> None:
+    """Make *link* a directory symlink to *target* (a junction on Windows)."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        if os.name != "nt":
+            raise pytest.skip.Exception(
+                f"Directory symlinks unavailable: {error}"
+            ) from error
+        # Windows without symlink rights: a junction is an equivalent link.
+        subprocess.run(
+            ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+        )
 
 
 def engine_for(roots: Roots, **values: object) -> Engine:

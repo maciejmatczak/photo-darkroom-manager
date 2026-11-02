@@ -24,6 +24,8 @@ THIRD_PARTY_LOGGERS = ("nicegui", "uvicorn", "uvicorn.error", "uvicorn.access")
 
 _configured = False
 _log_file_path: Path | None = None
+_file_handler: logging.Handler | None = None
+_stderr_handler: logging.Handler | None = None
 
 
 def build_log_file_path(logs_dir: Path) -> Path:
@@ -55,26 +57,38 @@ def _shared_pre_chain() -> Sequence[Processor]:
     ]
 
 
-def _apply_log_levels(level_name: str) -> None:
-    level = getattr(logging, level_name, logging.INFO)
-    logging.getLogger().setLevel(level)
-    logging.getLogger(APP_LOGGER_NAME).setLevel(level)
+def _level(name: str) -> int:
+    return getattr(logging, name.upper(), logging.INFO)
+
+
+def _apply_log_levels(level_name: str, console_name: str | None) -> None:
+    level = _level(level_name)
+    console = _level(console_name) if console_name else level
+    if _file_handler is not None:
+        _file_handler.setLevel(level)
+    if _stderr_handler is not None:
+        _stderr_handler.setLevel(console)
+    logging.getLogger().setLevel(min(level, console))
+    logging.getLogger(APP_LOGGER_NAME).setLevel(min(level, console))
     for name in THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def configure_logging(log_level: str = "INFO", *, logs_dir: Path) -> Path | None:
+def configure_logging(
+    log_level: str = "INFO", *, logs_dir: Path, console_level: str | None = None
+) -> Path | None:
     """Configure structlog + stdlib handlers under *logs_dir*.
 
-    Repeat calls only re-apply *log_level*; handlers and the log file from
-    the first call are kept.
+    The log file gets *log_level*; stderr gets *console_level* when given,
+    else *log_level*. Repeat calls only re-apply the levels; handlers and the
+    log file from the first call are kept.
     """
-    global _configured, _log_file_path
+    global _configured, _log_file_path, _file_handler, _stderr_handler
 
     level_name = log_level.upper()
 
     if _configured:
-        _apply_log_levels(level_name)
+        _apply_log_levels(level_name, console_level)
         return _log_file_path
 
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +117,6 @@ def configure_logging(log_level: str = "INFO", *, logs_dir: Path) -> Path | None
 
     root = logging.getLogger()
     root.handlers.clear()
-    root.setLevel(getattr(logging, level_name, logging.INFO))
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(
@@ -123,7 +136,9 @@ def configure_logging(log_level: str = "INFO", *, logs_dir: Path) -> Path | None
     )
     root.addHandler(stderr_handler)
 
-    _apply_log_levels(level_name)
+    _file_handler = file_handler
+    _stderr_handler = stderr_handler
+    _apply_log_levels(level_name, console_level)
 
     _configured = True
     _log_file_path = log_file
@@ -140,7 +155,7 @@ def configure_logging(log_level: str = "INFO", *, logs_dir: Path) -> Path | None
 
 def reset_logging_state_for_tests() -> None:
     """Clear handlers and module state between tests."""
-    global _configured, _log_file_path
+    global _configured, _log_file_path, _file_handler, _stderr_handler
     root = logging.getLogger()
     for handler in root.handlers[:]:
         handler.close()
@@ -148,3 +163,5 @@ def reset_logging_state_for_tests() -> None:
     structlog.reset_defaults()
     _configured = False
     _log_file_path = None
+    _file_handler = None
+    _stderr_handler = None

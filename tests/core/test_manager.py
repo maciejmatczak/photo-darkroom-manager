@@ -6,13 +6,18 @@ import pytest
 from conftest import Roots
 
 from photo_darkroom_manager.core.actions import (
+    ActionRequest,
     ArchiveAction,
+    CullAction,
+    EditAction,
     NewBatchAction,
+    OpenFolderAction,
     PublishAction,
     RenameAction,
     TidyAction,
 )
 from photo_darkroom_manager.core.engine import _require_one
+from photo_darkroom_manager.core.library import NodeAction
 
 
 def _three_roots(tmp_path: Path) -> Roots:
@@ -84,39 +89,55 @@ def test_factory_methods_return_actions_with_expected_paths(
     tmp_path: Path, make_engine
 ) -> None:
     roots = _three_roots(tmp_path)
-    mgr = make_engine(roots)
-    folder = roots.darkroom / "Camera" / "2026" / "2026-09 batch"
-    batch = folder
+    mgr = make_engine(roots, cull_command="cull {folder}")
+    batch_id = "Camera/2026/2026-09 batch"
+    folder = roots.darkroom / batch_id
+    folder.mkdir(parents=True)
 
-    t = mgr.action_tidy(folder)
+    t = mgr.action_tidy(batch_id)
     assert isinstance(t, TidyAction)
     assert t._folder_path == folder
+    assert t.request == ActionRequest.of(NodeAction.TIDY, batch_id)
 
-    ar = mgr.action_archive(folder)
+    ar = mgr.action_archive(batch_id)
     assert isinstance(ar, ArchiveAction)
     assert ar._folder_path == folder
     assert ar._darkroom_path == roots.darkroom
     assert ar._archive_path == roots.archive
 
-    pub = mgr.action_publish(batch)
+    pub = mgr.action_publish(batch_id)
     assert isinstance(pub, PublishAction)
-    assert pub._batch_path == batch
+    assert pub._batch_path == folder
     assert pub._showroom_path == roots.showroom
     assert pub._darkroom_path == roots.darkroom
 
-    ren = mgr.action_rename(batch, "2026", "03", None, "new name")
+    ren = mgr.action_rename(batch_id, date="2026-03", title="new name")
     assert isinstance(ren, RenameAction)
-    assert ren._batch_path == batch
-    assert ren._year == "2026"
-    assert ren._month == "03"
-    assert ren._day is None
-    assert ren._name == "new name"
-    assert ren._darkroom_path == roots.darkroom
+    assert ren._batch_path == folder
+    assert ren._date == "2026-03"
+    assert ren._title == "new name"
+    assert not ren._clear_title
+    assert ren.request == ActionRequest.of(
+        NodeAction.RENAME,
+        batch_id,
+        date="2026-03",
+        title="new name",
+        clear_title=False,
+    )
 
-    na = mgr.action_new_batch("Camera", "2026", "09", None, "Title")
+    na = mgr.action_new_batch("Camera", date="2026-09", title="Title")
     assert isinstance(na, NewBatchAction)
     assert na._darkroom_path == roots.darkroom
-    assert na._year == "2026"
-    assert na._month == "09"
-    assert na._day is None
-    assert na._name == "Title"
+    assert na._device == "Camera"
+    assert na._date == "2026-09"
+    assert na._title == "Title"
+
+    cull = mgr.action_cull(batch_id)
+    assert isinstance(cull, CullAction)
+    assert cull._command_template == "cull {folder}"
+    edit = mgr.action_edit(batch_id)
+    assert isinstance(edit, EditAction)
+    assert edit._command_template is None
+    opener = mgr.action_open("")
+    assert isinstance(opener, OpenFolderAction)
+    assert opener._folder_path == roots.darkroom
