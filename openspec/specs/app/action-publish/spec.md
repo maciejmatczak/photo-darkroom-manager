@@ -16,3 +16,13 @@ overwrite behavior SHALL be unchanged.
 - **WHEN** Camera and Phone each publish `2026/2026-10 Walk`
 - **THEN** files SHALL land in `SHOWROOM/2026/2026-10 Walk/Camera` and
   `SHOWROOM/2026/2026-10 Walk/Phone` respectively
+
+### Requirement: Overwrites are shown before publishing
+The publish preview SHALL list every file that will replace a file
+already in the showroom, by name.
+
+#### Scenario: Republishing a batch
+- **WHEN** `PUBLISH/` holds `a.jpg` and `b.jpg` and the showroom device
+  folder already holds `a.jpg`
+- **THEN** the preview SHALL list `a.jpg` as overwritten and `b.jpg` as
+  new

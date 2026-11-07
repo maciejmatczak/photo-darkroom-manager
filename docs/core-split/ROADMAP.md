@@ -141,6 +141,8 @@ its items are.
 
 - Do jobs survive an app restart?
 - Package split: one package with extras, or several?
+- How should the showroom be organized, and where do albums live? Research
+  is parked in [showroom-albums.md](../research/showroom-albums.md)
 
 ## Next actionable step
 
