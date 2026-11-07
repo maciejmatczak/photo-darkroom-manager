@@ -137,19 +137,62 @@ def test_tidy_sibling_bucket_photo_in_videos(tmp_path: Path) -> None:
     assert not (videos / "shot.jpg").exists()
 
 
-def test_tidy_prepare_blocks_when_destination_exists(tmp_path: Path) -> None:
+def _same_name_in_photos(tmp_path: Path) -> Path:
     batch = tmp_path / "batch"
     batch.mkdir()
-    (batch / "a.jpg").write_bytes(b"")
+    (batch / "a.jpg").write_bytes(b"loose")
+    (batch / "b.jpg").write_bytes(b"b")
     (batch / PHOTOS_FOLDER).mkdir()
     (batch / PHOTOS_FOLDER / "a.jpg").write_bytes(b"other")
-    out = TidyAction(batch).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
-    assert "Tidy blocked" in out.message
-    assert out.details is not None
-    assert "→" in out.details
-    assert (batch / "a.jpg").exists()
+    return batch
+
+
+def test_tidy_prepare_lists_conflicts(tmp_path: Path) -> None:
+    batch = _same_name_in_photos(tmp_path)
+    plan = _plan(TidyAction(batch))
+    assert [s.source.name for s in plan.steps if isinstance(s, Move)] == ["b.jpg"]
+    ((conflict),) = plan.conflicts
+    assert conflict.move.source == batch / "a.jpg"
+    assert conflict.reason == "exists"
+    assert plan.summary == "Tidy 1 files, 1 conflict(s)"
+    assert "conflict a.jpg → PHOTOS/a.jpg" in plan.preview_text()
+
+
+def test_tidy_skip_moves_the_free_files(tmp_path: Path) -> None:
+    batch = _same_name_in_photos(tmp_path)
+    act = TidyAction(batch)
+    result = act.execute(_plan(act), policy="skip")
+    assert result.outcome == "ok"
+    assert (batch / PHOTOS_FOLDER / "b.jpg").exists()
+    assert (batch / "a.jpg").read_bytes() == b"loose"
+    assert (batch / PHOTOS_FOLDER / "a.jpg").read_bytes() == b"other"
+    assert [c.move.source.name for c in result.skipped] == ["a.jpg"]
+
+
+def test_tidy_with_conflicts_refused_by_default(tmp_path: Path) -> None:
+    batch = _same_name_in_photos(tmp_path)
+    act = TidyAction(batch)
+    result = act.execute(_plan(act))
+    assert result.outcome == "refused"
+    assert "Tidy blocked" in result.message
+    assert [c.move.source.name for c in result.conflicts] == ["a.jpg"]
+    assert (batch / "b.jpg").exists()
+
+
+def test_tidy_two_files_for_one_target(tmp_path: Path) -> None:
+    batch = tmp_path / "batch"
+    (batch / PHOTOS_FOLDER).mkdir(parents=True)
+    (batch / "VIDEOS").mkdir()
+    (batch / "a.jpg").write_bytes(b"loose")
+    (batch / "VIDEOS" / "a.jpg").write_bytes(b"misfiled")
+    plan = _plan(TidyAction(batch))
+    assert len(plan.steps) == 1
+    ((conflict),) = plan.conflicts
+    assert conflict.reason == "same_target"
+
+
+def test_tidy_policies() -> None:
+    assert TidyAction.policies == ("refuse", "skip")
 
 
 def test_tidy_execute_aborts_on_late_conflict(tmp_path: Path) -> None:

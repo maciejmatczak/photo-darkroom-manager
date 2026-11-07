@@ -1,6 +1,7 @@
 """Contract: engine/library-index, engine/scanning and busy-engine scenarios."""
 
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -126,7 +127,7 @@ def test_tidy_updates_the_tree(roots: Roots, engine: Engine) -> None:
     action = engine.action_tidy(BATCH)
     plan = action.prepare()
     assert isinstance(plan, ActionPlan)
-    result = engine.action_execute(action, plan)
+    result = engine.action_apply(action, confirm=plan.fingerprint)
 
     assert result.success
     assert result.library_refreshed == BATCH
@@ -143,7 +144,7 @@ def test_opening_an_external_app(roots: Roots, make_engine) -> None:
     action = engine.action_edit(BATCH)
     plan = action.prepare()
     assert isinstance(plan, ActionPlan)
-    result = engine.action_execute(action, plan)
+    result = engine.action_apply(action, confirm=plan.fingerprint)
     assert result.success
     assert result.library_refreshed is None
 
@@ -169,18 +170,18 @@ def test_during_a_scan(
     seen: dict[str, object] = {}
     real_scan = engine_module.scan_subtree
 
-    def scan_and_probe(root, node_id, kind):
+    def scan_and_probe(root, node_id, kind, **kwargs):
         seen["scanning"] = engine.library_scanning
         seen["status"] = engine.status
         seen["archive"] = engine.archive
         with pytest.raises(EngineBusyError) as edit:
             engine.config_set("archive", tmp_path / "elsewhere")
-        seen["edit_busy"] = edit.value.busy
+        seen["edit_busy"] = edit.value.job.name
         with pytest.raises(EngineBusyError):
             engine.library_scan()
         with pytest.raises(EngineBusyError):
             engine.action_apply(engine.action_new_batch("Camera", date="2026-10"))
-        return real_scan(root, node_id, kind)
+        return real_scan(root, node_id, kind, **kwargs)
 
     monkeypatch.setattr(engine_module, "scan_subtree", scan_and_probe)
     engine.library_scan()
@@ -200,7 +201,7 @@ def test_during_a_scan(
 def test_busy_flag_cleared_after_a_failed_scan(
     engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(root, node_id, kind):
+    def boom(root, node_id, kind, **kwargs):
         raise RuntimeError("disk on fire")
 
     monkeypatch.setattr(engine_module, "scan_subtree", boom)
@@ -305,3 +306,156 @@ def test_batch_path(roots: Roots, engine: Engine) -> None:
 def test_archive_path(roots: Roots, engine: Engine) -> None:
     with pytest.raises(PathOutsideDarkroomError):
         engine.library_resolve(roots.archive / "2026")
+
+
+# ---------------------------------------------------------------------------
+# Cancelled scans and reading while a scan runs
+# ---------------------------------------------------------------------------
+
+
+class _HeldScan:
+    """Holds a scan when it reaches *at* until released."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, at: str) -> None:
+        self.reached = threading.Event()
+        self.release = threading.Event()
+        real = engine_module.scan_subtree
+
+        def scan(root, node_id, kind, *, visit=None):
+            def held(folder_id: str) -> None:
+                if folder_id == at:
+                    self.reached.set()
+                    assert self.release.wait(5)
+                if visit is not None:
+                    visit(folder_id)
+
+            return real(root, node_id, kind, visit=held)
+
+        monkeypatch.setattr(engine_module, "scan_subtree", scan)
+
+
+def test_cancel_a_full_rescan(
+    roots: Roots, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _batch(roots)
+    engine.library_scan()
+    before = engine.library_node("")
+    revision = engine.library_revision
+    (roots.darkroom / "Camera/2026/2026-11 New").mkdir()
+    held = _HeldScan(monkeypatch, "Camera/2026")
+    engine.library_scan_start()
+    try:
+        assert held.reached.wait(5)
+        engine.job_cancel()
+    finally:
+        held.release.set()
+    job = engine.job_wait(5)
+
+    assert job is not None and job.state == "cancelled"
+    assert engine.library_node("") == before
+    assert engine.library_revision == revision
+    with pytest.raises(NodeNotFoundError):
+        engine.library_node("Camera/2026/2026-11 New")
+
+
+def test_cancel_a_refresh_keeps_the_tree(
+    roots: Roots, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _batch(roots)
+    engine.library_scan()
+    before = engine.library_node("Camera")
+    (roots.darkroom / "Camera/2026/2026-11 New").mkdir()
+    held = _HeldScan(monkeypatch, "Camera/2026")
+    engine.library_refresh_start("Camera")
+    try:
+        assert held.reached.wait(5)
+        engine.job_cancel()
+    finally:
+        held.release.set()
+    job = engine.job_wait(5)
+    assert job is not None and job.state == "cancelled"
+    assert engine.library_node("Camera") == before
+
+
+def test_reading_nodes_while_a_scan_runs(
+    roots: Roots, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _batch(roots)
+    engine.library_scan()
+    before = engine.library_node(BATCH)
+    held = _HeldScan(monkeypatch, "Camera/2026")
+    engine.library_scan_start()
+    try:
+        assert held.reached.wait(5)
+        assert engine.library_scanning
+        assert engine.library_node(BATCH) == before
+        assert engine.status == "ready"
+    finally:
+        held.release.set()
+    engine.job_wait(5)
+    assert not engine.library_scanning
+
+
+# ---------------------------------------------------------------------------
+# engine/library-index: revision and changes
+# ---------------------------------------------------------------------------
+
+
+def test_tidy_changes_the_revision(roots: Roots, engine: Engine) -> None:
+    (_batch(roots) / "loose.jpg").write_bytes(b"image")
+    engine.library_scan()
+    revision = engine.library_revision
+    engine.action_apply(engine.action_tidy(BATCH))
+    assert engine.library_revision > revision
+    assert engine.library_changes(revision) == (BATCH,)
+
+
+def test_reading_keeps_the_revision(roots: Roots, engine: Engine) -> None:
+    _batch(roots)
+    engine.library_scan()
+    revision = engine.library_revision
+    engine.library_node("")
+    engine.library_node(BATCH)
+    assert engine.library_revision == revision
+    assert engine.library_changes(revision) == ()
+
+
+def test_archive_of_one_batch_changes_its_year(roots: Roots, engine: Engine) -> None:
+    (_batch(roots) / "a.jpg").write_bytes(b"image")
+    engine.library_scan()
+    revision = engine.library_revision
+    engine.action_apply(engine.action_archive(BATCH))
+    assert engine.library_changes(revision) == ("Camera/2026",)
+
+
+def test_changes_inside_another_change_are_left_out(
+    roots: Roots, engine: Engine
+) -> None:
+    _batch(roots)
+    engine.library_scan()
+    revision = engine.library_revision
+    engine.library_refresh(BATCH)
+    engine.library_refresh("Camera")
+    assert engine.library_changes(revision) == ("Camera",)
+
+
+def test_darkroom_root_change_is_the_root(
+    roots: Roots, engine: Engine, tmp_path: Path
+) -> None:
+    _batch(roots)
+    engine.library_scan()
+    revision = engine.library_revision
+    other = tmp_path / "other-darkroom"
+    other.mkdir()
+    engine.config_set("darkroom", other)
+    assert engine.library_changes(revision) == ("",)
+
+
+def test_too_old_a_revision_is_the_root(roots: Roots, engine: Engine) -> None:
+    _batch(roots)
+    engine.library_scan()
+    revision = engine.library_revision
+    for _ in range(70):
+        engine.library_refresh(BATCH)
+    assert engine.library_changes(revision) == ("",)
+    assert engine.library_changes(engine.library_revision - 1) == (BATCH,)

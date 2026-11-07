@@ -3,6 +3,8 @@
 import io
 import json
 import sys
+import threading
+import time
 import tomllib
 from pathlib import Path
 
@@ -10,8 +12,11 @@ import pytest
 import yaml
 
 from cli.conftest import BATCH, Cli, Run
+from photo_darkroom_manager.cli import _app as app_module
 from photo_darkroom_manager.cli import main, run
 from photo_darkroom_manager.core import actions as actions_module
+from photo_darkroom_manager.core import file_utils
+from photo_darkroom_manager.core.engine import Engine
 from photo_darkroom_manager.core.library import _scan as scan_module
 
 COMMANDS = (
@@ -296,7 +301,7 @@ def test_apply_tidy(cli: Cli) -> None:
     batch = cli.batch("a.jpg", "b.mp4")
     out = cli("tidy", ".", "--apply", cwd=batch)
     assert out.code == 0, out
-    assert out.out.startswith("ok: Tidied 2 files")
+    assert out.out.startswith("ok: Tidied 2 of 2 file(s)")
     assert (batch / "PHOTOS/a.jpg").is_file()
     assert (batch / "VIDEOS/b.mp4").is_file()
 
@@ -400,3 +405,165 @@ def test_apply_without_a_terminal(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> 
     out = cli("archive", ".", "--apply", cwd=batch)
     assert out.code == 0, out
     assert not batch.exists()
+
+
+# ---------------------------------------------------------------------------
+# Conflicts, progress and Ctrl+C
+# ---------------------------------------------------------------------------
+
+ARCHIVED = Path("2026/2026-10 Walk/Camera")
+
+
+def _hundred_with_ten_archived(cli: Cli) -> Path:
+    batch = cli.batch(*(f"{i:03}.jpg" for i in range(100)))
+    archived = cli.roots.archive / ARCHIVED
+    archived.mkdir(parents=True)
+    for i in range(0, 100, 10):
+        (archived / f"{i:03}.jpg").write_bytes(b"old")
+    return batch
+
+
+def test_preview_with_conflicts(cli: Cli) -> None:
+    batch = _hundred_with_ten_archived(cli)
+    out = cli("archive", ".", cwd=batch)
+    assert out.code == 0
+    assert "Archive 90 files, 10 already in the archive" in out.out
+    assert "Conflicts (conflict): 10" in out.out
+    assert "conflict 000.jpg → 000.jpg" in out.out
+    plan = _ok(cli("--json", "archive", ".", "--on-conflict", "skip", cwd=batch))
+    assert len(plan["result"]["conflicts"]) == 10
+    assert plan["result"]["confirm"][-4:-2] == ["--on-conflict", "skip"]
+
+
+def test_conflicts_without_an_option(cli: Cli) -> None:
+    batch = _hundred_with_ten_archived(cli)
+    out = cli("--json", "archive", ".", "--apply", cwd=batch)
+    assert out.code == 3
+    document = out.json()
+    assert document["error"]["kind"] == "refused"
+    assert len(document["result"]["conflicts"]) == 10
+    assert len(list(batch.iterdir())) == 100
+
+
+def test_archive_skipping_conflicts(cli: Cli) -> None:
+    batch = _hundred_with_ten_archived(cli)
+    out = cli("archive", ".", "--apply", "--on-conflict", "skip", cwd=batch)
+    assert out.code == 0, out
+    assert "skipped: 10 conflict(s)" in out.out
+    assert len(list(batch.iterdir())) == 10
+    assert len(list((cli.roots.archive / ARCHIVED).iterdir())) == 100
+
+
+def test_confirm_carries_the_conflict_option(cli: Cli) -> None:
+    batch = _hundred_with_ten_archived(cli)
+    argv = _confirm_argv(
+        cli("--json", "archive", ".", "--on-conflict", "skip", cwd=batch)
+    )
+    out = cli(*argv)
+    assert out.code == 0, out
+    assert len(out.json()["result"]["skipped"]) == 10
+
+
+def test_replace_on_archive_is_a_usage_error(cli: Cli) -> None:
+    batch = cli.batch("a.jpg")
+    out = cli("--json", "archive", ".", "--on-conflict", "replace", cwd=batch)
+    assert out.code == 2
+    assert out.json()["error"]["kind"] == "usage"
+    assert (
+        cli("archive", ".", "--apply", "--on-conflict", "replace", cwd=batch).code == 2
+    )
+    assert cli("rename", f"id:{BATCH}", "--on-conflict", "skip").code == 2
+
+
+def test_republish_needs_a_choice(cli: Cli) -> None:
+    batch = cli.batch("PUBLISH/a.jpg", "PUBLISH/b.jpg")
+    showroom = cli.roots.showroom / ARCHIVED
+    showroom.mkdir(parents=True)
+    (showroom / "a.jpg").write_bytes(b"old")
+    assert cli("publish", ".", "--apply", cwd=batch).code == 3
+    assert (showroom / "a.jpg").read_bytes() == b"old"
+    out = cli("publish", ".", "--apply", "--on-conflict", "replace", cwd=batch)
+    assert out.code == 0, out
+    assert (showroom / "a.jpg").read_bytes() == b"PUBLISH/a.jpg"
+    assert list((batch / "PUBLISH").iterdir()) == []
+
+
+class _Terminal(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def _run_with_stderr(cli: Cli, stderr: io.StringIO, *argv: str, cwd: Path) -> int:
+    return run(
+        ["--config", str(cli.config), *argv],
+        cwd=cwd,
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+
+
+def test_agent_run_writes_one_document_and_no_progress(cli: Cli) -> None:
+    batch = cli.batch("a.jpg", "b.jpg")
+    out = cli("--json", "archive", ".", "--apply", cwd=batch)
+    assert out.code == 0
+    assert json.loads(out.out)["result"]["outcome"] == "ok"
+    assert "\r" not in out.err
+
+
+def test_progress_on_a_terminal(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
+    batch = cli.batch("a.jpg", "b.jpg")
+    monkeypatch.setattr(app_module, "_WAIT_STEP_S", 0.001)
+    real = file_utils.move_file
+
+    def slow(src: Path, dst: Path, *, replace: bool = False) -> None:
+        time.sleep(0.05)
+        real(src, dst, replace=replace)
+
+    monkeypatch.setattr(file_utils, "move_file", slow)
+    stderr = _Terminal()
+    code = _run_with_stderr(cli, stderr, "archive", ".", "--apply", cwd=batch)
+    assert code == 0
+    drawn = stderr.getvalue()
+    assert f"\rarchive {BATCH}: " in drawn
+    assert drawn.endswith("\r")
+
+
+def test_ctrl_c_cancels_the_job(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
+    batch = cli.batch(*(f"{i:03}.jpg" for i in range(10)))
+    reached = threading.Event()
+    release = threading.Event()
+    real_move = file_utils.move_file
+    moved = 0
+
+    def gated(src: Path, dst: Path, *, replace: bool = False) -> None:
+        nonlocal moved
+        if moved == 3:
+            reached.set()
+            assert release.wait(5)
+        real_move(src, dst, replace=replace)
+        moved += 1
+
+    monkeypatch.setattr(file_utils, "move_file", gated)
+    real_wait = Engine.job_wait
+    real_cancel = Engine.job_cancel
+
+    def interrupted(self: Engine, timeout: float | None = None):
+        if timeout is not None:
+            assert reached.wait(5)
+            raise KeyboardInterrupt
+        return real_wait(self, timeout)
+
+    def cancel(self: Engine) -> None:
+        real_cancel(self)
+        release.set()
+
+    monkeypatch.setattr(Engine, "job_wait", interrupted)
+    monkeypatch.setattr(Engine, "job_cancel", cancel)
+    out = cli("--json", "archive", ".", "--apply", cwd=batch)
+
+    assert out.code == 130
+    result = out.json()["result"]
+    assert result["outcome"] == "cancelled"
+    assert len(result["done"]) == 4
+    assert len(result["left"]) == 6
+    assert len(list((cli.roots.archive / ARCHIVED).iterdir())) == 4

@@ -1,15 +1,16 @@
 """Contract: file actions never lose user files and report what changed.
 
 Each test runs an action through the public engine factories,
-``prepare()`` and ``engine.action_execute()``, then compares the whole
-workspace (darkroom, showroom and archive) before and after.
+``prepare()`` and ``engine.action_apply()`` with the plan's fingerprint,
+then compares the whole workspace (darkroom, showroom and archive) before
+and after.
 """
 
 import hashlib
 from collections import Counter
 from pathlib import Path
 
-from photo_darkroom_manager.core.actions import ActionPlan, ActionResult
+from photo_darkroom_manager.core.actions import ActionPlan
 from photo_darkroom_manager.core.engine import Engine
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
 
@@ -53,7 +54,7 @@ def _snapshot(manager: Engine) -> dict[Path, bytes]:
 def _run(manager: Engine, action):
     plan = action.prepare()
     assert isinstance(plan, ActionPlan), plan
-    return manager.action_execute(action, plan)
+    return manager.action_apply(action, confirm=plan.fingerprint)
 
 
 def test_tidy_keeps_every_file(photo_setup) -> None:
@@ -95,13 +96,16 @@ def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
     assert all(p.is_file() for p in others)
 
 
-def test_refused_prepare_leaves_disk_unchanged(photo_setup) -> None:
+def test_conflict_refused_by_policy_leaves_disk_unchanged(photo_setup) -> None:
     mgr = photo_setup.engine
     photo_setup.darkroom_has_dir(ARCHIVE_CONFLICT)
     before = _snapshot(mgr)
-    out = mgr.action_archive(_id(ARCHIVE_CONFLICT)).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
+    action = mgr.action_archive(_id(ARCHIVE_CONFLICT))
+    plan = action.prepare()
+    assert isinstance(plan, ActionPlan)
+    assert plan.conflicts
+    result = action.execute(plan)
+    assert result.outcome == "refused"
     assert _snapshot(mgr) == before
 
 

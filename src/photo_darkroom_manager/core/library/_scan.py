@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from photo_darkroom_manager.core.library.layout import NodeKind, child_kind, node_kind
@@ -50,12 +51,19 @@ def _subfolders(directory: Path) -> list[Path]:
         return []
 
 
+Visit = Callable[[NodeId], None]
+
+
 def scan_subtree(
-    root: Path, node_id: NodeId, kind: NodeKind
+    root: Path, node_id: NodeId, kind: NodeKind, *, visit: Visit | None = None
 ) -> dict[NodeId, NodeFacts]:
-    """Facts of the folder *node_id* (of *kind*) under *root* and below it."""
+    """Facts of the folder *node_id* (of *kind*) under *root* and below it.
+
+    *visit* is called with each folder's id before the folder is read; it
+    may raise to stop the scan, which then returns nothing.
+    """
     facts: dict[NodeId, NodeFacts] = {}
-    _scan(root / node_id if node_id else root, node_id, kind, facts)
+    _scan(root / node_id if node_id else root, node_id, kind, facts, visit)
     return facts
 
 
@@ -92,15 +100,21 @@ def _own_issues(path: Path, kind: NodeKind) -> frozenset[NodeIssue]:
 
 
 def _scan(
-    path: Path, node_id: NodeId, kind: NodeKind, out: dict[NodeId, NodeFacts]
+    path: Path,
+    node_id: NodeId,
+    kind: NodeKind,
+    out: dict[NodeId, NodeFacts],
+    visit: Visit | None,
 ) -> None:
+    if visit is not None:
+        visit(node_id)
     children: list[NodeId] = []
     for sub in _subfolders(path):
         sub_kind = child_kind(kind, sub.name)
         if sub_kind is None:
             continue
         sub_id = child_id(node_id, sub.name)
-        _scan(sub, sub_id, sub_kind, out)
+        _scan(sub, sub_id, sub_kind, out, visit)
         children.append(sub_id)
     out[node_id] = NodeFacts(
         kind=kind,

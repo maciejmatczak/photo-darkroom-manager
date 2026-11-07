@@ -1,14 +1,10 @@
-"""Tests for archive preview and file-move helpers in file_utils."""
+"""Tests for the archive merge preview in file_utils."""
 
 from pathlib import Path
 
 import pytest
 
-from photo_darkroom_manager.core import file_utils
-from photo_darkroom_manager.core.file_utils import (
-    move_files,
-    preview_merge_into_archive,
-)
+from photo_darkroom_manager.core.file_utils import preview_merge_into_archive
 
 
 def test_preview_merge_no_conflicts_lists_all_leaves(tmp_path: Path) -> None:
@@ -47,53 +43,3 @@ def test_preview_merge_source_not_directory_raises(tmp_path: Path) -> None:
     f.write_text("x", encoding="utf-8")
     with pytest.raises(ValueError, match="not a directory"):
         preview_merge_into_archive(f, tmp_path / "dest")
-
-
-def test_move_files_creates_target_folders(tmp_path: Path) -> None:
-    src = tmp_path / "src" / "f.txt"
-    src.parent.mkdir()
-    src.write_text("data", encoding="utf-8")
-    dst = tmp_path / "archive" / "p" / "q" / "f.txt"
-
-    report = move_files([(src, dst)])
-
-    assert report.done == ((src, dst),)
-    assert report.failed == ()
-    assert dst.read_text(encoding="utf-8") == "data"
-    assert not src.exists()
-
-
-def test_move_files_keeps_going_after_a_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pairs = []
-    for name in ("a.txt", "b.txt", "c.txt"):
-        (tmp_path / name).write_text(name, encoding="utf-8")
-        pairs.append((tmp_path / name, tmp_path / "out" / name))
-    real_move = file_utils.cstm_shutil_move
-
-    def flaky(src, dst, *args, **kwargs):
-        if src.endswith("b.txt"):
-            raise PermissionError("locked")
-        return real_move(src, dst, *args, **kwargs)
-
-    monkeypatch.setattr(file_utils, "cstm_shutil_move", flaky)
-    report = move_files(pairs)
-
-    assert report.done == (pairs[0], pairs[2])
-    assert [(s, d) for s, d, _ in report.failed] == [pairs[1]]
-    assert "locked" in report.failed[0][2]
-    assert (tmp_path / "b.txt").exists()
-
-
-def test_move_files_replaces_only_when_asked(tmp_path: Path) -> None:
-    src = tmp_path / "new.txt"
-    src.write_text("new", encoding="utf-8")
-    dst = tmp_path / "out" / "new.txt"
-    dst.parent.mkdir()
-    dst.write_text("old", encoding="utf-8")
-
-    report = move_files([(src, dst)], replace=True)
-
-    assert report.done == ((src, dst),)
-    assert dst.read_text(encoding="utf-8") == "new"

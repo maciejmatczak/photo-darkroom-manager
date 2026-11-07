@@ -15,7 +15,7 @@ import sys
 import traceback
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -24,6 +24,7 @@ import structlog
 from pydantic import ValidationError
 
 from photo_darkroom_manager.core.file_utils import (
+    MoveOutcome,
     collect_leaf_paths,
     move_files,
     preview_merge_into_archive,
@@ -52,8 +53,11 @@ _FINGERPRINT_LENGTH = 12
 
 log = structlog.get_logger(__name__)
 
-Outcome = Literal["ok", "noop", "refused", "failed"]
+Outcome = Literal["ok", "noop", "refused", "cancelled", "failed"]
 ParamValue = str | bool | None
+ConflictPolicy = Literal["refuse", "skip", "replace"]
+ConflictReason = Literal["exists", "same_target"]
+CONFLICT_POLICIES: tuple[ConflictPolicy, ...] = ("refuse", "skip", "replace")
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +164,7 @@ def describe_step(step: Step, bases: Sequence[Path] = ()) -> str:
     """One preview line for *step*; paths under *bases* are shown relative."""
     match step:
         case Move(source=source, target=target, overwrite=overwrite):
-            verb = "overwrite" if overwrite else "move"
+            verb = "replace" if overwrite else "move"
             return f"{verb} {_shown(source, bases)} → {_shown(target, bases)}"
         case MakeDir(path=path) | OpenFolder(path=path):
             return f"{step.kind} {_shown(path, bases)}"
@@ -171,8 +175,37 @@ def describe_step(step: Step, bases: Sequence[Path] = ()) -> str:
 
 
 @dataclass(frozen=True)
+class Conflict:
+    """A planned move that cannot run freely, and why.
+
+    ``exists``: the target already holds a file. ``same_target``: another
+    planned move needs the same target.
+    """
+
+    move: Move
+    reason: ConflictReason
+
+    def as_dict(self) -> dict[str, object]:
+        return {**self.move.as_dict(), "reason": self.reason}
+
+
+def describe_conflict(
+    conflict: Conflict, bases: Sequence[Path] = (), label: str = "conflict"
+) -> str:
+    move = conflict.move
+    text = f"{label} {_shown(move.source, bases)} → {_shown(move.target, bases)}"
+    if conflict.reason == "same_target":
+        text += " (same target as another file)"
+    return text
+
+
+@dataclass(frozen=True)
 class ActionPlan:
-    """What an action will do, as data; executing it performs only *steps*."""
+    """What an action will do, as data; executing it performs only *steps*.
+
+    Conflicting moves are not steps; they are listed in *conflicts* and run
+    only as the conflict policy allows.
+    """
 
     request: ActionRequest
     summary: str
@@ -182,6 +215,9 @@ class ActionPlan:
     """Context lines for the preview (folders, counts); not fingerprinted."""
     bases: tuple[Path, ...] = ()
     """Folders the preview shows step paths relative to."""
+    conflicts: tuple[Conflict, ...] = ()
+    conflict_label: str = "conflict"
+    """How the preview names a conflict, e.g. ``replace`` for publish."""
 
     @property
     def changes_files(self) -> bool:
@@ -195,29 +231,33 @@ class ActionPlan:
             "node_id": self.request.node_id,
             "params": dict(self.request.params),
             "steps": [step.as_dict() for step in self.steps],
+            "conflicts": [conflict.as_dict() for conflict in self.conflicts],
         }
         text = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:_FINGERPRINT_LENGTH]
 
     def preview_text(self) -> str:
         lines = [self.summary, *self.notes]
-        counts = Counter(
-            "overwrite" if isinstance(s, Move) and s.overwrite else s.kind
-            for s in self.steps
-        )
+        counts = Counter(s.kind for s in self.steps)
+        listed = ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
         lines.append("")
-        lines.append(
-            "Steps: " + ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
-        )
+        lines.append(f"Steps: {listed or 'none'}")
         shown = self.steps[:_PREVIEW_STEP_LINES]
         lines.extend(f"  {describe_step(step, self.bases)}" for step in shown)
         rest = self.steps[_PREVIEW_STEP_LINES:]
         if rest:
             lines.append(f"  … and {len(rest)} more")
-            overwrites = [s for s in rest if isinstance(s, Move) and s.overwrite]
-            if overwrites:
-                lines.append("Also overwritten:")
-                lines.extend(f"  {describe_step(s, self.bases)}" for s in overwrites)
+        if self.conflicts:
+            label = self.conflict_label
+            lines.append("")
+            lines.append(f"Conflicts ({label}): {len(self.conflicts)}")
+            lines.extend(
+                f"  {describe_conflict(c, self.bases, label)}"
+                for c in self.conflicts[:_PREVIEW_STEP_LINES]
+            )
+            more = len(self.conflicts) - _PREVIEW_STEP_LINES
+            if more > 0:
+                lines.append(f"  … and {more} more")
         return "\n".join(lines)
 
 
@@ -245,6 +285,10 @@ class ExecutionResult(ActionResult):
     failed: tuple[StepFailure, ...] = ()
     left: tuple[Path, ...] = ()
     """Files the action found but did not touch, e.g. added after the preview."""
+    conflicts: tuple[Conflict, ...] = ()
+    """Conflicts found when running: planned ones and targets taken since."""
+    skipped: tuple[Conflict, ...] = ()
+    """Conflicting moves left undone under the ``skip`` policy."""
     fingerprint: str | None = None
     """Fingerprint of the plan run, or of the current plan when refused."""
     rescan_node_path: Path | None = None
@@ -261,8 +305,60 @@ def _refused(message: str, details: str | None = None) -> ExecutionResult:
     return ExecutionResult("refused", message, details)
 
 
+class PolicyNotSupportedError(ValueError):
+    """A conflict policy was asked of an action that does not support it."""
+
+    def __init__(
+        self, action: NodeAction, policy: str, supported: Sequence[ConflictPolicy]
+    ) -> None:
+        names = ", ".join(supported)
+        super().__init__(
+            f"{action} does not support the {policy!r} conflict policy; "
+            f"it supports: {names}"
+        )
+        self.action = action
+        self.policy = policy
+        self.supported = tuple(supported)
+
+
 def _failures_text(failed: Sequence[StepFailure], bases: Sequence[Path]) -> str:
     return "\n".join(f"{describe_step(f.step, bases)}: {f.reason}" for f in failed)
+
+
+# ---------------------------------------------------------------------------
+# Run hooks
+# ---------------------------------------------------------------------------
+
+ProgressHook = Callable[[int, int | None, str | None], None]
+"""Called with (done, total, current file) as moves finish."""
+StopHook = Callable[[], bool]
+"""Checked before each move; true stops the run between moves."""
+StepHook = Callable[[MoveOutcome], None]
+"""Called with each move's outcome as it finishes, and for each conflict
+left undone."""
+
+
+@dataclass(frozen=True)
+class RunHooks:
+    """How a caller follows and stops an execution; each hook is optional."""
+
+    progress: ProgressHook | None = None
+    stop: StopHook | None = None
+    on_step: StepHook | None = None
+
+    def report(self, done: int, total: int | None, current: str | None) -> None:
+        if self.progress is not None:
+            self.progress(done, total, current)
+
+    def stopped(self) -> bool:
+        return self.stop is not None and self.stop()
+
+    def step(self, outcome: MoveOutcome) -> None:
+        if self.on_step is not None:
+            self.on_step(outcome)
+
+
+NO_HOOKS = RunHooks()
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +374,10 @@ class Action(ABC):
     """
 
     action: ClassVar[NodeAction]
+    policies: ClassVar[tuple[ConflictPolicy, ...]] = ("refuse",)
+    """Conflict policies this action supports; ``refuse`` always."""
+    runs_as_job: ClassVar[bool] = True
+    """False for actions that change no files and run at once (open, apps)."""
 
     def __init__(self, request: ActionRequest | None) -> None:
         self.request = request or ActionRequest(self.action, "")
@@ -296,6 +396,13 @@ class Action(ABC):
             self.request, summary, tuple(steps), tuple(notes), tuple(bases)
         )
 
+    def check_policy(self, policy: str) -> ConflictPolicy:
+        """Return *policy* if supported, else raise ``PolicyNotSupportedError``."""
+        for supported in self.policies:
+            if policy == supported:
+                return supported
+        raise PolicyNotSupportedError(self.action, policy, self.policies)
+
     def prepare(self) -> ActionPlan | ActionResult:
         action_name = type(self).__name__
         ctx = self.log_context()
@@ -312,6 +419,7 @@ class Action(ABC):
                 outcome="plan",
                 fingerprint=result.fingerprint,
                 steps=len(result.steps),
+                conflicts=len(result.conflicts),
                 **ctx,
             )
         else:
@@ -324,21 +432,38 @@ class Action(ABC):
             )
         return result
 
-    def execute(self, plan: ActionPlan) -> ExecutionResult:
+    def execute(
+        self,
+        plan: ActionPlan,
+        *,
+        policy: ConflictPolicy = "refuse",
+        progress: ProgressHook | None = None,
+        stop: StopHook | None = None,
+        on_step: StepHook | None = None,
+    ) -> ExecutionResult:
+        """Run *plan* under the conflict *policy*.
+
+        *progress* hears how far the moves got, *stop* is checked between
+        moves, and *on_step* hears each move's outcome as it finishes.
+        """
+        hooks = RunHooks(progress, stop, on_step)
         action_name = type(self).__name__
         ctx = self.log_context()
         if plan.request != self.request:
             result = _refused("Plan was prepared for another request")
+        elif policy not in self.policies:
+            result = _refused(f"{self.action} does not support policy {policy!r}")
         else:
             try:
-                result = self._execute(plan)
+                result = self._execute(plan, policy, hooks)
             except Exception:
                 log.exception("action_execute", action=action_name, **ctx)
                 result = ExecutionResult(
                     "failed", "Internal error", traceback.format_exc()
                 )
         result = replace(result, fingerprint=plan.fingerprint)
-        log_method = log.info if result.success else log.warning
+        answered = result.success or result.outcome in ("refused", "cancelled")
+        log_method = log.info if answered else log.warning
         log_method(
             "action_execute",
             action=action_name,
@@ -346,6 +471,7 @@ class Action(ABC):
             message=result.message,
             done=len(result.done),
             failed=len(result.failed),
+            skipped=len(result.skipped),
             **ctx,
         )
         return result
@@ -354,23 +480,163 @@ class Action(ABC):
     def _prepare(self) -> ActionPlan | ActionResult: ...
 
     @abstractmethod
-    def _execute(self, plan: ActionPlan) -> ExecutionResult: ...
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult: ...
 
 
 def _moves(plan: ActionPlan) -> list[Move]:
     return [step for step in plan.steps if isinstance(step, Move)]
 
 
-def _run_moves(
-    moves: Sequence[Move], *, replace_existing: bool = False
-) -> tuple[tuple[Step, ...], tuple[StepFailure, ...]]:
-    report = move_files(((m.source, m.target) for m in moves), replace=replace_existing)
-    by_pair = {(m.source, m.target): m for m in moves}
-    done = tuple(by_pair[pair] for pair in report.done)
-    failed = tuple(
-        StepFailure(by_pair[(src, dst)], reason) for src, dst, reason in report.failed
+def _target_taken(move: Move) -> bool:
+    """True if *move*'s target holds a file other than its own source."""
+    if not (move.target.exists() or move.target.is_symlink()):
+        return False
+    try:
+        return not move.target.samefile(move.source)
+    except OSError:
+        return True
+
+
+@dataclass(frozen=True)
+class _MoveRun:
+    """What running a plan's moves under a policy did."""
+
+    done: tuple[Step, ...] = ()
+    failed: tuple[StepFailure, ...] = ()
+    conflicts: tuple[Conflict, ...] = ()
+    skipped: tuple[Conflict, ...] = ()
+    left: tuple[Path, ...] = ()
+    refused: bool = False
+
+    @property
+    def cancelled(self) -> bool:
+        return bool(self.left)
+
+    @property
+    def outcome(self) -> Outcome:
+        if self.refused:
+            return "refused"
+        if self.cancelled:
+            return "cancelled"
+        return "failed" if self.failed else "ok"
+
+
+def _skipped(conflict: Conflict, reason: str) -> MoveOutcome:
+    move = conflict.move
+    return MoveOutcome(move.source, move.target, "skipped", reason)
+
+
+def _run_planned_moves(
+    plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+) -> _MoveRun:
+    """Run the plan's moves under *policy*, re-checking every target first.
+
+    ``refuse``: any conflict, planned or new, refuses before a file moves.
+    ``skip``: conflicting moves stay undone and are reported; a target taken
+    during the run is skipped the same way. ``replace``: moves onto an
+    existing file replace it (same-target conflicts are still skipped).
+    """
+    free: list[Move] = []
+    late: list[Conflict] = []
+    for move in _moves(plan):
+        if _target_taken(move):
+            late.append(Conflict(move, "exists"))
+        else:
+            free.append(move)
+    conflicts: list[Conflict] = [*plan.conflicts, *late]
+    if conflicts and policy == "refuse":
+        for conflict in conflicts:
+            hooks.step(_skipped(conflict, f"conflict ({conflict.reason}); refused"))
+        return _MoveRun(conflicts=tuple(conflicts), refused=True)
+
+    def replaces(conflict: Conflict) -> bool:
+        return policy == "replace" and conflict.reason == "exists"
+
+    replacing = [replace(c.move, overwrite=True) for c in conflicts if replaces(c)]
+    skipped = [c for c in conflicts if not replaces(c)]
+    for conflict in skipped:
+        hooks.step(_skipped(conflict, f"conflict ({conflict.reason})"))
+    total = len(free) + len(replacing)
+    by_pair = {(m.source, m.target): m for m in (*free, *replacing)}
+    done: list[Step] = []
+    failed: list[StepFailure] = []
+    left: list[Path] = []
+    finished = 0
+
+    def on_move(outcome: MoveOutcome) -> None:
+        nonlocal finished
+        finished += 1
+        hooks.step(outcome)
+        hooks.report(finished, total, outcome.source.name)
+
+    hooks.report(0, total, None)
+    for moves, replace_existing in ((free, False), (replacing, True)):
+        if not moves:
+            continue
+        if left:
+            left.extend(m.source for m in moves)
+            continue
+        report = move_files(
+            ((m.source, m.target) for m in moves),
+            replace=replace_existing,
+            stop=hooks.stopped,
+            on_move=on_move,
+        )
+        done.extend(by_pair[pair] for pair in report.done)
+        failed.extend(
+            StepFailure(by_pair[(src, dst)], reason)
+            for src, dst, reason in report.failed
+        )
+        taken = [Conflict(by_pair[pair], "exists") for pair in report.skipped]
+        skipped.extend(taken)
+        conflicts.extend(taken)
+        left.extend(src for src, _ in report.left)
+    return _MoveRun(
+        done=tuple(done),
+        failed=tuple(failed),
+        conflicts=tuple(conflicts),
+        skipped=tuple(skipped),
+        left=tuple(left),
     )
-    return done, failed
+
+
+def _conflicts_text(
+    conflicts: Sequence[Conflict], bases: Sequence[Path], label: str = "conflict"
+) -> str:
+    return "\n".join(describe_conflict(c, bases, label) for c in conflicts)
+
+
+def _refused_for_conflicts(
+    plan: ActionPlan, run: _MoveRun, what: str
+) -> ExecutionResult:
+    choice = "skip or replace them" if "replace" in plan.conflict_label else "skip them"
+    return ExecutionResult(
+        "refused",
+        f"{what} blocked: {len(run.conflicts)} file conflict(s); choose to {choice}",
+        _conflicts_text(run.conflicts, plan.bases, plan.conflict_label),
+        conflicts=run.conflicts,
+    )
+
+
+def _run_message(verb: str, run: _MoveRun, planned: int) -> str:
+    message = f"{verb} {len(run.done)} of {planned} file(s)"
+    if run.skipped:
+        message += f"; {len(run.skipped)} skipped as conflicts"
+    if run.cancelled:
+        message += f"; cancelled with {len(run.left)} not moved"
+    return message
+
+
+def _run_details(plan: ActionPlan, run: _MoveRun, *extra: str | None) -> str | None:
+    parts = []
+    if run.failed:
+        parts.append(_failures_text(run.failed, plan.bases))
+    if run.skipped:
+        parts.append(_conflicts_text(run.skipped, plan.bases, "skipped"))
+    parts.extend(e for e in extra if e)
+    return "\n".join(parts) or None
 
 
 def _recognize_batch(darkroom: Path, path: Path) -> DarkroomBatch | None:
@@ -435,40 +701,27 @@ def _build_tidy_moves(folder_path: Path) -> list[tuple[Path, Path]]:
     return [(src, _tidy_destination(src)) for src in sources]
 
 
-def _find_tidy_conflicts(
+def _split_tidy_moves(
     moves: Sequence[tuple[Path, Path]],
-) -> list[tuple[Path, Path]]:
-    """Return moves that would overwrite an existing file or another move's target.
+) -> tuple[list[Move], list[Conflict]]:
+    """Split tidy moves into free moves and conflicts.
 
-    Checked at prepare and again at execute so the user sees conflicts before
-    confirming and late arrivals on disk cannot silently replace files.
+    A move conflicts when its target holds another file, or when an earlier
+    move already needs the same target.
     """
-    conflicts: list[tuple[Path, Path]] = []
-    seen_dst: dict[Path, Path] = {}
-
+    free: list[Move] = []
+    conflicts: list[Conflict] = []
+    seen_dst: set[Path] = set()
     for src, dst in moves:
-        if dst in seen_dst and seen_dst[dst] != src:
-            conflicts.append((src, dst))
+        move = Move(src, dst)
+        if dst in seen_dst:
+            conflicts.append(Conflict(move, "same_target"))
+        elif _target_taken(move):
+            conflicts.append(Conflict(move, "exists"))
         else:
-            seen_dst[dst] = src
-
-        if (
-            dst.exists()
-            and dst.resolve() != src.resolve()
-            and (src, dst) not in conflicts
-        ):
-            conflicts.append((src, dst))
-
-    return conflicts
-
-
-def _format_move_lines(
-    pairs: Sequence[tuple[Path, Path]], source_root: Path, target_root: Path
-) -> str:
-    return "\n".join(
-        f"{src.relative_to(source_root)}\n\t→ {dst.relative_to(target_root)}"
-        for src, dst in pairs
-    )
+            free.append(move)
+        seen_dst.add(dst)
+    return free, conflicts
 
 
 def _format_extension_stats(paths: Sequence[Path]) -> list[str]:
@@ -478,6 +731,7 @@ def _format_extension_stats(paths: Sequence[Path]) -> list[str]:
 
 class TidyAction(Action):
     action = NodeAction.TIDY
+    policies = ("refuse", "skip")
 
     def __init__(self, folder_path: Path, *, request: ActionRequest | None = None):
         super().__init__(request)
@@ -492,55 +746,41 @@ class TidyAction(Action):
         if not moves:
             return ActionResult("noop", "Nothing to tidy", f"Folder: {folder_path}")
 
-        conflicts = _find_tidy_conflicts(moves)
-        if conflicts:
-            return ActionResult(
-                "refused",
-                f"Tidy blocked: {len(conflicts)} file conflict(s)",
-                _format_move_lines(conflicts, folder_path, folder_path),
-            )
-
-        photos = [src for src, dst in moves if dst.parent.name == PHOTOS_FOLDER]
-        videos = [src for src, dst in moves if dst.parent.name == VIDEOS_FOLDER]
+        free, conflicts = _split_tidy_moves(moves)
+        photos = [m.source for m in free if m.target.parent.name == PHOTOS_FOLDER]
+        videos = [m.source for m in free if m.target.parent.name == VIDEOS_FOLDER]
         notes = [f"Folder: {folder_path}", f"Photos to move: {len(photos)}"]
         notes += _format_extension_stats(photos)
         notes.append(f"Videos to move: {len(videos)}")
         notes += _format_extension_stats(videos)
-        return self._plan(
-            f"Tidy {len(moves)} files",
-            [Move(src, dst) for src, dst in moves],
-            notes,
-            [folder_path],
+        summary = f"Tidy {len(free)} files"
+        if conflicts:
+            summary += f", {len(conflicts)} conflict(s)"
+        return replace(
+            self._plan(summary, free, notes, [folder_path]),
+            conflicts=tuple(conflicts),
         )
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         folder_path = self._folder_path
         if not folder_path.is_dir():
             return _refused(f"Not a directory: {folder_path}")
 
-        moves = _moves(plan)
-        conflicts = _find_tidy_conflicts([(m.source, m.target) for m in moves])
-        if conflicts:
-            return _refused(
-                f"Tidy blocked: {len(conflicts)} file conflict(s)",
-                _format_move_lines(conflicts, folder_path, folder_path),
-            )
-
-        done, failed = _run_moves(moves)
-        if failed:
-            return ExecutionResult(
-                "failed",
-                f"Tidied {len(done)} of {len(moves)} files",
-                _failures_text(failed, plan.bases),
-                done=done,
-                failed=failed,
-                rescan_node_path=folder_path,
-                node_path=folder_path,
-            )
+        run = _run_planned_moves(plan, policy, hooks)
+        if run.refused:
+            return _refused_for_conflicts(plan, run, "Tidy")
+        planned = len(_moves(plan)) + len(plan.conflicts)
         return ExecutionResult(
-            "ok",
-            f"Tidied {len(done)} files",
-            done=done,
+            run.outcome,
+            _run_message("Tidied", run, planned),
+            _run_details(plan, run),
+            done=run.done,
+            failed=run.failed,
+            left=run.left,
+            conflicts=run.conflicts,
+            skipped=run.skipped,
             rescan_node_path=folder_path,
             node_path=folder_path,
         )
@@ -553,6 +793,7 @@ class TidyAction(Action):
 
 class ArchiveAction(Action):
     action = NodeAction.ARCHIVE
+    policies = ("refuse", "skip")
 
     def __init__(
         self,
@@ -571,9 +812,6 @@ class ArchiveAction(Action):
         return _unavailable_root(
             darkroom=self._darkroom_path, archive=self._archive_path
         )
-
-    def _conflict_details(self, pairs: Sequence[tuple[Path, Path]]) -> str:
-        return _format_move_lines(pairs, self._darkroom_path, self._archive_path)
 
     def _prepare(self) -> ActionPlan | ActionResult:
         if problem := self._unavailable_root():
@@ -596,47 +834,44 @@ class ArchiveAction(Action):
         except ValueError as e:
             return ActionResult("refused", str(e))
 
-        if duplicates:
-            return ActionResult(
-                "refused",
-                f"Archive blocked: {len(duplicates)} file conflict(s) "
-                "already in archive",
-                self._conflict_details(duplicates),
-            )
         if not leaves:
             return ActionResult("noop", "Nothing to archive", f"Folder: {folder_path}")
 
         source = folder_path.resolve()
         target = target_dir.resolve()
-        steps = [Move(leaf, target / leaf.relative_to(source)) for leaf in leaves]
-        return self._plan(
-            f"Archive {len(steps)} files",
-            steps,
-            [f"From: {source}", f"To:   {target}"],
-            [source, target],
+        taken = {src for src, _ in duplicates}
+        steps = [
+            Move(leaf, target / leaf.relative_to(source))
+            for leaf in leaves
+            if leaf not in taken
+        ]
+        conflicts = tuple(Conflict(Move(src, dst), "exists") for src, dst in duplicates)
+        summary = f"Archive {len(steps)} files"
+        if conflicts:
+            summary += f", {len(conflicts)} already in the archive"
+        return replace(
+            self._plan(
+                summary,
+                steps,
+                [f"From: {source}", f"To:   {target}"],
+                [source, target],
+            ),
+            conflicts=conflicts,
         )
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         if problem := self._unavailable_root():
             return _refused(problem)
         folder_path = self._folder_path
         if not folder_path.is_dir():
             return _refused(f"Folder does not exist: {folder_path}")
 
-        moves = _moves(plan)
-        conflicts = [
-            (m.source, m.target)
-            for m in moves
-            if m.target.exists() or m.target.is_symlink()
-        ]
-        if conflicts:
-            return _refused(
-                f"Archive blocked: {len(conflicts)} file conflict(s) "
-                "already in archive",
-                self._conflict_details(conflicts),
-            )
-
-        done, failed = _run_moves(moves)
+        run = _run_planned_moves(plan, policy, hooks)
+        if run.refused:
+            return _refused_for_conflicts(plan, run, "Archive")
+        planned = len(_moves(plan)) + len(plan.conflicts)
         # Removing emptied folders is cleanup, not a planned step: a folder
         # held open (e.g. a shell's current folder on Windows) stays.
         try:
@@ -646,19 +881,18 @@ class ArchiveAction(Action):
         else:
             kept = None
         left = tuple(collect_leaf_paths(folder_path)) if folder_path.is_dir() else ()
-        message = f"Archived {len(done)} of {len(moves)} file(s)"
+        message = _run_message("Archived", run, planned)
         if left:
             message += f"; {len(left)} file(s) left in the darkroom"
-        details = [_failures_text(failed, plan.bases)] if failed else []
-        if kept:
-            details.append(kept)
         return ExecutionResult(
-            "failed" if failed else "ok",
+            run.outcome,
             message,
-            "\n".join(details) or None,
-            done=done,
-            failed=failed,
+            _run_details(plan, run, kept),
+            done=run.done,
+            failed=run.failed,
             left=left,
+            conflicts=run.conflicts,
+            skipped=run.skipped,
             rescan_node_path=folder_path.parent,
             node_path=folder_path if folder_path.is_dir() else None,
         )
@@ -671,6 +905,7 @@ class ArchiveAction(Action):
 
 class PublishAction(Action):
     action = NodeAction.PUBLISH
+    policies = ("refuse", "skip", "replace")
 
     def __init__(
         self,
@@ -715,39 +950,46 @@ class PublishAction(Action):
             to_area="showroom",
             to_root=self._showroom_path,
         )
-        steps = [
-            Move(f, target_dir / f.name, overwrite=(target_dir / f.name).exists())
-            for f in files
-        ]
-        overwrites = sum(1 for s in steps if s.overwrite)
+        steps: list[Move] = []
+        conflicts: list[Conflict] = []
+        for f in files:
+            move = Move(f, target_dir / f.name)
+            if _target_taken(move):
+                conflicts.append(Conflict(move, "exists"))
+            else:
+                steps.append(move)
         notes = [
             f"From: {publish_dir}",
             f"To:   {target_dir}",
-            f"New: {len(steps) - overwrites}, overwritten: {overwrites}",
+            f"New: {len(steps)}, already in the showroom: {len(conflicts)}",
         ]
-        return self._plan(
-            f"Publish {len(steps)} files", steps, notes, [publish_dir, target_dir]
+        summary = f"Publish {len(files)} files"
+        if conflicts:
+            summary += f", {len(conflicts)} would be replaced"
+        return replace(
+            self._plan(summary, steps, notes, [publish_dir, target_dir]),
+            conflicts=tuple(conflicts),
+            conflict_label="replace",
         )
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         if problem := self._unavailable_root():
             return _refused(problem)
-        moves = _moves(plan)
-        done, failed = _run_moves(moves, replace_existing=True)
-        if failed:
-            return ExecutionResult(
-                "failed",
-                f"Published {len(done)} of {len(moves)} files",
-                _failures_text(failed, plan.bases),
-                done=done,
-                failed=failed,
-                rescan_node_path=self._batch_path,
-                node_path=self._batch_path,
-            )
+        run = _run_planned_moves(plan, policy, hooks)
+        if run.refused:
+            return _refused_for_conflicts(plan, run, "Publish")
+        planned = len(_moves(plan)) + len(plan.conflicts)
         return ExecutionResult(
-            "ok",
-            f"Published {len(done)} files to showroom",
-            done=done,
+            run.outcome,
+            _run_message("Published", run, planned),
+            _run_details(plan, run),
+            done=run.done,
+            failed=run.failed,
+            left=run.left,
+            conflicts=run.conflicts,
+            skipped=run.skipped,
             rescan_node_path=self._batch_path,
             node_path=self._batch_path,
         )
@@ -820,7 +1062,9 @@ class NewBatchAction(Action):
             [self._darkroom_path],
         )
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         folders = self._folders()
         if isinstance(folders, ActionResult):
             return _refused(folders.message, folders.details)
@@ -941,7 +1185,9 @@ class RenameAction(Action):
             [f"Folder: {batch_path.parent}"],
         )
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         if refusal := self._check():
             return _refused(refusal.message, refusal.details)
         (step,) = plan.steps
@@ -1043,6 +1289,7 @@ class OpenExternalAppAction(Action):
 
     action = NodeAction.EDIT
     config_key: ClassVar[str] = "edit_command"
+    runs_as_job = False
 
     def __init__(
         self,
@@ -1067,7 +1314,9 @@ class OpenExternalAppAction(Action):
             return argv
         return self._plan(f"Launch {Path(argv[0]).name}", [Launch(tuple(argv))])
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         (step,) = plan.steps
         assert isinstance(step, Launch)
         try:
@@ -1123,6 +1372,7 @@ class OpenFolderAction(Action):
     """Show a node's folder in the system file manager; changes no files."""
 
     action = NodeAction.OPEN
+    runs_as_job = False
 
     def __init__(self, folder_path: Path, *, request: ActionRequest | None = None):
         super().__init__(request)
@@ -1135,7 +1385,9 @@ class OpenFolderAction(Action):
             )
         return self._plan(f"Open {self._folder_path}", [OpenFolder(self._folder_path)])
 
-    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+    def _execute(
+        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    ) -> ExecutionResult:
         (step,) = plan.steps
         assert isinstance(step, OpenFolder)
         if not step.path.is_dir():

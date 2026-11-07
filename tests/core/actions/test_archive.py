@@ -57,12 +57,72 @@ def test_archive_prepare_happy_batch_root(photo_setup) -> None:
     }
 
 
-def test_archive_prepare_blocked_by_duplicate_in_archive(photo_setup) -> None:
+def test_archive_prepare_lists_files_already_in_archive(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_CONFLICT_REL)
-    out = _archive(photo_setup, batch).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
-    assert "Archive blocked" in out.message
+    plan = _plan(_archive(photo_setup, batch))
+    assert plan.conflicts
+    assert all(c.reason == "exists" for c in plan.conflicts)
+    assert all(c.move.target.is_file() for c in plan.conflicts)
+    taken = {c.move.source for c in plan.conflicts}
+    assert not taken & {s.source for s in plan.steps if isinstance(s, Move)}
+    assert "already in the archive" in plan.summary
+    assert f"Conflicts (conflict): {len(plan.conflicts)}" in plan.preview_text()
+
+
+def _batch_of(photo_setup, name: str, files: int) -> Path:
+    batch = photo_setup.roots.darkroom / "Camera" / "2026" / name
+    batch.mkdir()
+    for i in range(files):
+        (batch / f"{i:03}.jpg").write_bytes(b"new")
+    return batch
+
+
+def _already_archived(photo_setup, name: str, *files: str) -> None:
+    archived = photo_setup.roots.archive / "2026" / name / "Camera"
+    archived.mkdir(parents=True)
+    for file in files:
+        (archived / file).write_bytes(b"old")
+
+
+def test_archive_skipping_conflicts(photo_setup) -> None:
+    """100 files, 10 already archived, skip: 90 archived, 10 stay and are reported."""
+    batch = _batch_of(photo_setup, "2026-04 hundred", 100)
+    taken = [f"{i:03}.jpg" for i in range(0, 100, 10)]
+    _already_archived(photo_setup, "2026-04 hundred", *taken)
+    act = _archive(photo_setup, batch)
+    plan = _plan(act)
+    assert len(plan.steps) == 90
+    assert len(plan.conflicts) == 10
+
+    result = act.execute(plan, policy="skip")
+
+    assert result.outcome == "ok"
+    assert len(result.done) == 90
+    assert sorted(c.move.source.name for c in result.skipped) == taken
+    assert sorted(p.name for p in batch.iterdir()) == taken
+    archived = photo_setup.roots.archive / "2026" / "2026-04 hundred" / "Camera"
+    assert len(list(archived.iterdir())) == 100
+    assert all((archived / name).read_bytes() == b"old" for name in taken)
+    assert "10 skipped" in result.message
+
+
+def test_archive_with_conflicts_refused_by_default(photo_setup) -> None:
+    batch = _batch_of(photo_setup, "2026-04 refused", 3)
+    _already_archived(photo_setup, "2026-04 refused", "001.jpg")
+    act = _archive(photo_setup, batch)
+    plan = _plan(act)
+
+    result = act.execute(plan)
+
+    assert result.outcome == "refused"
+    assert [c.move.source.name for c in result.conflicts] == ["001.jpg"]
+    assert result.done == ()
+    assert len(list(batch.iterdir())) == 3
+    assert result.rescan_node_path is None
+
+
+def test_archive_policies() -> None:
+    assert ArchiveAction.policies == ("refuse", "skip")
 
 
 def test_archive_prepare_unrecognized_batch_path(photo_setup) -> None:
@@ -161,14 +221,14 @@ def test_partial_archive(photo_setup, monkeypatch: pytest.MonkeyPatch) -> None:
         (batch / name).write_bytes(name.encode())
     act = _archive(photo_setup, batch)
     plan = _plan(act)
-    real_move = file_utils.cstm_shutil_move
+    real_move = file_utils.move_file
 
-    def fail_on_c(src, dst, *args, **kwargs):
-        if src.endswith("c.jpg"):
+    def fail_on_c(src: Path, dst: Path, *, replace: bool = False) -> None:
+        if src.name == "c.jpg":
             raise PermissionError("file is locked")
-        return real_move(src, dst, *args, **kwargs)
+        real_move(src, dst, replace=replace)
 
-    monkeypatch.setattr(file_utils, "cstm_shutil_move", fail_on_c)
+    monkeypatch.setattr(file_utils, "move_file", fail_on_c)
     result = act.execute(plan)
 
     assert result.outcome == "failed"
@@ -187,7 +247,7 @@ def test_partial_archive(photo_setup, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_archive_execute_blocked_when_conflict_appears_after_prepare(
     photo_setup,
 ) -> None:
-    """Prepare passes; a file appears in the archive before execute → no moves."""
+    """A file appears in the archive before execute: refuse moves nothing."""
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
     expected_rels = _relative_leaf_paths(batch)
     block_rel = sorted(expected_rels)[0]
@@ -205,6 +265,22 @@ def test_archive_execute_blocked_when_conflict_appears_after_prepare(
     assert result.details is not None
     assert result.done == ()
     assert (batch / block_rel).exists()
+    assert block_at.read_bytes() == b""
+
+
+def test_late_file_in_the_archive_with_skip(photo_setup) -> None:
+    batch = _batch_of(photo_setup, "2026-04 late", 3)
+    act = _archive(photo_setup, batch)
+    plan = _plan(act)
+    _already_archived(photo_setup, "2026-04 late", "002.jpg")
+
+    result = act.execute(plan, policy="skip")
+
+    assert result.outcome == "ok"
+    assert [c.move.source.name for c in result.skipped] == ["002.jpg"]
+    assert [c.move.source.name for c in result.conflicts] == ["002.jpg"]
+    assert len(result.done) == 2
+    assert (batch / "002.jpg").read_bytes() == b"new"
 
 
 def test_folder_held_open_is_kept_and_reported(

@@ -65,12 +65,14 @@ def test_publish_prepare_happy_empty_conflicts(photo_setup) -> None:
     assert {m.target.parent for m in moves} == {expected_target}
 
 
-def test_publish_prepare_marks_overwrites(photo_setup) -> None:
+def test_publish_prepare_lists_existing_files_as_replacements(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_OVERWRITE_REL)
-    (step,) = _moves(_plan(_publish(photo_setup, batch)))
-    assert step.overwrite
-    assert step.source.name == step.target.name == "same_name_0001.jpg"
-    assert step.target.is_file()
+    plan = _plan(_publish(photo_setup, batch))
+    assert plan.steps == ()
+    (conflict,) = plan.conflicts
+    assert conflict.move.source.name == "same_name_0001.jpg"
+    assert conflict.move.target.is_file()
+    assert plan.conflict_label == "replace"
 
 
 def test_republishing_a_batch(photo_setup) -> None:
@@ -83,14 +85,61 @@ def test_republishing_a_batch(photo_setup) -> None:
 
     plan = _plan(_publish(photo_setup, batch))
 
-    assert {m.source.name: m.overwrite for m in _moves(plan)} == {
-        "a.jpg": True,
-        "b.jpg": False,
-    }
+    assert [m.source.name for m in _moves(plan)] == ["b.jpg"]
+    assert [c.move.source.name for c in plan.conflicts] == ["a.jpg"]
     lines = plan.preview_text().splitlines()
-    assert "  overwrite a.jpg → a.jpg" in lines
+    assert "  replace a.jpg → a.jpg" in lines
     assert "  move b.jpg → b.jpg" in lines
-    assert "New: 1, overwritten: 1" in lines
+    assert "New: 1, already in the showroom: 1" in lines
+    assert "Conflicts (replace): 1" in lines
+
+
+def _republish(photo_setup) -> tuple[Path, Path]:
+    batch = photo_setup.darkroom_has_dir(PUBLISH_BATCH_OVERWRITE_REL)
+    publish_dir = batch / PUBLISH_FOLDER
+    (publish_dir / "same_name_0001.jpg").unlink()
+    (publish_dir / "a.jpg").write_bytes(b"new a")
+    (publish_dir / "b.jpg").write_bytes(b"new b")
+    showroom = photo_setup.roots.showroom / PUBLISH_BATCH_OVERWRITE_DEST
+    (showroom / "a.jpg").write_bytes(b"old a")
+    return batch, showroom
+
+
+def test_republish_with_replace(photo_setup) -> None:
+    batch, showroom = _republish(photo_setup)
+    act = _publish(photo_setup, batch)
+    result = act.execute(_plan(act), policy="replace")
+    assert result.outcome == "ok"
+    assert (showroom / "a.jpg").read_bytes() == b"new a"
+    assert (showroom / "b.jpg").read_bytes() == b"new b"
+    assert list((batch / PUBLISH_FOLDER).iterdir()) == []
+    replaced = [s for s in result.done if isinstance(s, Move) and s.overwrite]
+    assert [s.source.name for s in replaced] == ["a.jpg"]
+
+
+def test_republish_with_skip(photo_setup) -> None:
+    batch, showroom = _republish(photo_setup)
+    act = _publish(photo_setup, batch)
+    result = act.execute(_plan(act), policy="skip")
+    assert result.outcome == "ok"
+    assert (showroom / "a.jpg").read_bytes() == b"old a"
+    assert (showroom / "b.jpg").read_bytes() == b"new b"
+    assert [p.name for p in (batch / PUBLISH_FOLDER).iterdir()] == ["a.jpg"]
+    assert [c.move.source.name for c in result.skipped] == ["a.jpg"]
+
+
+def test_republish_without_a_choice_is_refused(photo_setup) -> None:
+    batch, showroom = _republish(photo_setup)
+    act = _publish(photo_setup, batch)
+    result = act.execute(_plan(act))
+    assert result.outcome == "refused"
+    assert [c.move.source.name for c in result.conflicts] == ["a.jpg"]
+    assert "a.jpg" in (result.details or "")
+    assert (showroom / "a.jpg").read_bytes() == b"old a"
+    assert sorted(p.name for p in (batch / PUBLISH_FOLDER).iterdir()) == [
+        "a.jpg",
+        "b.jpg",
+    ]
 
 
 def test_publish_prepare_fails_when_publish_dir_missing(photo_setup) -> None:
@@ -144,7 +193,7 @@ def test_publish_execute_replaces_existing_file(photo_setup) -> None:
     publish_dir = batch / PUBLISH_FOLDER
     (publish_dir / "same_name_0001.jpg").write_bytes(b"new")
     act = _publish(photo_setup, batch)
-    result = act.execute(_plan(act))
+    result = act.execute(_plan(act), policy="replace")
     assert result.outcome == "ok"
 
     dest = (

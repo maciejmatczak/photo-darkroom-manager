@@ -276,7 +276,7 @@ def test_apply_on_a_busy_engine(
         assert started.wait(5)
         with pytest.raises(EngineBusyError) as exc:
             engine.action_apply(engine.action_tidy(BATCH))
-        assert exc.value.busy == "action"
+        assert exc.value.job.name == "tidy"
     finally:
         release.set()
         worker.join(5)
@@ -294,10 +294,9 @@ def test_conflict_at_prepare(roots: Roots, engine: Engine) -> None:
     taken.parent.mkdir(parents=True)
     taken.write_bytes(b"old")
     out = engine.action_archive(BATCH).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
-    assert out.details is not None
-    assert "a.jpg" in out.details
+    assert isinstance(out, ActionPlan)
+    assert [c.move.source.name for c in out.conflicts] == ["a.jpg"]
+    assert out.steps == ()
 
 
 def test_unexpected_error(

@@ -221,7 +221,7 @@ def test_tidy_loose_media_preserves_publish(roots, engine: Engine) -> None:
     ):
         (batch / filename).write_bytes(b"media")
     action = mgr.action_tidy("Camera/2026/2026-10")
-    assert mgr.action_execute(action, _plan(action)).success
+    assert mgr.action_apply(action, confirm=_plan(action).fingerprint).success
     assert (batch / "PUBLISH/export.jpg").read_bytes() == b"media"
     for filename in ("shot.cr3", "shot.jpg", "shot.xmp", "other.jpg"):
         assert (batch / "PHOTOS" / filename).is_file()

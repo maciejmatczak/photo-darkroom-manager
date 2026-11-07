@@ -222,3 +222,30 @@ def test_scan_chain_reads_ancestors_only(tmp_path: Path) -> None:
 @pytest.mark.internal
 def test_scan_chain_of_the_root_is_empty(tmp_path: Path) -> None:
     assert scan_chain(tmp_path, "") == {}
+
+
+# ---------------------------------------------------------------------------
+# visit hook
+# ---------------------------------------------------------------------------
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_visit_sees_each_folder_before_it_is_read(tmp_path: Path) -> None:
+    (tmp_path / "Camera" / "2026" / "2026-10 Walk").mkdir(parents=True)
+    seen: list[str] = []
+    scan_subtree(tmp_path, "", "root", visit=seen.append)
+    assert seen == ["", "Camera", "Camera/2026", "Camera/2026/2026-10 Walk"]
+
+
+def test_visit_can_stop_the_scan(tmp_path: Path) -> None:
+    (tmp_path / "Camera" / "2026").mkdir(parents=True)
+
+    def stop_at_year(node_id: str) -> None:
+        if node_id == "Camera/2026":
+            raise _Stop
+
+    with pytest.raises(_Stop):
+        scan_subtree(tmp_path, "", "root", visit=stop_at_year)

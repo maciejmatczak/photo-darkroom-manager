@@ -55,12 +55,16 @@ job's log handler. The engine's public job API delegates to it:
   and the tests stay simple. `action_execute(action, plan)` is removed:
   executing a held plan is `action_start(action, confirm=plan.fingerprint)`.
 
-`JobView` carries `id`, `kind` (`scan`, `refresh` or the `NodeAction`),
-`node_id`, `state`, `progress: Progress(done, total | None, current |
-None)`, `started_at`, `finished_at`, `log_path` and `result`
-(`ExecutionResult` for actions, `ScanResult(node_id)` for scans and
-refreshes). The slot keeps a mutable private record under its lock and
-copies it into a new `JobView` on every read, so a snapshot never changes.
+`jobs.py` is standalone: it knows nothing of the darkroom and imports only
+the standard library and structlog. A job is started with
+`start(work, *, name, description="", state_of=...)`. `JobView` carries
+`id`, `name` (short, e.g. `archive`, `scan`), `description` (free-form;
+the engine passes the node id), `state`, `progress: Progress(done, total |
+None, current | None)`, `started_at`, `finished_at`, `log_path`, `result`
+and `error`. The engine checks `job.name` for `library_scanning`, and
+defines `ScanResult(node_id)` itself as the result of scans and refreshes.
+The slot keeps a mutable private record under its lock and copies it into
+a new `JobView` on every read, so a snapshot never changes.
 
 Alternatives considered:
 - **Job table / registry with ids.** Rejected: one job at a time makes a
@@ -94,18 +98,32 @@ Alternatives considered:
   not know what runs, and "jobs on their own plane" would be the client's
   job.
 
-### 3. Progress and cancel through a `JobContext`
+### 3. Progress and cancel through plain hooks
 
-Work functions take a `JobContext` with `progress(done, total=None,
-current=None)` and `cancelled: bool`. A no-op context is the default, so
-actions and scans still run directly in tests. Cancelling is cooperative:
+The job slot hands its work a `JobContext` with `progress(done,
+total=None, current=None)` and `cancelled: bool`. Only the engine and the
+slot know that type. Domain code takes plain callables instead, like
+`move_files(stop=, on_move=)`, so actions, the library and `file_utils`
+never import `jobs`:
 
-- Action execution checks `cancelled` before each step. A stop ends the
-  step loop; the steps not run go to `left` and the outcome is
+- `Action.execute(plan, *, policy, progress, stop, on_step)`: *progress*
+  hears how far the moves got, *stop* is checked before each move, and
+  *on_step* hears each move's outcome and each conflict left undone. All
+  are optional, so actions still run directly in tests. A stop ends the
+  move loop; the moves not run go to `left` and the outcome is
   `cancelled`. The rescan after the action still runs (files did move).
-- Scans check `cancelled` per folder while building facts and raise a
-  private `_Cancelled`; the engine swaps facts into the tree only after a
-  scan completes, so a cancelled scan leaves the tree untouched.
+- `scan_subtree(..., visit=)` calls *visit* with each folder before it is
+  read; the engine's visitor counts folders as progress and raises
+  `JobCancelled` on cancel. The engine swaps facts into the tree only
+  after a scan completes, so a cancelled scan leaves the tree untouched.
+- The engine builds the hooks from the job's context and turns *on_step*
+  into the job log's `step_done`, `step_skipped` and `step_failed`
+  events, so what goes into the audit log is decided in one place.
+
+Alternatives considered: passing the `JobContext` into `Action.execute`
+(rejected: actions would depend on the job module and write its audit
+events), or defining the context in actions for `jobs` to import (rejected:
+it only turns the dependency around).
 - Prepare inside `action_start` (needed for the `confirm` check) runs on
   the worker too, with indeterminate progress.
 
@@ -201,28 +219,38 @@ Alternatives considered: a push callback for changes. Deferred: with the
 slot, a client polls `engine.job` and `library_revision`; a callback can be
 added later without changing these.
 
-### 8. Job logs through structlog
+### 8. Job logs: the slot gives each job its own logger
 
-The worker binds `job_id` with `structlog.contextvars` for its whole run
-(contextvars are per thread, so this tags only that job's records), and
-`merge_contextvars` is added to the structlog chain. `logging_config`
-gains a context manager that attaches, for one job, a `FileHandler` to
-`<logs>/jobs/<name>.log` with a filter passing only records whose
-`job_id` matches, using the same key=value renderer as the main log.
+The slot is given a folder for job logs (the engine passes
+`<logs>/jobs`). Each job's lifecycle:
 
-Audit events go to a dedicated logger `photo_darkroom_manager.jobs` set to
-INFO, so they are always written whatever the engine log level; they also
-reach the main log under its own level. Events: `job_started` (kind, node,
-params, policy, summary, notes, step and conflict counts), `step_done`,
-`step_skipped`, `step_failed` (source, target, reason), `job_finished`
-(state, outcome, message, counts, left files, refreshed id, duration). Each
-is written as it happens; the handler flushes per record.
+1. `start` creates the job's log file
+   `{YYYY-MM-DD}_{HHMMSS}_{name}_{description}.log` (the description
+   shortened to 60 characters; spaces, `/` and characters unsafe in file
+   names become `-`; `_2`, `_3`, … on a clash).
+2. On the worker thread the slot opens a logger for that job only: a
+   structlog logger over an unregistered stdlib logger with a `FileHandler`
+   on the file, rendered key=value like the main log, at INFO whatever the
+   app's log level, and passing records on to the app's logs. It writes
+   `job_started` (name, description) and gives the logger to the work as
+   `JobContext.log`.
+3. When the work ends the slot writes `job_error` (with the traceback) if
+   it raised, then `job_finished` (state, error, duration), and closes the
+   file.
 
-File name: `{YYYY-MM-DD}_{HHMMSS}_{kind}_{node}.log`, the node id with `/`
-replaced by `~` and characters invalid on Windows replaced by `_`, `root`
-for the root, and `_2`, `_3`, … appended on a clash. `cleanup_old_logs`
-only touches files directly in the logs folder, so `jobs/` is kept; a test
-pins that.
+The work writes the rest through `JobContext.log`: the engine logs
+`action_request` (action, node, params, policy, fingerprint, summary,
+notes, step and conflict counts), each `step_done`, `step_skipped` and
+`step_failed` (source, target, reason) from the action's `on_step` hook,
+and `action_result` (outcome, message, counts, left files, refreshed id);
+scans log `scan_started` and `scan_result`. Each line is written as it
+happens. `cleanup_old_logs` only touches files directly in the logs
+folder, so `jobs/` is kept; a test pins that.
+
+Alternatives considered: one shared logger with a per-job file handler
+filtering on a `job_id` context variable (first version; replaced because
+it tied the slot to the app's structlog setup), and handing each action a
+log path to write itself (rejected: job logs should stay in one place).
 
 Alternative considered: custom JSON-lines writer. Rejected with the user:
 stay on the project's structured logging.
@@ -253,7 +281,7 @@ stay on the project's structured logging.
 - [Size-only verification misses same-size corruption] → Accepted for
   now; `copy2` raises on I/O errors; hashing can be added in the mover.
 - [Threads make tests flaky] → Tests use the blocking calls or
-  `job_wait()`; the no-op `JobContext` lets action and scan tests run
+  `job_wait()`; optional hooks let action and scan tests run
   without threads; cancel tests use a context that cancels after N steps.
 - [Non-daemon worker delays process exit] → Jobs are minutes at most; the
   CLI cancels on Ctrl+C. A GUI can cancel on quit.

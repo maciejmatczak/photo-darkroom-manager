@@ -32,9 +32,12 @@ from photo_darkroom_manager.core.engine import (
     Engine,
     EngineBusyError,
     EngineNotReadyError,
+    JobCancelled,
     NodeNotFoundError,
     PathOutsideDarkroomError,
+    PolicyNotSupportedError,
 )
+from photo_darkroom_manager.core.jobs import JobView
 from photo_darkroom_manager.core.library import NodeId, node_actions
 from photo_darkroom_manager.core.user_config import (
     ConfigValueError,
@@ -51,8 +54,15 @@ EXIT_USAGE = 2
 EXIT_REFUSED = 3
 EXIT_NOT_READY = 4
 EXIT_NOT_FOUND = 5
+EXIT_CANCELLED = 130
 
-_OUTCOME_EXIT = {"ok": EXIT_OK, "noop": EXIT_OK, "refused": EXIT_REFUSED}
+_OUTCOME_EXIT = {
+    "ok": EXIT_OK,
+    "noop": EXIT_OK,
+    "refused": EXIT_REFUSED,
+    "cancelled": EXIT_CANCELLED,
+}
+_WAIT_STEP_S = 0.2
 
 MakeEngine = Callable[[Path | None, LogLevel], Engine]
 
@@ -76,9 +86,15 @@ class _Context:
     args: argparse.Namespace
     engine: Engine
     cwd: Path
+    stderr: TextIO
 
     def target(self) -> NodeId:
         return resolve(self.args.target, self.cwd, self.engine)
+
+    @property
+    def shows_progress(self) -> bool:
+        isatty = getattr(self.stderr, "isatty", None)
+        return bool(isatty and isatty())
 
 
 class CliError(Exception):
@@ -181,6 +197,14 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         command = commands.add_parser(name, help=text)
         command.add_argument("target", help=_TARGET_HELP)
+        command.add_argument(
+            "--on-conflict",
+            choices=("skip", "replace"),
+            help=(
+                "what to do with files whose target already exists: skip "
+                "them, or (publish only) replace them; default: refuse"
+            ),
+        )
         _add_run_options(command)
 
     rename = commands.add_parser(
@@ -258,11 +282,47 @@ def _config(ctx: _Context) -> Reply:
     )
 
 
+def _wait(ctx: _Context) -> JobView:
+    """Wait for the engine's job, drawing progress; cancel it on Ctrl+C."""
+    engine = ctx.engine
+    progress = _render.Progress(ctx.stderr) if ctx.shows_progress else None
+    try:
+        while True:
+            view = engine.job_wait(_WAIT_STEP_S)
+            assert view is not None
+            if view.finished:
+                return view
+            if progress is not None:
+                progress.draw(view)
+    except KeyboardInterrupt:
+        engine.job_cancel()
+        if progress is not None:
+            progress.note("cancelling…")
+        view = engine.job_wait()
+        assert view is not None
+        return view
+    finally:
+        if progress is not None:
+            progress.clear()
+
+
+def _job_result(ctx: _Context, view: JobView) -> ExecutionResult:
+    if isinstance(view.result, ExecutionResult):
+        return view.result
+    return ExecutionResult("failed", "Internal error", view.error)
+
+
 def _inspect(ctx: _Context) -> Reply:
     args, engine = ctx.args, ctx.engine
     target = args.target
     requested = default_target(ctx.cwd, engine) if target is None else ctx.target()
-    node_id = engine.library_scan(requested)
+    engine.library_scan_start(requested)
+    job = _wait(ctx)
+    if job.state == "cancelled":
+        raise JobCancelled
+    if job.state == "failed":
+        raise RuntimeError(job.error)
+    node_id = job.result.node_id
     view = engine.library_node(node_id)
     depth = max(args.depth, 0)
     return Reply(
@@ -289,6 +349,8 @@ def _confirm_argv(args: argparse.Namespace, node_id: NodeId, fp: str) -> list[st
         argv += ["--title", args.title]
     if getattr(args, "no_title", False):
         argv.append("--no-title")
+    if getattr(args, "on_conflict", None):
+        argv += ["--on-conflict", args.on_conflict]
     return [*argv, "--confirm", fp]
 
 
@@ -327,15 +389,18 @@ def _action(ctx: _Context) -> Reply:
     args, engine = ctx.args, ctx.engine
     action = _action_factory(ctx)(ctx.target())
     node_id = action.request.node_id
-    if args.apply or args.confirm is not None:
+    policy = getattr(args, "on_conflict", None) or "refuse"
+    action.check_policy(policy)
+    if not action.runs_as_job:
         return _result_reply(engine.action_apply(action, confirm=args.confirm))
+    if args.apply or args.confirm is not None:
+        engine.action_start(action, confirm=args.confirm, policy=policy)
+        return _result_reply(_job_result(ctx, _wait(ctx)))
 
     prepared = action.prepare()
     if not isinstance(prepared, ActionPlan):
         result = ExecutionResult(prepared.outcome, prepared.message, prepared.details)
         return _result_reply(result)
-    if not prepared.changes_files:
-        return _result_reply(engine.action_execute(action, prepared))
     confirm = _confirm_argv(args, node_id, prepared.fingerprint)
     return Reply(
         EXIT_OK,
@@ -416,6 +481,10 @@ def _as_cli_error(engine: Engine, error: Exception) -> CliError | None:
             )
         case EngineBusyError():
             return CliError(EXIT_REFUSED, "busy", str(error))
+        case PolicyNotSupportedError():
+            return CliError(EXIT_USAGE, "usage", str(error))
+        case JobCancelled():
+            return CliError(EXIT_CANCELLED, "cancelled", "cancelled by the user")
         case ConfigValueError():
             return CliError(EXIT_REFUSED, "invalid_value", str(error))
         case UnknownConfigKeyError():
@@ -476,7 +545,7 @@ def run(
 
     config_path = cwd / Path(args.config).expanduser() if args.config else None
     engine = make_engine(config_path, _console_level(args.verbose))
-    ctx = _Context(args, engine, cwd)
+    ctx = _Context(args, engine, cwd, stderr)
     try:
         reply = _COMMANDS[args.command](ctx)
     except Exception as error:

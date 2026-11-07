@@ -87,3 +87,15 @@ def test_console_level_keeps_stderr_quiet_while_the_file_logs(
 def test_console_level_can_be_more_verbose_than_the_file(tmp_path: Path) -> None:
     configure_logging("WARNING", logs_dir=tmp_path / "logs", console_level="DEBUG")
     assert logging.getLogger("photo_darkroom_manager").isEnabledFor(logging.DEBUG)
+
+
+def test_cleanup_keeps_logs_in_subfolders(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    old_job = logs_dir / "jobs" / "2020-01-01_000000_tidy.log"
+    old_job.parent.mkdir(parents=True)
+    old_job.write_text("audit", encoding="utf-8")
+    now = time.time()
+    old_time = now - (RETENTION_DAYS + 5) * 86400
+    os.utime(old_job, (old_time, old_time))
+    cleanup_old_logs(logs_dir, now=now)
+    assert old_job.exists()

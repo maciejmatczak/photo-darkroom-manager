@@ -38,7 +38,11 @@ def build_log_file_path(logs_dir: Path) -> Path:
 def cleanup_old_logs(
     logs_dir: Path, *, retention_days: int = RETENTION_DAYS, now: float | None = None
 ) -> None:
-    """Delete log files in *logs_dir* older than *retention_days*."""
+    """Delete log files in *logs_dir* older than *retention_days*.
+
+    Only files directly in *logs_dir* are considered; logs in its subfolders
+    (such as job logs) are kept.
+    """
     if not logs_dir.is_dir():
         return
     cutoff = (now if now is not None else time.time()) - retention_days * 86400

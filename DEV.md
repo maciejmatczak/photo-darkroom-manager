@@ -149,24 +149,62 @@ run it: darkroom archive "id:Camera/2026/2026-10 Walk" --confirm 8e9e0dd80ad2
 - No command ever asks a question, so it is safe to run without a
   terminal.
 
+### Conflicts
+
+A conflict is a file whose target already holds a file, or two files that
+need the same target. The preview counts and lists them next to the free
+moves. Without an option, an action with conflicts is refused (exit 3) and
+nothing moves. `--on-conflict` chooses otherwise:
+
+- `skip` (tidy, archive, publish) moves the free files and leaves each
+  conflicting file where it is; the result lists them as skipped.
+- `replace` (publish only) puts the new file in place of the one already
+  in the showroom. Republishing over existing files needs it.
+
+Any other combination is a usage error (exit 2). The printed `--confirm`
+command carries the option you gave. A file that appears at a target after
+the preview is treated the same way: refused, skipped or replaced. Nothing
+is ever overwritten without `replace`.
+
+### Jobs, progress and Ctrl+C
+
+Every action that changes files, and every scan, runs as one job in the
+engine. While it runs, the command shows its progress on stderr when
+stderr is a terminal (a counter and the current file, or a spinner for a
+scan) and nothing extra otherwise; stdout carries only the result.
+
+Ctrl+C cancels the job: it stops between files, never in the middle of
+one, prints its result (what was moved and what was left) and exits 130.
+
+A move to another drive copies to a hidden `.NAME.darkroom-partial` file,
+checks its size, puts it in place and only then removes the source; a
+failed copy leaves the source and removes the partial file.
+
+Each job writes an audit log to the `jobs` folder in the logs folder,
+named `{date}_{time}_{name}_{description}.log` (for example
+`2026-11-07_143012_archive_Camera-2026-2026-10-Walk.log`): the request,
+the plan summary, the policy, every step done, skipped or failed, and the
+outcome. Job logs are kept when old application logs are cleaned up.
+
 ### JSON and exit codes
 
 With `--json` (before the command), stdout holds exactly one document:
 `{"format": 1, "command": ..., "ok": ..., "result": ..., "error": ...}`.
 A result is a node view, a plan (with all its steps and the `confirm`
-command as argv), or an execution result (steps done and failed, files
-left, the node id afterwards). An error has a `kind`, a `message` and,
-where known, a `fix`. Logs go to stderr only: warnings by default, more
-with `-v` or `-vv`.
+command as argv, and its conflicts), or an execution result (steps done,
+failed and skipped, conflicts, files left, the node id afterwards). An
+error has a `kind`, a `message` and, where known, a `fix`. Logs go to
+stderr only: warnings by default, more with `-v` or `-vv`.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Done, nothing to do, or a preview printed |
 | 1 | The action failed while running |
 | 2 | Usage error (bad options or arguments) |
-| 3 | Refused; the error's `kind` says why (e.g. `not_allowed`) |
+| 3 | Refused; the error's `kind` says why (e.g. `not_allowed`, `busy`) |
 | 4 | The engine is not ready (configuration missing or invalid) |
 | 5 | No such node, or a path outside the darkroom |
+| 130 | Cancelled with Ctrl+C |
 
 ## Package layout and import contracts
 

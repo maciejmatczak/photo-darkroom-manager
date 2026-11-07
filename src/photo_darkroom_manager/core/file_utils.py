@@ -1,43 +1,88 @@
-"""Filesystem helpers (moves, permissions, and related reporting)."""
+"""Filesystem helpers: safe file moves, empty-folder pruning, merge previews."""
 
 import errno
 import os
 import shutil
 import stat
-import sys
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+import structlog
 
 __all__ = [
-    "MoveIssue",
+    "PARTIAL_SUFFIX",
+    "CopyMismatchError",
+    "MoveOutcome",
     "MoveReport",
+    "TargetExistsError",
     "collect_leaf_paths",
-    "cstm_shutil_move",
-    "make_remove_readonly_onexc",
+    "move_file",
     "move_files",
     "preview_merge_into_archive",
     "prune_empty_dirs",
 ]
 
+log = structlog.get_logger(__name__)
+
+PARTIAL_SUFFIX = ".darkroom-partial"
+"""Suffix of the temporary copy a cross-drive move writes before renaming."""
+
+_RENAME_ATTEMPTS = 5
+_RENAME_PAUSE_S = 0.2
+_WINERROR_NOT_SAME_DEVICE = 17
+
+Pair = tuple[Path, Path]
+
+
+class TargetExistsError(FileExistsError):
+    """The target holds a file and the move was not asked to replace it."""
+
+    def __init__(self, target: Path) -> None:
+        super().__init__(errno.EEXIST, "target already exists", str(target))
+        self.target = target
+
+
+class CopyMismatchError(OSError):
+    """A cross-drive copy does not have the size of its source."""
+
+    def __init__(self, source_size: int, copy_size: int) -> None:
+        super().__init__(
+            f"copy has {copy_size} bytes, source has {source_size}; source kept"
+        )
+
+
+MoveStatus = Literal["done", "skipped", "failed"]
+
 
 @dataclass(frozen=True, slots=True)
-class MoveIssue:
-    """One problem encountered during a directory move."""
+class MoveOutcome:
+    """What happened to one requested move, as it finished."""
 
-    stage: str
-    operation: str
-    path: Path
-    error: BaseException
-    recovered: bool = False
+    source: Path
+    target: Path
+    status: MoveStatus
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class MoveReport:
-    """Which of the requested moves happened, and why the others did not."""
+    """Which of the requested moves happened, and why the others did not.
 
-    done: tuple[tuple[Path, Path], ...]
+    *skipped* holds moves whose target existed at move time (never
+    overwritten); *left* holds moves not tried because the run was stopped.
+    """
+
+    done: tuple[Pair, ...]
     failed: tuple[tuple[Path, Path, str], ...]
+    skipped: tuple[Pair, ...] = ()
+    left: tuple[Pair, ...] = ()
+
+    @property
+    def cancelled(self) -> bool:
+        return bool(self.left)
 
 
 def _paths_blocking_merge(dest: Path) -> bool:
@@ -58,8 +103,7 @@ def collect_leaf_paths(source_dir: Path) -> list[Path]:
 def _rmdir_empty_dir(path: Path) -> None:
     """Remove an empty directory; no-op if not empty (ENOTEMPTY).
 
-    On other :exc:`OSError`, clear the read-only bit and retry once (same idea as
-    :func:`make_remove_readonly_onexc`).
+    On other :exc:`OSError`, clear the read-only bit and retry once.
     """
     try:
         path.rmdir()
@@ -118,148 +162,145 @@ def preview_merge_into_archive(
     return tuple(leaves), tuple(duplicates)
 
 
-def move_files(
-    moves: Iterable[tuple[Path, Path]], *, replace: bool = False
-) -> MoveReport:
-    """Move each (source, target) file, creating target folders as needed.
+def _exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
 
-    Keeps going after a failed move and reports it. With *replace*, an
-    existing target is removed first; otherwise the caller checks targets.
-    Uses :func:`cstm_shutil_move` per file for cross-filesystem semantics.
+
+def _is_cross_device(error: OSError) -> bool:
+    return (
+        error.errno == errno.EXDEV
+        or getattr(error, "winerror", None) == _WINERROR_NOT_SAME_DEVICE
+    )
+
+
+def _rename(source: Path, target: Path, *, replace: bool) -> None:
+    """Rename on one drive; never overwrite unless *replace*.
+
+    ``os.replace`` swaps the target atomically. Without *replace* the target
+    is checked first, because POSIX ``rename`` would overwrite it; on
+    Windows ``rename`` refuses an existing target by itself.
     """
-    done: list[tuple[Path, Path]] = []
-    failed: list[tuple[Path, Path, str]] = []
-    for src, dst in moves:
+    if replace:
+        os.replace(source, target)
+        return
+    if _exists(target):
+        raise TargetExistsError(target)
+    try:
+        os.rename(source, target)
+    except FileExistsError:
+        raise TargetExistsError(target) from None
+
+
+def _partial_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}{PARTIAL_SUFFIX}")
+
+
+def _copy_times(source: Path, copy: Path) -> None:
+    """Copy timestamps and mode as best effort; some shares refuse them."""
+    try:
+        shutil.copystat(source, copy)
+    except OSError as e:
+        log.warning("copy_metadata_skipped", source=str(source), error=str(e))
+
+
+def _rename_into_place(partial: Path, target: Path, *, replace: bool) -> None:
+    """Rename the finished copy, retrying while another program holds it.
+
+    An antivirus scan or a NAS indexer can open a new file for a moment,
+    which makes the rename fail with a permission error on Windows.
+    """
+    for attempt in range(1, _RENAME_ATTEMPTS + 1):
         try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if replace and (dst.exists() or dst.is_symlink()):
-                dst.unlink()
-            cstm_shutil_move(str(src), str(dst))
-        except (OSError, shutil.Error) as e:
-            failed.append((src, dst, str(e) or type(e).__name__))
+            _rename(partial, target, replace=replace)
+            return
+        except TargetExistsError:
+            raise
+        except PermissionError:
+            if attempt == _RENAME_ATTEMPTS:
+                raise
+            time.sleep(_RENAME_PAUSE_S)
+
+
+def _copy_across(source: Path, target: Path, *, replace: bool) -> None:
+    """Move to another drive through a size-checked partial copy.
+
+    The source is removed only once the copy is in place under the target
+    name; any failure before that removes the partial copy and keeps the
+    source.
+    """
+    partial = _partial_path(target)
+    try:
+        shutil.copyfile(source, partial)
+        _copy_times(source, partial)
+        source_size = source.stat().st_size
+        copy_size = partial.stat().st_size
+        if copy_size != source_size:
+            raise CopyMismatchError(source_size, copy_size)
+        _rename_into_place(partial, target, replace=replace)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    source.unlink()
+
+
+def move_file(source: Path, target: Path, *, replace: bool = False) -> None:
+    """Move one file, creating the target folder; never lose either file.
+
+    Without *replace*, an existing target raises :class:`TargetExistsError`
+    and both files stay. With *replace*, the old target stays whole until
+    the new file takes its place.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not replace and _exists(target):
+        raise TargetExistsError(target)
+    try:
+        _rename(source, target, replace=replace)
+    except TargetExistsError:
+        raise
+    except OSError as e:
+        if not _is_cross_device(e):
+            raise
+        _copy_across(source, target, replace=replace)
+
+
+def _reason(error: BaseException) -> str:
+    return str(error) or type(error).__name__
+
+
+def move_files(
+    moves: Iterable[Pair],
+    *,
+    replace: bool = False,
+    stop: Callable[[], bool] | None = None,
+    on_move: Callable[[MoveOutcome], None] | None = None,
+) -> MoveReport:
+    """Move each (source, target) file in order, one at a time.
+
+    Keeps going after a failed move and reports it. A target that exists at
+    move time is skipped unless *replace*. *stop* is checked before each
+    move; once it is true the remaining moves are reported as left.
+    *on_move* is called as each move finishes.
+    """
+    done: list[Pair] = []
+    failed: list[tuple[Path, Path, str]] = []
+    skipped: list[Pair] = []
+    pending = list(moves)
+    for index, (src, dst) in enumerate(pending):
+        if stop is not None and stop():
+            return MoveReport(
+                tuple(done), tuple(failed), tuple(skipped), tuple(pending[index:])
+            )
+        try:
+            move_file(src, dst, replace=replace)
+        except TargetExistsError:
+            skipped.append((src, dst))
+            outcome = MoveOutcome(src, dst, "skipped", "target already exists")
+        except OSError as e:
+            failed.append((src, dst, _reason(e)))
+            outcome = MoveOutcome(src, dst, "failed", _reason(e))
         else:
             done.append((src, dst))
-    return MoveReport(tuple(done), tuple(failed))
-
-
-def make_remove_readonly_onexc(
-    issues: list[MoveIssue],
-) -> Callable[[Callable[..., object], str, BaseException], None]:
-    """Build an ``onexc`` handler for ``shutil.rmtree`` that clears read-only bits.
-
-    Records each initial failure and whether ``chmod`` + retry fixed it, or the
-    retry error if not.
-    """
-
-    def onexc(func: Callable[..., object], path: str, exc: BaseException) -> None:
-        p = Path(path)
-        try:
-            os.chmod(path, stat.S_IWRITE)
-            func(path)
-        except OSError as exc2:
-            op = getattr(func, "__name__", "<callable>")
-            issues.append(MoveIssue("rmtree", op, p, exc, recovered=False))
-            issues.append(MoveIssue("rmtree", op, p, exc2, recovered=False))
-            raise exc2
-        else:
-            issues.append(
-                MoveIssue(
-                    "rmtree",
-                    getattr(func, "__name__", "<callable>"),
-                    p,
-                    exc,
-                    recovered=True,
-                )
-            )
-
-    return onexc
-
-
-def cstm_shutil_move(
-    src,
-    dst,
-    copy_function=shutil.copy2,
-    onexc=None,
-    issues: list[MoveIssue] | None = None,
-):
-    """Recursively move a file or directory to another location. This is
-    similar to the Unix "mv" command. Return the file or directory's
-    destination.
-
-    If dst is an existing directory or a symlink to a directory, then src is
-    moved inside that directory. The destination path in that directory must
-    not already exist.
-
-    If dst already exists but is not a directory, it may be overwritten
-    depending on os.rename() semantics.
-
-    If the destination is on our current filesystem, then rename() is used.
-    Otherwise, src is copied to the destination and then removed. Symlinks are
-    recreated under the new name if os.rename() fails because of cross
-    filesystem renames.
-
-    The optional `copy_function` argument is a callable that will be used
-    to copy the source or it will be delegated to `copytree`.
-    By default, copy2() is used, but any function that supports the same
-    signature (like copy()) can be used.
-
-    A lot more could be done here...  A look at a mv.c shows a lot of
-    the issues this implementation glosses over.
-
-    """
-    real_dst = dst
-    if os.path.isdir(dst):
-        if shutil._samefile(src, dst) and not os.path.islink(src):  # ty: ignore[unresolved-attribute]
-            # We might be on a case insensitive filesystem,
-            # perform the rename anyway.
-            os.rename(src, dst)
-            return real_dst
-
-        # Using _basename instead of os.path.basename is important, as we must
-        # ignore any trailing slash to avoid the basename returning ''
-        real_dst = os.path.join(dst, shutil._basename(src))  # ty: ignore[unresolved-attribute]
-
-        if os.path.exists(real_dst):
-            raise shutil.Error(f"Destination path {real_dst!r} already exists")
-    try:
-        os.rename(src, real_dst)
-    except OSError:
-        if os.path.islink(src):
-            linkto = os.readlink(src)
-            os.symlink(linkto, real_dst)
-            os.unlink(src)
-        elif os.path.isdir(src):
-            if shutil._destinsrc(src, dst):  # ty: ignore[unresolved-attribute]
-                raise shutil.Error(
-                    f"Cannot move a directory {src!r} into itself {dst!r}."
-                ) from None
-            if shutil._is_immutable(src) or (  # ty: ignore[unresolved-attribute]
-                not os.access(src, os.W_OK)
-                and os.listdir(src)
-                and sys.platform == "darwin"
-            ):
-                raise PermissionError(
-                    "Cannot move the non-empty directory "
-                    f"{src!r}: Lacking write permission to {src!r}."
-                ) from None
-            try:
-                shutil.copytree(
-                    src, real_dst, copy_function=copy_function, symlinks=True
-                )
-            except (OSError, shutil.Error) as e:
-                if issues is not None:
-                    issues.append(
-                        MoveIssue(
-                            "copytree",
-                            "copytree",
-                            Path(src),
-                            e,
-                            recovered=False,
-                        )
-                    )
-                raise
-            shutil.rmtree(src, onexc=onexc)
-        else:
-            copy_function(src, real_dst)
-            os.unlink(src)
-    return real_dst
+            outcome = MoveOutcome(src, dst, "done")
+        if on_move is not None:
+            on_move(outcome)
+    return MoveReport(tuple(done), tuple(failed), tuple(skipped))
