@@ -1,6 +1,7 @@
 # Design idea: jobs as a framework for actions
 
-Status: parked, not a design. Nothing here is decided until it becomes an
+Status: parked, not a design; planned as Phase 4 of the
+[roadmap](ROADMAP.md). Nothing here is decided until it becomes an
 OpenSpec change. It follows the `core-jobs` change and would replace parts
 of it.
 

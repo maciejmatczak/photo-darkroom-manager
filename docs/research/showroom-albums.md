@@ -91,5 +91,6 @@ could seed a draft Immich album.
   or freeze it as a legacy import path?
 - Where it lands: core concepts (`batch.yaml` in the library index, album
   listing as a query, publish prepare asking for an album) on
-  `dev-core-split`, likely after Phase 3 jobs; a GUI-only version on `dev`
-  only if relief is urgent.
+  `dev-core-split`, planned as Phase 5 of the
+  [roadmap](../core-split/ROADMAP.md); a GUI-only version on `dev` only if
+  relief is urgent.

@@ -84,7 +84,7 @@ stay open (decided when an action is prepared).
   it stays valid ("node identity preserved"). The core thus depends on GUI
   object identity. **change**
 - Expansion state inside a rescanned subtree is lost (children rebuilt).
-  Note for Phase 4.
+  Note for Phase 6 (the GUI).
 
 Done in `core-library-index`: `engine.library_refresh(id)` rescans by id,
 falls back to the nearest existing ancestor and returns the id it

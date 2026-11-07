@@ -10,5 +10,5 @@ while the core and CLI are built (see `../ROADMAP.md`, Phases 2 and 4).
   (`manager.DarkroomManager`, `settings.Settings`).
 - To run the original app, check out the commit before it moved here
   (`git log --follow docs/core-split/legacy-gui/gui/gui_app.py`).
-- Phase 4 rebuilds a thin GUI over the engine, using this as the reference
+- Phase 6 rebuilds a thin GUI over the engine, using this as the reference
   for its look and behaviour.

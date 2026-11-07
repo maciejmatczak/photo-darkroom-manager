@@ -121,9 +121,8 @@ its items are.
 - [x] Every action that changes files, and every scan, runs as a job: the
       client sees its progress and result, can cancel it, and never
       freezes while it runs; open, cull and edit run at once
-  - Later: jobs as a framework that file-changing actions are written
-    against, replacing the hooks between engine and actions; parked in
-    [jobs-framework.md](jobs-framework.md)
+  - Next: jobs as a framework that file-changing actions are written
+    against (Phase 4)
 - [x] The client is told which part of the library changed, after its own
       calls and after background work: `library_revision` and
       `library_changes(since)`
@@ -137,16 +136,49 @@ its items are.
       size-checked before the source is removed, and replace never deletes
       the old file first. No rollback, by decision
 
-## Phase 4: Bring the GUI back
+## Phase 4: Jobs as a framework for actions
+
+- [ ] Propose the change in OpenSpec from
+      [jobs-framework.md](jobs-framework.md), settling its open questions
+      (what rename and new batch need from a job; whether scans use the
+      framework too)
+- Actions that change files are written against the job framework: they
+  get a `Job`, report progress, see a cancel and write their own audit
+  lines through it; one-shot actions (open, cull, edit) never see a job
+- `Job` is a standalone object the slot runs and tests create directly; the
+  hooks between engine and actions, `NO_JOB` and `state_of` are gone
+- A job's state follows from the run alone; a failed file move is in the
+  action's result
+
+## Phase 5: Batch metadata and showroom albums
+
+- [ ] Settle the open questions of the near-term proposal in
+      [showroom-albums.md](../research/showroom-albums.md) (album content:
+      device subfolders or flat files; what a missing album folder means;
+      what archiving a subfolder does with the batch file)
+- [ ] Propose the change in OpenSpec
+- Every batch carries a `batch.yaml`, created with the batch, holding its
+  album; a missing or unreadable file reads as no album, never as a scan
+  error, and scan, tidy and stats ignore it
+- The first publish of a batch asks for an album (showroom album folders,
+  newest first, or a new name) and saves it; later publishes reuse it and
+  ask again only when its folder is gone
+- The file's shape leaves room for later data (publish history, lifecycle
+  stage, a stable id) without a migration
+- Later: a rigid showroom layout and albums kept in Immich (approach 4 in
+  the research)
+
+## Phase 6: Bring the GUI back
 
 - [ ] Compare the parked GUI with the core API, using
       [frontend-coupling.md](frontend-coupling.md), and list what the core
       does not offer yet
 - [ ] Propose the GUI change in OpenSpec, built from that list
-- The GUI is a client of core state and jobs and looks as it does today
+- The GUI is a client of core state and jobs and looks as it does today,
+  plus the album choice at first publish from Phase 5
 - It stays in sync with the core through the change notice from Phase 3
 
-## Phase 5: Land it
+## Phase 7: Land it
 
 - [ ] Decide the package split (one package with extras, or several) and
       write down why
@@ -163,12 +195,10 @@ its items are.
 ## Open questions
 
 - Package split: one package with extras, or several?
-- How should the showroom be organized, and where do albums live? Research
-  is parked in [showroom-albums.md](../research/showroom-albums.md)
+- How should the showroom be organized in the long run (approach 4 in
+  [showroom-albums.md](../research/showroom-albums.md))?
 
 ## Next actionable step
 
-Phase 4: compare the parked GUI with the core API, using
-[frontend-coupling.md](frontend-coupling.md), and list what the core does
-not offer yet, including how the GUI follows the job and the library
-revision.
+Phase 4: propose the jobs framework change in OpenSpec from
+[jobs-framework.md](jobs-framework.md), starting with its open questions.
