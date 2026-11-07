@@ -99,20 +99,43 @@ its items are.
 
 ## Phase 3: Jobs and safe file operations
 
-- [ ] Research how DAM tools preview and confirm bulk file operations, and
+- [x] Research how DAM tools preview and confirm bulk file operations, and
       write down the approach we pick
-- [ ] Propose the jobs change in OpenSpec, deciding whether jobs survive an
-      app restart and how the client is told what changed
-- Every action runs as a job: the client sees its progress, result and
-  report, and never freezes while it runs
-- The client is told which part of the library changed, after its own
-  calls and after background work, and re-renders only that part; the
-  shape and delivery of that notice are designed here
+  - Lightroom and Capture One confirm a bulk move with one summary and
+    cannot undo it; digiKam and Windows check conflicts first and offer
+    replace, skip or keep both; darktable and Photo Mechanic run the work
+    in the background, cancellable; OffShoot verifies copies and keeps a
+    report; rclone offers a dry run. The common horror story is a move
+    that fails halfway with no record of what happened.
+  - Picked: a summary of intent, not a list of every file; conflicts
+    checked in the plan; never destroy anything (no undo, no rollback, no
+    backups); partial runs allowed by choice; a complete audit log
+- [x] Propose the jobs change in OpenSpec, deciding whether jobs survive an
+      app restart and how the client is told what changed (`core-jobs`)
+  - Jobs do not survive a restart; the job log is the record, not a
+    journal to resume from
+  - One job at a time in a slot on the engine: no job table, no history
+  - A worker thread with a plain synchronous API, not asyncio
+  - The client polls the job and asks for the library changes since a
+    revision it read
+- [x] Every action that changes files, and every scan, runs as a job: the
+      client sees its progress and result, can cancel it, and never
+      freezes while it runs; open, cull and edit run at once
+  - Later: jobs as a framework that file-changing actions are written
+    against, replacing the hooks between engine and actions; parked in
+    [jobs-framework.md](jobs-framework.md)
+- [x] The client is told which part of the library changed, after its own
+      calls and after background work: `library_revision` and
+      `library_changes(since)`
   - Later: several processes (GUI, an agent's CLI) over one database
     index, where the engine also notices changes made by others
-- "Plan, then apply" is settled, after researching how DAM tools preview
-  and confirm bulk file operations
-- A failed job reports exactly what was done; rollback where feasible
+- [x] "Plan, then apply" is settled: plans list conflicts, and applying
+      takes a conflict policy (refuse by default, skip, or replace for
+      publish)
+- [x] A failed or cancelled job reports exactly what was done, and its log
+      under `logs/jobs/` records every step; moves to another drive are
+      size-checked before the source is removed, and replace never deletes
+      the old file first. No rollback, by decision
 
 ## Phase 4: Bring the GUI back
 
@@ -139,12 +162,13 @@ its items are.
 
 ## Open questions
 
-- Do jobs survive an app restart?
 - Package split: one package with extras, or several?
 - How should the showroom be organized, and where do albums live? Research
   is parked in [showroom-albums.md](../research/showroom-albums.md)
 
 ## Next actionable step
 
-Phase 3: research how DAM tools preview and confirm bulk file operations,
-starting from the plans, fingerprints and outcomes the CLI now uses.
+Phase 4: compare the parked GUI with the core API, using
+[frontend-coupling.md](frontend-coupling.md), and list what the core does
+not offer yet, including how the GUI follows the job and the library
+revision.
