@@ -165,7 +165,14 @@ the progress hook and the cancel check:
   `os.replace` for replace) and only then unlink the source. Any failure
   removes the temporary file and leaves the source; the step is reported
   failed with the reason.
-- `cstm_shutil_move` is no longer used for files; folder renames keep
+- Network shares (SMB, NFS): the data is copied with `copyfile` and the
+  timestamps set afterwards as best effort, so a share that refuses
+  `utime` (CIFS mounts owned by another user) logs a warning instead of
+  failing a step whose data copied fine. The rename into place is retried
+  a few times with a short pause, because an antivirus scan or a NAS
+  indexer can hold the new file open for a moment on Windows.
+- `cstm_shutil_move` and its directory branch (`copytree`, read-only
+  `rmtree`) lose their only caller and are removed; folder renames keep
   `os.rename`.
 
 Alternatives considered:
@@ -255,6 +262,12 @@ stay on the project's structured logging.
   Publishing over existing files now needs `--on-conflict replace`.
 - [Temporary `.darkroom-partial` files after a crash] → Named clearly,
   never counted as media; the next move of the same file replaces it.
+- [NFSv3 rename reply lost, retry reports "not found"] → The step is
+  reported failed although the file moved; the source is kept, so the
+  worst case is a duplicate, never a loss.
+- [Faked second drive in tests] → The cross-drive path is the main path
+  for a NAS archive or showroom; the end-to-end check also runs against a
+  real second drive or network share.
 
 ## Migration Plan
 

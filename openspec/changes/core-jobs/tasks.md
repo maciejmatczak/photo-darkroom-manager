@@ -10,7 +10,10 @@
 - [ ] 1.2 Move across drives through a `.<name>.darkroom-partial` copy whose
       size is checked before it is put in place and the source removed;
       verify with tests that simulate a short copy and a failing copy
-      (source kept, no partial file left, step failed with reason)
+      (source kept, no partial file left, step failed with reason); copy
+      data with `copyfile`, set timestamps as best effort (a refused
+      `utime` logs a warning, the step succeeds), and retry the final
+      rename briefly on a sharing violation; verify both with tests
 - [ ] 1.3 Replace with `os.replace` (same drive) or partial copy plus
       `os.replace` (across drives), never deleting the old target first;
       verify with a test where the replacing copy fails and the old target
@@ -18,6 +21,9 @@
 - [ ] 1.4 Never overwrite a target without the replace policy: a target
       that exists at move time is reported as a conflict; verify with a
       test that creates the target between planning and moving
+- [ ] 1.5 Remove `cstm_shutil_move` and its directory-only helpers once
+      `move_files` no longer calls it; verify nothing else imports them
+      and `pytest tests/core` passes
 
 ## 2. Conflicts in plans and the conflict policy
 
@@ -131,7 +137,8 @@
 - [ ] 8.1 Run a scripted end-to-end session with the real `darkroom`
       executable against fresh roots: archive with a conflict (refused,
       then `--on-conflict skip`), republish with `replace` and `skip`, and
-      check the job logs; verify every step behaves as the specs say
+      check the job logs, with the archive on a real second drive or
+      network share; verify every step behaves as the specs say
 - [ ] 8.2 Verify `pytest`, `ruff`, `ty`, `lint-imports` and
       `pre-commit run --all-files` pass and `openspec validate core-jobs
       --strict` is clean
