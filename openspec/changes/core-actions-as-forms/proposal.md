@@ -48,14 +48,28 @@ is truly shared from what belongs to one action, on top of the job work of
 - `engine/planned-actions`: preparing a planned action into a plan with a
   preview, questions and a fingerprint; executing a plan with the user's
   answers as a job; refusing stale plans and invalid answers
-- `app/action-external-app`: cull and edit open a folder in the
-  configured app, and when that is refused or fails
+- `engine/actions`: what every action on a node shares (addressing a node
+  by id, the kind guard, creating a missing node, outcomes, the node
+  afterwards) and direct actions running at once; replaces
+  `engine/action-requests`
+- `app/action-open-ext-app`: cull and edit open a folder in an external
+  app, and when that is refused or fails
+- `app/action-open-folder`: opening a node's folder; replaces
+  `app/action-open`, renamed next to `app/action-open-ext-app`
+- `app/action-new-batch`: creating a new batch, under the action's name;
+  replaces `app/action-create-batch`, with its refusals stated once
+
+### Retired Capabilities
+
+- `engine/action-requests`: requests are no longer a concept; its shared
+  rules move to `engine/actions`, its plan rules to
+  `engine/planned-actions`, and its steps, conflicts and policies are
+  dropped
+- `app/action-create-batch`: renamed to `app/action-new-batch`
+- `app/action-open`: renamed to `app/action-open-folder`
 
 ### Modified Capabilities
 
-- `engine/action-requests`: open, cull and edit run directly; preparing,
-  confirming and applying move to `engine/planned-actions`; plans and
-  results no longer carry steps, conflicts or a conflict policy
 - `engine/jobs`: rename and new batch run as jobs; what runs as a job is
   every planned action plus scans and refreshes
 - `engine/engine-status`: the busy rule is only "a job is running"; rename
@@ -69,7 +83,6 @@ is truly shared from what belongs to one action, on top of the job work of
   emptied folders are removed
 - `app/action-publish`: the replace rule lives in one requirement; a
   missing, nested or empty `PUBLISH/` is covered
-- `app/action-create-batch`: refusals are stated once, as refusals
 - `app/node-actions`: whether an action can run is decided when it is
   requested, since direct actions are never prepared
 

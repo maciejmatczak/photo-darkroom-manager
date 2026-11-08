@@ -17,3 +17,8 @@
 - [ ] archiving a whole batch leaves its now-empty `DEVICE/YEAR/` folders in the
   darkroom; decide whether archive should prune them or the tree should hide
   empty organizational rows
+- [ ] specs: clean up the specs according to the design rules and the
+  logical separation in `openspec/AGENTS.md` (app/ is what, engine/ is how)
+    - e.g. split `app/file-moves`: what the user can rely on stays in
+      app/; how it is kept (verified copy across drives, partial file
+      removed, replace order) moves to `engine/file-moves`

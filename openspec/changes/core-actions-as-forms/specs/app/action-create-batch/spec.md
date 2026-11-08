@@ -1,34 +1,21 @@
 # Spec Delta
 
-## MODIFIED Requirements
+## REMOVED Requirements
+
+### Requirement: Create batch for a device
+**Reason**: The capability is renamed to `app/action-new-batch`, after
+the action's name.
+**Migration**: See `app/action-new-batch`, "Create batch for a device".
 
 ### Requirement: Validate before writing
-Device and batch names SHALL be validated against the library naming
-rules before any folder is created. Creating SHALL be refused, with no
-folder created, when a name is invalid, when the device path resolves
-outside the darkroom, when the batch already exists, or when a file
-stands where a folder on its path must go. These checks SHALL hold at the
-preview and again when the creation runs.
-
-#### Scenario: Invalid device
-- **WHEN** the device name is not a valid device name
-- **THEN** creating SHALL be refused and no folder SHALL be created
-
-#### Scenario: Symlink escape
-- **WHEN** a device folder is a symlink resolving outside darkroom
-- **THEN** creating SHALL be refused without writes
-
-#### Scenario: Batch already exists
-- **WHEN** the target batch folder exists
-- **THEN** creating SHALL be refused and existing data SHALL be unchanged
-
-#### Scenario: File in the way
-- **WHEN** a file named like the year folder exists in the device folder
-- **THEN** creating SHALL be refused, naming that file
-
-## REMOVED Requirements
+**Reason**: The capability is renamed to `app/action-new-batch`.
+**Migration**: See `app/action-new-batch`, "Validate before writing".
 
 ### Requirement: Creation conflicts
 **Reason**: It repeated "Validate before writing" and "Preview before
 creating", and called a refusal a failure.
-**Migration**: See "Validate before writing".
+**Migration**: See `app/action-new-batch`, "Validate before writing".
+
+### Requirement: Preview before creating
+**Reason**: The capability is renamed to `app/action-new-batch`.
+**Migration**: See `app/action-new-batch`, "Preview before creating".

@@ -3,8 +3,8 @@
 ## ADDED Requirements
 
 ### Requirement: Emptied folders are removed
-After archiving, folders left empty in the darkroom SHALL be removed, the
-archived folder included. A folder that still holds files SHALL be kept,
+After archiving, the archived folder and the folders inside it that were
+left empty SHALL be removed. A folder that still holds files SHALL be kept,
 and one that cannot be removed, for example because it is open
 elsewhere, SHALL be kept and reported.
 
