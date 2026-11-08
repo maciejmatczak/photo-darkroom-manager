@@ -57,13 +57,28 @@ the action.
 
 ### Requirement: Direct actions run at once
 Open, cull and edit SHALL be direct actions: a client SHALL ask for one
-on a node and get its result when the call returns, with no plan, no
-confirmation and no job. Direct actions SHALL also run while a job runs.
+on a node, with no plan, no confirmation and no job, and SHALL get that
+action's own result when the call returns: `ok` once the folder or app
+has been opened, `failed` when the app could not start or exited at once
+with an error. A request the action cannot attempt SHALL be refused with
+a typed error, and nothing SHALL be started. Direct actions SHALL also
+run while a job runs.
 
 #### Scenario: Open a folder
 - **WHEN** a client opens a batch's folder
 - **THEN** the folder SHALL open and the call SHALL return an `ok` result
+  naming the folder
 - **AND** no job SHALL be started
+
+#### Scenario: App cannot start
+- **WHEN** the configured cull command names a program that does not
+  exist
+- **THEN** the call SHALL return a `failed` result naming the command
+
+#### Scenario: No first image
+- **WHEN** the cull command uses `{first_image_in_folder}` and the folder
+  has no image directly in it
+- **THEN** the call SHALL be refused and nothing SHALL be started
 
 ### Requirement: External app commands come from configuration
 Cull and edit SHALL run the command configured for them; a client SHALL
@@ -76,17 +91,17 @@ launched.
   batch
 - **THEN** the action SHALL be refused, naming `cull_command`
 
-### Requirement: Result outcomes
-Every result SHALL carry exactly one outcome: `ok` when it did what was
-asked, `noop` when there was nothing to do, `refused` when it could not
-run as asked and changed no files, `cancelled` when it was stopped by a
-client before it finished, and `failed` when something went wrong while
-running.
+### Requirement: Refusals and outcomes
+An action that cannot run as asked SHALL be refused with a typed error
+carrying a message, before any file changes and before any job starts.
+A result SHALL carry exactly one outcome: `ok` when it did what was
+asked, `cancelled` when it was stopped by a client before it finished,
+and `failed` when something went wrong while running.
 
 #### Scenario: Republish without a choice
 - **WHEN** a republish would replace files in the showroom and the
   client gives no answer about them
-- **THEN** the result SHALL carry a `refused` outcome
+- **THEN** the request SHALL be refused with a typed error
 - **AND** no file SHALL be published
 
 #### Scenario: Cancelled archive
@@ -98,8 +113,9 @@ running.
 - **THEN** the job SHALL end `failed` with the error
 
 ### Requirement: Results name the node after the action
-A result SHALL carry the id of the acted-on node as it is after the
-action, or none when the action removed it from the darkroom.
+The engine's result of an executed plan SHALL carry the action's own
+result unchanged, together with the id of the acted-on node as it is
+after the action, or none when the action removed it from the darkroom.
 
 #### Scenario: Rename
 - **WHEN** a client renames `Camera/2026/2026-10 Walk` to

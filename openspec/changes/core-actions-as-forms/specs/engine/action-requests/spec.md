@@ -20,8 +20,8 @@
 configuration".
 
 ### Requirement: Preparing yields a plan or an outcome
-**Reason**: Plans no longer list their steps as data; they carry a
-plain-text preview and the action's own questions.
+**Reason**: Plans no longer list their steps as data; each action has
+its own kind of plan, with its own questions.
 **Migration**: See `engine/planned-actions`, "Preparing yields a plan or
 an outcome".
 

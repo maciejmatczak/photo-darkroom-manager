@@ -12,19 +12,29 @@ is truly shared from what belongs to one action, on top of the job work of
 
 ## What Changes
 
-- Open, cull and edit become direct engine functions on a node: they run
-  at once and return their result, with no plan, confirmation or job
+- `core/actions` becomes a collection of unique actions on a shared
+  foundation: result, plan and question types, a refusal error and
+  helpers (fingerprint, answer check, stale-plan check); there is no
+  common interface to execute actions
+- Open, cull and edit are direct actions: they run at once with no plan,
+  confirmation or job, and return their own result (`ok`, or `failed`
+  when the app could not start)
 - Rename, new batch, tidy, archive and publish are planned actions that
-  work like a web form:
-  - prepare: one explicit engine call per action with its own inputs
-    (`action_prepare_rename(node_id, date=..., title=...)`), returning a
-    plan
-  - the plan carries which action and node, the inputs, a plain-text
-    preview, the action's own questions for the user and a fingerprint
-  - execute: one engine call, `action_execute(plan, answers)`; the engine
-    prepares again and refuses a plan whose fingerprint changed
-  - the action checks the answers itself; the shared part carries
-    questions and answers without looking inside
+  work like a web form, one form per URL:
+  - prepare: one engine call per action with its own inputs
+    (`action_prepare_rename(node_id, date=..., title=...)`), returning
+    that action's own plan type
+  - the plan describes what will happen in the action's own terms (no
+    shared preview text), plus the action's questions and a fingerprint
+  - execute: that action's own engine call (`action_rename(plan,
+    answers)`); the engine prepares again, refuses a plan whose
+    fingerprint changed and checks the answers against the questions
+  - each action returns its own result type
+- Refusals are typed errors, raised by preparing or by the checks before
+  a job starts; a plan with nothing to do is still a plan that says so;
+  results end only `ok`, `failed` or `cancelled`
+- The engine decides what to rescan and where the node is afterwards, in
+  each execute call; actions never name nodes or rescans
 - Every planned action runs as a job, rename and new batch included, so
   they get a job log too
 - The engine is busy exactly while a job runs: the one-job rule is the
@@ -32,11 +42,12 @@ is truly shared from what belongs to one action, on top of the job work of
 - **BREAKING**: steps (`Move`, `MakeDir`, `Rename`, `OpenFolder`,
   `Launch`), conflicts and conflict policies are no longer part of the
   shared plan or result; an action that uses them keeps them private
-- **BREAKING**: a plan's JSON shows the preview text and questions instead
-  of a list of steps and conflicts; results drop the per-step lists
+- **BREAKING**: a plan's and a result's JSON show that action's own fields
+  instead of a list of steps and conflicts
 - **BREAKING**: `action_apply`, `action_start` and the `action_<name>`
-  factories are replaced by the `action_prepare_<name>` calls,
-  `action_execute` and the direct functions
+  factories are replaced by an `action_prepare_<name>` and an
+  `action_<name>` call per planned action and an `action_<name>` call per
+  direct action
 - The CLI's commands, flags and exit codes stay as they are; each command
   maps its flags (e.g. `--on-conflict replace`) to its action's answers
 - The actions module becomes a package with a README of its design rules
@@ -45,8 +56,8 @@ is truly shared from what belongs to one action, on top of the job work of
 
 ### New Capabilities
 
-- `engine/planned-actions`: preparing a planned action into a plan with a
-  preview, questions and a fingerprint; executing a plan with the user's
+- `engine/planned-actions`: preparing a planned action into its own kind
+  of plan with questions and a fingerprint; executing a plan with the user's
   answers as a job; refusing stale plans and invalid answers
 - `engine/actions`: what every action on a node shares (addressing a node
   by id, the kind guard, creating a missing node, outcomes, the node
@@ -71,11 +82,13 @@ is truly shared from what belongs to one action, on top of the job work of
 ### Modified Capabilities
 
 - `engine/jobs`: rename and new batch run as jobs; what runs as a job is
-  every planned action plus scans and refreshes
+  every planned action plus scans and refreshes; a refused request starts
+  no job
 - `engine/engine-status`: the busy rule is only "a job is running"; rename
   and new batch are refused as busy because they start a job
-- `app/command-line`: a planned action's preview prints its preview text
-  and questions instead of its steps and conflicts
+- `app/command-line`: a planned action's preview prints what that action
+  will do, in its own terms, and its questions, instead of its steps and
+  conflicts
 - `app/file-moves`: reporting moved, failed, skipped and undone files
   moves here from the generic result; replacing depends on the user's
   answer, not a policy
@@ -88,11 +101,11 @@ is truly shared from what belongs to one action, on top of the job work of
 
 ## Impact
 
-- Code: `core/actions/` (package, README, generic plan, per-action
-  questions and answers), `core/jobs.py` (hold removed), `core/engine.py`
-  (direct functions, `action_prepare_<name>`, `action_execute`, one busy
-  rule), `cli/_app.py` and `cli/_render.py` (flags to answers, preview
-  text)
+- Code: `core/actions/` (package, README, shared foundation, per-action
+  plan and result types), `core/jobs.py` (hold removed), `core/engine.py`
+  (`action_prepare_<name>` and `action_<name>` calls, the rescan rules,
+  one busy rule), `cli/_app.py` and `cli/_render.py` (flags to answers, a
+  renderer per plan and result type)
 - Tests: action, engine and CLI tests move to the new calls and shapes
 - Docs: `DEV.md` (jobs and JSON sections), `docs/core-split/ROADMAP.md`
   (Phase 4)
