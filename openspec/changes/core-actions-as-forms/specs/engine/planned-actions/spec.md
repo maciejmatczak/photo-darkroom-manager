@@ -1,0 +1,143 @@
+# Spec Delta
+
+## Purpose
+
+Defines how a client prepares a planned action into a plan, shows it,
+answers its questions and executes it, so every client follows the same
+form-like flow and every planned action runs the same way.
+
+## ADDED Requirements
+
+### Requirement: Planned actions
+Rename, new batch, tidy, archive and publish SHALL be planned actions: a
+client SHALL first prepare one, with the action's own inputs, and then
+execute the plan it got. Preparing SHALL change nothing.
+
+#### Scenario: Prepare a rename
+- **WHEN** a client prepares renaming `Camera/2026/2026-10 Walk` with the
+  title `Hike`
+- **THEN** the client SHALL get a plan
+- **AND** no folder SHALL be renamed
+
+### Requirement: Preparing yields a plan or an outcome
+Preparing SHALL return either a plan or a non-`ok` outcome with a
+message. A plan SHALL carry the action, the node, the inputs it was
+prepared with, a plain-text preview of what will happen, the action's
+questions for the user and a fingerprint. A plan SHALL NOT expose the
+individual operations the action will perform.
+
+#### Scenario: Rename preview
+- **WHEN** a client prepares renaming `2026-10 Walk` to `2026-10-05 Walk`
+- **THEN** the plan's preview SHALL name the old and the new folder name
+
+#### Scenario: Nothing to tidy
+- **WHEN** a client prepares tidy of a batch with no misplaced files
+- **THEN** preparing SHALL return a `noop` outcome
+
+### Requirement: Plans ask the action's own questions
+A plan SHALL list what the user must decide before it runs, as questions
+the action defines, each with its choices and, where the action has one,
+a default. A plan without questions SHALL need only a confirmation. What
+a question means SHALL be known only to its action and the client that
+shows it.
+
+#### Scenario: Republish asks about existing files
+- **WHEN** a client prepares publishing a batch whose 3 of 10 files
+  already exist in the showroom
+- **THEN** the plan SHALL ask whether to replace or skip those files
+
+#### Scenario: Archive with nothing in the way
+- **WHEN** a client prepares archive of a batch none of whose files exist
+  in the archive
+- **THEN** the plan SHALL ask no questions
+
+### Requirement: Plans carry a fingerprint
+Each plan SHALL carry a short fingerprint derived from the action, the
+node, the inputs, what the action plans to do and its questions.
+Preparing the same action against the same disk and configuration SHALL
+give the same fingerprint, in any process; any change in what the action
+plans or asks SHALL give a different one. The engine SHALL NOT store
+plans or fingerprints.
+
+#### Scenario: Same preparation twice
+- **WHEN** a client prepares archive of a batch twice with no change on
+  disk
+- **THEN** both plans SHALL carry the same fingerprint
+
+#### Scenario: File added in between
+- **WHEN** a file is added to the batch between two preparations
+- **THEN** the two fingerprints SHALL differ
+
+### Requirement: Executing a plan
+A client SHALL execute a plan by handing it back with its answers. The
+engine SHALL prepare the action again from the plan's action, node and
+inputs, and execute it only when the new plan has the same fingerprint.
+Otherwise it SHALL refuse, reporting the plan's and the current
+fingerprint, and no file SHALL change.
+
+#### Scenario: Plan changed since the preview
+- **WHEN** a client was shown an archive plan, a file was then added to
+  the batch, and the client executes that plan
+- **THEN** the request SHALL be refused, reporting both fingerprints
+- **AND** no file SHALL be moved
+
+#### Scenario: Plan unchanged
+- **WHEN** nothing changed since the preview and the client executes the
+  plan
+- **THEN** the action SHALL be executed
+
+### Requirement: The action checks its answers
+An answer SHALL be one of its question's choices; a question left
+unanswered SHALL take its default. A missing answer to a question without
+a default, an unknown question or a choice the question does not offer
+SHALL refuse the execution with a message naming the question, and no
+file SHALL change.
+
+#### Scenario: Republish without a choice
+- **WHEN** a client executes a republish plan that asks about existing
+  files and gives no answer
+- **THEN** the execution SHALL be refused, naming that question
+- **AND** no file SHALL be published
+
+#### Scenario: Republish with replace
+- **WHEN** the client answers that question with replace
+- **THEN** the new files SHALL be put in place of the old ones
+
+### Requirement: Answers cover what the run finds
+When the action finds, while running, a situation one of its questions
+covered, it SHALL follow the user's answer to that question.
+
+#### Scenario: Late file in the archive with skip
+- **WHEN** a file appears in the archive at a planned target after the
+  preview and the archive runs with the answer to skip existing files
+- **THEN** that file SHALL be skipped and reported
+- **AND** the other planned files SHALL be archived
+
+### Requirement: A planned action runs as a job
+Executing a plan SHALL start a job and return at once; the job's result
+SHALL be the action's result. The job SHALL report progress where the
+action can count its work, and SHALL write the job's log.
+
+#### Scenario: Rename is a job
+- **WHEN** a client executes a rename plan
+- **THEN** the engine's job SHALL be that rename until it finishes
+- **AND** its result SHALL carry the renamed node
+
+### Requirement: Execution follows the plan
+Executing a plan SHALL do only what its plan described. It SHALL NOT
+move, create or rename anything the plan did not cover.
+
+#### Scenario: Late file in a tidy folder
+- **WHEN** a misplaced file appears in a batch after its tidy plan was
+  prepared and the plan is executed
+- **THEN** the new file SHALL stay where it is
+
+### Requirement: Results report what the action did
+An execution result SHALL carry its outcome, a message and the action's
+own report of what it did. What that report holds SHALL be up to each
+action.
+
+#### Scenario: Rename result
+- **WHEN** a rename plan has been executed
+- **THEN** its result SHALL carry an `ok` outcome and say the new folder
+  name

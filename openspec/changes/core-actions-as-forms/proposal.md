@@ -48,6 +48,8 @@ is truly shared from what belongs to one action, on top of the job work of
 - `engine/planned-actions`: preparing a planned action into a plan with a
   preview, questions and a fingerprint; executing a plan with the user's
   answers as a job; refusing stale plans and invalid answers
+- `app/action-external-app`: cull and edit open a folder in the
+  configured app, and when that is refused or fails
 
 ### Modified Capabilities
 
@@ -58,8 +60,18 @@ is truly shared from what belongs to one action, on top of the job work of
   every planned action plus scans and refreshes
 - `engine/engine-status`: the busy rule is only "a job is running"; rename
   and new batch are refused as busy because they start a job
-- `app/command-line`: the JSON of a plan and of a result changes shape;
-  rename and new batch show progress and write a job log like other jobs
+- `app/command-line`: a planned action's preview prints its preview text
+  and questions instead of its steps and conflicts
+- `app/file-moves`: reporting moved, failed, skipped and undone files
+  moves here from the generic result; replacing depends on the user's
+  answer, not a policy
+- `app/action-archive`: the overwrite rule lives in one requirement;
+  emptied folders are removed
+- `app/action-publish`: the replace rule lives in one requirement; a
+  missing, nested or empty `PUBLISH/` is covered
+- `app/action-create-batch`: refusals are stated once, as refusals
+- `app/node-actions`: whether an action can run is decided when it is
+  requested, since direct actions are never prepared
 
 ## Impact
 
