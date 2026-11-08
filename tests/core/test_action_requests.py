@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from conftest import MakeEngine, Roots
 
-from photo_darkroom_manager.core import actions as actions_module
 from photo_darkroom_manager.core.actions import (
     ActionPlan,
     ActionResult,
@@ -15,6 +14,7 @@ from photo_darkroom_manager.core.actions import (
     Rename,
     TidyAction,
 )
+from photo_darkroom_manager.core.actions import _actions as actions_module
 from photo_darkroom_manager.core.engine import (
     ActionNotAllowedError,
     Engine,
@@ -276,7 +276,7 @@ def test_apply_on_a_busy_engine(
         assert started.wait(5)
         with pytest.raises(EngineBusyError) as exc:
             engine.action_apply(engine.action_tidy(BATCH))
-        assert exc.value.job.name == "tidy"
+        assert exc.value.label == f"tidy {BATCH}"
     finally:
         release.set()
         worker.join(5)
@@ -308,10 +308,11 @@ def test_unexpected_error(
         raise RuntimeError("disk on fire")
 
     monkeypatch.setattr(actions_module, "move_files", boom)
-    result = engine.action_apply(engine.action_archive(BATCH))
-    assert result.outcome == "failed"
-    assert result.details is not None
-    assert "disk on fire" in result.details
+    with pytest.raises(RuntimeError, match="disk on fire"):
+        engine.action_apply(engine.action_archive(BATCH))
+    job = engine.job
+    assert job is not None and job.state == "failed"
+    assert job.error == "RuntimeError: disk on fire"
 
 
 # ---------------------------------------------------------------------------

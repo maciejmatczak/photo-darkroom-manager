@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from conftest import execute
+
 from photo_darkroom_manager.core.actions import (
     ActionPlan,
     ActionResult,
@@ -108,7 +110,7 @@ def _republish(photo_setup) -> tuple[Path, Path]:
 def test_republish_with_replace(photo_setup) -> None:
     batch, showroom = _republish(photo_setup)
     act = _publish(photo_setup, batch)
-    result = act.execute(_plan(act), policy="replace")
+    result = execute(act, _plan(act), policy="replace")
     assert result.outcome == "ok"
     assert (showroom / "a.jpg").read_bytes() == b"new a"
     assert (showroom / "b.jpg").read_bytes() == b"new b"
@@ -120,7 +122,7 @@ def test_republish_with_replace(photo_setup) -> None:
 def test_republish_with_skip(photo_setup) -> None:
     batch, showroom = _republish(photo_setup)
     act = _publish(photo_setup, batch)
-    result = act.execute(_plan(act), policy="skip")
+    result = execute(act, _plan(act), policy="skip")
     assert result.outcome == "ok"
     assert (showroom / "a.jpg").read_bytes() == b"old a"
     assert (showroom / "b.jpg").read_bytes() == b"new b"
@@ -131,7 +133,7 @@ def test_republish_with_skip(photo_setup) -> None:
 def test_republish_without_a_choice_is_refused(photo_setup) -> None:
     batch, showroom = _republish(photo_setup)
     act = _publish(photo_setup, batch)
-    result = act.execute(_plan(act))
+    result = execute(act, _plan(act))
     assert result.outcome == "refused"
     assert [c.move.source.name for c in result.conflicts] == ["a.jpg"]
     assert "a.jpg" in (result.details or "")
@@ -177,7 +179,7 @@ def test_publish_execute_moves_files_to_showroom(photo_setup) -> None:
     names = _file_names_in_publish(publish_dir)
     act = _publish(photo_setup, batch)
     plan = _plan(act)
-    result = act.execute(plan)
+    result = execute(act, plan)
     assert result.outcome == "ok"
     assert result.done == plan.steps
     assert f"{len(names)} file" in result.message
@@ -193,7 +195,7 @@ def test_publish_execute_replaces_existing_file(photo_setup) -> None:
     publish_dir = batch / PUBLISH_FOLDER
     (publish_dir / "same_name_0001.jpg").write_bytes(b"new")
     act = _publish(photo_setup, batch)
-    result = act.execute(_plan(act), policy="replace")
+    result = execute(act, _plan(act), policy="replace")
     assert result.outcome == "ok"
 
     dest = (

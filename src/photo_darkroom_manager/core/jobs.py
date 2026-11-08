@@ -2,19 +2,24 @@
 
 A :class:`JobSlot` holds the current or last job and runs its work on a new
 thread. Clients read the job as frozen :class:`JobView` snapshots, wait for
-it or cancel it. The work gets a :class:`JobContext` to report progress, see
-a cancel request and write to the job's own log file; it stops between
-steps on its own.
+it or cancel it. The work gets a :class:`Job` to report progress, see a
+cancel request and write to the job's own log file; it decides itself
+where it can stop.
 
 Lifecycle of a job:
 
-1. ``start`` (caller's thread): refuse while a job is active, create the
-   job's id and log file, store it as ``new``, start the worker thread.
-2. Run (worker thread): open the job's logger, write ``job_started``, set
-   ``running`` and call the work with a context.
-3. Finish (worker thread): map the result, or an exception, to ``done``,
-   ``failed`` or ``cancelled``, write ``job_finished``, close the logger and
-   store the final snapshot.
+1. ``start`` (caller's thread): refuse while the slot is busy, create the
+   :class:`Job` and its log file, store it as ``new``, start the worker
+   thread.
+2. Run (worker thread): write ``job_started``, set ``running`` and call the
+   work with the job.
+3. Finish (worker thread): a return ends the job ``done``,
+   :class:`JobCancelled` ends it ``cancelled`` and any other exception
+   ``failed``; write ``job_finished``, close the log and store the final
+   snapshot.
+
+The slot can also be held (:meth:`JobSlot.hold`) by a short call that must
+run alone without becoming a job.
 
 The module depends only on the standard library and structlog.
 """
@@ -28,7 +33,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -37,10 +42,9 @@ import structlog
 from structlog.stdlib import BoundLogger, ProcessorFormatter
 
 __all__ = [
-    "NO_JOB",
+    "Job",
     "JobBusyError",
     "JobCancelled",
-    "JobContext",
     "JobSlot",
     "JobState",
     "JobView",
@@ -114,19 +118,29 @@ class JobView:
 
 
 class JobBusyError(RuntimeError):
-    """A job was started while another one is new, running or cancelling.
+    """Work was refused while a job is active or the slot is held.
 
     Args:
-        job: Snapshot of the job that is running.
+        label: What is running: the job's name and description, or those of
+            the call holding the slot.
     """
 
-    def __init__(self, job: JobView) -> None:
-        super().__init__(f"a job is running: {job}")
-        self.job = job
+    def __init__(self, label: str) -> None:
+        super().__init__(f"busy: {label} is running")
+        self.label = label
 
 
 class JobCancelled(Exception):
-    """Raised by work that stops on a cancel request with nothing to return."""
+    """Raised by work that stops for a cancel request.
+
+    Args:
+        result: What the work did before it stopped, kept as the job's
+            result; ``None`` when it has nothing to report.
+    """
+
+    def __init__(self, result: object = None) -> None:
+        super().__init__("cancelled")
+        self.result = result
 
 
 def _wrap(logger: logging.Logger) -> BoundLogger:
@@ -143,15 +157,46 @@ def _wrap(logger: logging.Logger) -> BoundLogger:
     )
 
 
-_module_log = _wrap(logging.getLogger(_LOGGER_NAME))
+def _label(name: str, description: str) -> str:
+    return f"{name} {description}".strip()
 
 
-class JobContext:
-    """What running work sees of its job; this base does nothing.
+class Job:
+    """One piece of work: its progress, its cancel flag and its log.
 
-    Work that runs outside a job (tests, inline calls) gets :data:`NO_JOB`,
-    whose log is this module's logger.
+    The slot creates a job for each run; tests create one directly. Every
+    method may be called from any thread.
+
+    Args:
+        name: Short name, e.g. ``archive``.
+        description: Free-form text, e.g. what the job works on.
+        log_path: File the job's log writes to, besides this module's
+            logger; ``None`` writes only to this module's logger.
     """
+
+    def __init__(
+        self, name: str, description: str = "", *, log_path: Path | None = None
+    ) -> None:
+        self.id = uuid.uuid4().hex[:12]
+        self.name = name
+        self.description = description
+        self.log_path = log_path
+        self._progress = Progress()
+        self._cancel = threading.Event()
+        logger = logging.Logger(f"{_LOGGER_NAME}.{self.id}", logging.INFO)
+        logger.parent = logging.getLogger(_LOGGER_NAME)
+        self._handler: logging.Handler | None = None
+        if log_path is not None:
+            self._handler = logging.FileHandler(log_path, encoding="utf-8")
+            self._handler.setFormatter(
+                ProcessorFormatter(processor=structlog.processors.KeyValueRenderer())
+            )
+            logger.addHandler(self._handler)
+        self._logger = logger
+        self._log = _wrap(logger).bind(job_id=self.id)
+
+    def __str__(self) -> str:
+        return _label(self.name, self.description)
 
     def progress(
         self, done: int, total: int | None = None, current: str | None = None
@@ -163,46 +208,45 @@ class JobContext:
             total: All units, or ``None`` when unknown.
             current: The item being worked on, if any.
         """
+        self._progress = Progress(done, total, current)
+
+    @property
+    def last_progress(self) -> Progress:
+        """The progress reported last; nothing done before the first report."""
+        return self._progress
 
     @property
     def cancelled(self) -> bool:
-        """True once a client asked the job to stop."""
-        return False
+        """True once the job was asked to stop."""
+        return self._cancel.is_set()
+
+    def cancel(self) -> None:
+        """Ask the work to stop at its next safe point."""
+        self._cancel.set()
 
     @property
     def log(self) -> BoundLogger:
-        """Logger writing to the job's log file (and on to the app's logs)."""
-        return _module_log
+        """Logger writing to the job's log file and on to the app's logs."""
+        return self._log
 
-
-NO_JOB = JobContext()
+    def close(self) -> None:
+        """Close the job's log file; later lines go only to the app's logs."""
+        if self._handler is not None:
+            self._logger.removeHandler(self._handler)
+            self._handler.close()
+            self._handler = None
 
 
 @dataclass
 class _Record:
     view: JobView
-    cancel: threading.Event = field(default_factory=threading.Event)
+    job: Job
     exception: Exception | None = None
 
-
-class _SlotContext(JobContext):
-    def __init__(self, slot: JobSlot, record: _Record, log: BoundLogger) -> None:
-        self._slot = slot
-        self._record = record
-        self._log = log
-
-    def progress(
-        self, done: int, total: int | None = None, current: str | None = None
-    ) -> None:
-        self._slot._update(self._record, progress=Progress(done, total, current))
-
-    @property
-    def cancelled(self) -> bool:
-        return self._record.cancel.is_set()
-
-    @property
-    def log(self) -> BoundLogger:
-        return self._log
+    def snapshot(self) -> JobView:
+        if self.view.active:
+            return replace(self.view, progress=self.job.last_progress)
+        return self.view
 
 
 def _slug(text: str) -> str:
@@ -235,39 +279,12 @@ def job_log_path(
     return path
 
 
-@contextmanager
-def _job_logger(job_id: str, path: Path | None) -> Iterator[BoundLogger]:
-    """A logger for one job: its file (if any), then on to this module's log.
-
-    The stdlib logger is not registered with :mod:`logging`, so nothing is
-    left behind once the job ends.
-    """
-    logger = logging.Logger(f"{_LOGGER_NAME}.{job_id}", logging.INFO)
-    logger.parent = logging.getLogger(_LOGGER_NAME)
-    handler: logging.Handler | None = None
-    if path is not None:
-        handler = logging.FileHandler(path, encoding="utf-8")
-        handler.setFormatter(
-            ProcessorFormatter(processor=structlog.processors.KeyValueRenderer())
-        )
-        logger.addHandler(handler)
-    try:
-        yield _wrap(logger).bind(job_id=job_id)
-    finally:
-        if handler is not None:
-            logger.removeHandler(handler)
-            handler.close()
-
-
-def _default_state(result: object) -> JobState:
-    return "done"
-
-
 class JobSlot:
     """Holds at most one job and runs it on a new non-daemon thread.
 
     A finished job stays readable until the next one replaces it; there is
-    no list of past jobs.
+    no list of past jobs. The slot is busy while its job is active or while
+    a call holds it (:meth:`hold`).
 
     Args:
         jobs_dir: Folder for one log file per job; ``None`` writes job logs
@@ -279,19 +296,20 @@ class JobSlot:
         self._lock = threading.Lock()
         self._record: _Record | None = None
         self._thread: threading.Thread | None = None
+        self._held: str | None = None
 
     @property
     def view(self) -> JobView | None:
         """Snapshot of the current or last job; ``None`` before the first."""
         with self._lock:
-            return self._record.view if self._record else None
+            return self._record.snapshot() if self._record else None
 
     @property
     def busy(self) -> JobView | None:
         """The job when it is new, running or cancelling; else ``None``."""
         with self._lock:
             if self._record is not None and self._record.view.active:
-                return self._record.view
+                return self._record.snapshot()
             return None
 
     @property
@@ -300,58 +318,90 @@ class JobSlot:
         with self._lock:
             return self._record.exception if self._record else None
 
+    def _refuse_if_busy(self) -> None:
+        """Raise :class:`JobBusyError` while busy; the lock must be held."""
+        if self._record is not None and self._record.view.active:
+            raise JobBusyError(str(self._record.view))
+        if self._held is not None:
+            raise JobBusyError(self._held)
+
     def require_idle(self) -> None:
-        """Raise :class:`JobBusyError` while a job is active."""
-        if (job := self.busy) is not None:
-            raise JobBusyError(job)
+        """Raise :class:`JobBusyError` while a job is active or a hold taken."""
+        with self._lock:
+            self._refuse_if_busy()
+
+    @contextmanager
+    def hold(self, name: str, description: str = "") -> Iterator[None]:
+        """Keep the slot busy for the ``with`` block, without starting a job.
+
+        The slot's current or last job stays as it was. The hold is released
+        when the block ends, also by an exception.
+
+        Args:
+            name: Short name of what holds the slot, e.g. ``rename``; used in
+                the busy error.
+            description: Free-form text, e.g. what it works on; also used in
+                the busy error.
+
+        Raises:
+            JobBusyError: A job is active or another call holds the slot.
+        """
+        with self._lock:
+            self._refuse_if_busy()
+            self._held = _label(name, description)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._held = None
 
     def start[R](
         self,
-        work: Callable[[JobContext], R],
+        work: Callable[[Job], R],
         *,
         name: str,
         description: str = "",
-        state_of: Callable[[R], JobState] = _default_state,
     ) -> JobView:
         """Accept *work* as the new job and start it; return it as ``new``.
 
+        The job ends ``done`` when *work* returns, ``cancelled`` when it
+        raises :class:`JobCancelled` (whose result becomes the job's) and
+        ``failed`` when it raises anything else.
+
         Args:
-            work: Runs on the worker thread with the job's context; its
-                return value becomes the job's result.
+            work: Runs on the worker thread with the job; its return value
+                becomes the job's result.
             name: Short name of the job, e.g. ``archive``; used in the log
                 file name and in messages.
             description: Free-form text, e.g. what the job works on; also
                 used, shortened, in the log file name.
-            state_of: Final state for the work's result; by default every
-                result is ``done``. An exception always ends the job
-                ``failed`` and :class:`JobCancelled` ends it ``cancelled``.
 
         Raises:
-            JobBusyError: Another job is new, running or cancelling.
+            JobBusyError: Another job is active or a call holds the slot.
         """
         started = datetime.now()
         with self._lock:
-            if self._record is not None and self._record.view.active:
-                raise JobBusyError(self._record.view)
+            self._refuse_if_busy()
             log_path = None
             if self._jobs_dir is not None:
                 self._jobs_dir.mkdir(parents=True, exist_ok=True)
                 log_path = job_log_path(self._jobs_dir, started, name, description)
-                log_path.touch()
+            job = Job(name, description, log_path=log_path)
             record = _Record(
                 JobView(
-                    id=uuid.uuid4().hex[:12],
+                    id=job.id,
                     name=name,
                     description=description,
                     state="new",
                     progress=Progress(),
                     started_at=started,
                     log_path=log_path,
-                )
+                ),
+                job,
             )
             self._record = record
             thread = threading.Thread(
-                target=self._run, args=(record, work, state_of), name=f"job-{name}"
+                target=self._run, args=(record, work), name=f"job-{name}"
             )
             self._thread = thread
             view = record.view
@@ -371,57 +421,48 @@ class JobSlot:
         return self.view
 
     def cancel(self) -> None:
-        """Ask the active job to stop at its next step; no-op when idle."""
+        """Ask the active job to stop at its next safe point; no-op when idle."""
         with self._lock:
             record = self._record
             if record is None or not record.view.active:
                 return
-            record.cancel.set()
+            record.job.cancel()
             if record.view.state in ("new", "running"):
                 record.view = replace(record.view, state="cancelling")
 
-    def _update(self, record: _Record, **changes: Any) -> None:
-        with self._lock:
-            if record.view.finished:
-                return
-            if changes.get("state") == "running" and record.view.state != "new":
-                changes.pop("state")
-            record.view = replace(record.view, **changes)
-
-    def _run[R](
-        self,
-        record: _Record,
-        work: Callable[[JobContext], R],
-        state_of: Callable[[R], JobState],
-    ) -> None:
-        view = record.view
+    def _run[R](self, record: _Record, work: Callable[[Job], R]) -> None:
+        job = record.job
         started = time.perf_counter()
-        with _job_logger(view.id, view.log_path) as job_log:
-            job_log.info("job_started", name=view.name, description=view.description)
-            self._update(record, state="running")
-            result: object = None
-            error: str | None = None
-            try:
-                result = work(_SlotContext(self, record, job_log))
-            except JobCancelled:
-                state: JobState = "cancelled"
-            except Exception as e:
-                job_log.exception("job_error")
-                state = "failed"
-                error = f"{type(e).__name__}: {e}"
-                record.exception = e
-            else:
-                state = state_of(result)  # type: ignore[arg-type]
-            job_log.info(
-                "job_finished",
-                state=state,
-                error=error,
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
+        job.log.info("job_started", name=job.name, description=job.description)
+        with self._lock:
+            if record.view.state == "new":
+                record.view = replace(record.view, state="running")
+        result: object = None
+        error: str | None = None
+        try:
+            result = work(job)
+        except JobCancelled as stopped:
+            state: JobState = "cancelled"
+            result = stopped.result
+        except Exception as e:
+            job.log.exception("job_error")
+            state = "failed"
+            error = f"{type(e).__name__}: {e}"
+            record.exception = e
+        else:
+            state = "done"
+        job.log.info(
+            "job_finished",
+            state=state,
+            error=error,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        job.close()
         with self._lock:
             record.view = replace(
                 record.view,
                 state=state,
+                progress=job.last_progress,
                 finished_at=datetime.now(),
                 result=result,
                 error=error,

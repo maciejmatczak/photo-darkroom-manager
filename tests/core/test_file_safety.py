@@ -10,6 +10,8 @@ import hashlib
 from collections import Counter
 from pathlib import Path
 
+from conftest import execute
+
 from photo_darkroom_manager.core.actions import ActionPlan
 from photo_darkroom_manager.core.engine import Engine
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
@@ -104,7 +106,7 @@ def test_conflict_refused_by_policy_leaves_disk_unchanged(photo_setup) -> None:
     plan = action.prepare()
     assert isinstance(plan, ActionPlan)
     assert plan.conflicts
-    result = action.execute(plan)
+    result = execute(action, plan)
     assert result.outcome == "refused"
     assert _snapshot(mgr) == before
 

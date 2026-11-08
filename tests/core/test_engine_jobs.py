@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 from conftest import MakeEngine, Roots
 
-from photo_darkroom_manager.core import actions as actions_module
 from photo_darkroom_manager.core import engine as engine_module
 from photo_darkroom_manager.core import file_utils
 from photo_darkroom_manager.core.actions import ExecutionResult, Move
+from photo_darkroom_manager.core.actions import _actions as actions_module
 from photo_darkroom_manager.core.engine import (
     Engine,
     EngineBusyError,
@@ -119,7 +119,22 @@ def test_opening_a_folder_is_not_a_job(
     assert opened == [roots.darkroom / BATCH]
     assert engine.job is None
     with pytest.raises(ValueError, match="runs at once"):
-        engine.action_start(engine.action_open(BATCH))
+        engine.action_start(engine.action_open(BATCH))  # ty: ignore[invalid-argument-type]
+
+
+def test_rename_is_not_a_job(roots: Roots, engine: Engine) -> None:
+    _batch(roots, "a.jpg")
+    engine.action_apply(engine.action_tidy(BATCH))
+    tidy = engine.job
+
+    result = engine.action_apply(engine.action_rename(BATCH, title="Hike"))
+
+    assert result.outcome == "ok"
+    assert (roots.darkroom / "Camera/2026/2026-10 Hike").is_dir()
+    assert engine.job == tidy
+    rename = engine.action_rename("Camera/2026/2026-10 Hike", title="x")
+    with pytest.raises(ValueError, match="runs at once"):
+        engine.action_start(rename)  # ty: ignore[invalid-argument-type]
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +179,7 @@ def test_second_job_while_busy_names_the_scan(
 
     with pytest.raises(EngineBusyError) as err:
         engine.action_start(engine.action_tidy(BATCH))
-    assert err.value.job.name == "scan"
+    assert err.value.label == "scan darkroom root"
     with pytest.raises(EngineBusyError):
         engine.library_scan_start()
     gate.release.set()
@@ -198,7 +213,7 @@ def test_finished_job_keeps_its_result(roots: Roots, engine: Engine) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_action_that_fails_on_a_file_ends_failed(
+def test_action_that_fails_on_a_file_ends_done(
     roots: Roots, engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _batch(roots, "a.jpg", "b.jpg")
@@ -212,8 +227,26 @@ def test_action_that_fails_on_a_file_ends_failed(
     monkeypatch.setattr(file_utils, "move_file", locked)
     result = engine.action_apply(engine.action_archive(BATCH))
     assert result.outcome == "failed"
+    assert [f.step.source.name for f in result.failed if isinstance(f.step, Move)] == [
+        "b.jpg"
+    ]
     job = engine.job
-    assert job is not None and job.state == "failed"
+    assert job is not None and job.state == "done"
+
+
+def test_a_scan_that_raises_ends_failed(
+    roots: Roots, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _batch(roots)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(engine_module, "scan_subtree", boom)
+    engine.library_scan_start()
+    final = engine.job_wait(5)
+    assert final is not None and final.state == "failed"
+    assert final.error == "RuntimeError: disk on fire"
 
 
 def test_nothing_to_tidy_ends_done_with_noop(roots: Roots, engine: Engine) -> None:
@@ -407,6 +440,83 @@ def test_open_and_edit_during_an_archive(
     engine.job_wait(5)
 
 
+def test_rename_during_an_archive_is_refused_naming_it(
+    roots: Roots,
+    engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    released: list[threading.Event],
+) -> None:
+    _batch(roots, *_files(3))
+    _batch(roots, "x.jpg", node=OTHER)
+    gate = MoveGate(monkeypatch, after=1)
+    released.append(gate.release)
+    engine.action_start(engine.action_archive(BATCH))
+    gate.wait()
+
+    with pytest.raises(EngineBusyError) as err:
+        engine.action_apply(engine.action_rename(OTHER, title="Walk 2"))
+
+    assert err.value.label == f"archive {BATCH}"
+    assert (roots.darkroom / OTHER).is_dir()
+    assert not (roots.darkroom / "Camera/2026/2026-11 Walk 2").exists()
+    gate.release.set()
+    engine.job_wait(5)
+
+
+class RenameGate:
+    """Holds every rename inside its execute until released."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.reached = threading.Event()
+        self.release = threading.Event()
+        real = actions_module.RenameAction._execute
+
+        def execute(action, plan):
+            self.reached.set()
+            assert self.release.wait(5)
+            return real(action, plan)
+
+        monkeypatch.setattr(actions_module.RenameAction, "_execute", execute)
+
+
+def test_scan_and_config_refused_but_open_allowed_during_a_rename(
+    roots: Roots,
+    engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    released: list[threading.Event],
+    tmp_path: Path,
+) -> None:
+    _batch(roots)
+    _batch(roots, node=OTHER)
+    opened: list[Path] = []
+    monkeypatch.setattr(actions_module, "_open_folder", opened.append)
+    gate = RenameGate(monkeypatch)
+    released.append(gate.release)
+    rename = engine.action_rename(BATCH, title="Hike 2")
+    results: list[ExecutionResult] = []
+    worker = threading.Thread(
+        target=lambda: results.append(engine.action_apply(rename))
+    )
+    worker.start()
+    try:
+        assert gate.reached.wait(5)
+        with pytest.raises(EngineBusyError) as err:
+            engine.library_scan_start()
+        assert err.value.label == f"rename {BATCH}"
+        with pytest.raises(EngineBusyError):
+            engine.config_set("archive", tmp_path / "elsewhere")
+        with pytest.raises(EngineBusyError):
+            engine.action_apply(engine.action_rename(OTHER, title="Other"))
+        assert engine.action_apply(engine.action_open(OTHER)).outcome == "ok"
+        assert opened == [roots.darkroom / OTHER]
+    finally:
+        gate.release.set()
+        worker.join(5)
+    assert [r.outcome for r in results] == ["ok"]
+    assert engine.job is None
+    engine.library_scan()
+
+
 # ---------------------------------------------------------------------------
 # Conflict policy
 # ---------------------------------------------------------------------------
@@ -478,9 +588,54 @@ def test_partial_archive_log_lists_every_step(
     (result,) = events("action_result")
     assert "outcome='failed'" in result
     (finished,) = events("job_finished")
-    assert "state='failed'" in finished
+    assert "state='done'" in finished
     assert "duration_ms=" in finished
     assert lines[-1] == finished
+
+
+def _app_log(engine: Engine) -> str:
+    """Text of the application log files (not the job logs)."""
+    return "".join(
+        p.read_text(encoding="utf-8") for p in sorted(engine.logs_dir.glob("*.log"))
+    )
+
+
+def test_rename_logs_its_request_and_result_to_the_app_log(
+    roots: Roots, engine: Engine
+) -> None:
+    _batch(roots)
+    engine.action_apply(engine.action_rename(BATCH, title="Hike"))
+    text = _app_log(engine)
+    assert text.count("action_request") == 1
+    assert text.count("action_result") == 1
+    assert "Renamed to 2026-10 Hike" in text
+    assert not (engine.logs_dir / "jobs").exists()
+
+
+def test_tidy_logs_its_request_and_result_once_in_its_job_log(
+    roots: Roots, engine: Engine
+) -> None:
+    _batch(roots, "a.jpg")
+    engine.action_apply(engine.action_tidy(BATCH))
+    job = engine.job
+    assert job is not None and job.log_path is not None
+    text = job.log_path.read_text(encoding="utf-8")
+    assert text.count("event='action_request'") == 1
+    assert text.count("event='action_result'") == 1
+
+
+def test_the_rescan_after_an_archive_logs_to_its_job_log(
+    roots: Roots, engine: Engine
+) -> None:
+    _batch(roots, "a.jpg")
+    engine.library_scan()
+    engine.action_apply(engine.action_archive(BATCH))
+    job = engine.job
+    assert job is not None and job.log_path is not None
+    lines = job.log_path.read_text(encoding="utf-8").splitlines()
+    names = [line.split("event='")[1].split("'")[0] for line in lines]
+    assert names.index("refresh_started") < names.index("refresh_complete")
+    assert names.index("refresh_complete") < names.index("action_result")
 
 
 def test_log_holds_finished_steps_while_the_job_runs(

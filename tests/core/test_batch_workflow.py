@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from conftest import link_dir
+from conftest import execute, link_dir
 
 from photo_darkroom_manager.core.actions import ActionPlan, Move, NewBatchAction
 from photo_darkroom_manager.core.engine import Engine
@@ -11,7 +11,7 @@ from photo_darkroom_manager.core.library import validate_device_name
 
 
 def _apply(action) -> None:
-    result = action.execute(_plan(action))
+    result = execute(action, _plan(action))
     assert result.success, result
 
 
@@ -30,7 +30,7 @@ def test_new_batch_existing_and_custom_device(roots, existing: bool) -> None:
     if existing:
         (roots.darkroom / "Camera").mkdir()
     action = _new_batch(roots.darkroom, "Camera")
-    result = action.execute(_plan(action))
+    result = execute(action, _plan(action))
     batch = roots.darkroom / "Camera/2026/2026-10"
     assert result.success
     assert result.rescan_node_path == batch.parent
@@ -98,7 +98,7 @@ def test_device_symlink_made_after_the_preview_rejected(roots, tmp_path: Path) -
     action = _new_batch(roots.darkroom, "Camera")
     plan = _plan(action)
     link_dir(roots.darkroom / "Camera", outside)
-    result = action.execute(plan)
+    result = execute(action, plan)
     assert result.outcome == "refused"
     assert list(outside.iterdir()) == []
 
@@ -164,7 +164,7 @@ def test_devices_publish_and_archive_independently(roots, engine: Engine) -> Non
         assert {s.target.parent for s in plan.steps if isinstance(s, Move)} == {
             expected
         }
-        assert publish.execute(plan).success
+        assert execute(publish, plan).success
         assert (expected / "export.jpg").read_bytes() == device.encode()
         assert not (expected / "PUBLISH").exists()
         nested = batch / "PHOTOS/nested"
@@ -177,7 +177,7 @@ def test_devices_publish_and_archive_independently(roots, engine: Engine) -> Non
         assert [s.target for s in archive_plan.steps if isinstance(s, Move)] == [
             expected_archive / "original.raw"
         ]
-        assert archive.execute(archive_plan).success
+        assert execute(archive, archive_plan).success
         assert (expected_archive / "original.raw").read_bytes() == b"raw"
 
 

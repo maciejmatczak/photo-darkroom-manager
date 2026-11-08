@@ -3,14 +3,17 @@
 from pathlib import Path
 
 import pytest
+from conftest import execute
 
 from photo_darkroom_manager.core import file_utils
 from photo_darkroom_manager.core.actions import (
     ActionPlan,
     ActionResult,
     ArchiveAction,
+    ExecutionResult,
     Move,
 )
+from photo_darkroom_manager.core.jobs import Job, JobCancelled
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
 
 ARCHIVE_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 archive basic success"
@@ -23,6 +26,21 @@ ARCHIVE_BATCH_BASIC_DEST = Path("2026") / "2026-03 archive basic success" / "Cam
 ARCHIVE_BATCH_CONFLICT_DEST = (
     Path("2026") / "2026-03 archive will fail on conflict" / "Camera"
 )
+
+
+class _CancelAfter(Job):
+    """A job that asks itself to stop once *moves* files are done."""
+
+    def __init__(self, moves: int, log_path: Path) -> None:
+        super().__init__("archive", log_path=log_path)
+        self._moves = moves
+
+    def progress(
+        self, done: int, total: int | None = None, current: str | None = None
+    ) -> None:
+        super().progress(done, total, current)
+        if done >= self._moves:
+            self.cancel()
 
 
 def _relative_leaf_paths(folder: Path) -> frozenset[Path]:
@@ -94,7 +112,7 @@ def test_archive_skipping_conflicts(photo_setup) -> None:
     assert len(plan.steps) == 90
     assert len(plan.conflicts) == 10
 
-    result = act.execute(plan, policy="skip")
+    result = execute(act, plan, policy="skip")
 
     assert result.outcome == "ok"
     assert len(result.done) == 90
@@ -112,7 +130,7 @@ def test_archive_with_conflicts_refused_by_default(photo_setup) -> None:
     act = _archive(photo_setup, batch)
     plan = _plan(act)
 
-    result = act.execute(plan)
+    result = execute(act, plan)
 
     assert result.outcome == "refused"
     assert [c.move.source.name for c in result.conflicts] == ["001.jpg"]
@@ -172,7 +190,7 @@ def test_archive_execute_moves_all_leaves(photo_setup) -> None:
     act = _archive(photo_setup, batch)
     plan = _plan(act)
     assert len(plan.steps) == len(expected_rels)
-    result = act.execute(plan)
+    result = execute(act, plan)
     assert result.outcome == "ok"
     assert result.done == plan.steps
     assert f"{len(expected_rels)} of {len(expected_rels)} file" in result.message
@@ -185,7 +203,7 @@ def test_archive_execute_moves_all_leaves(photo_setup) -> None:
 def test_archive_empties_the_batch(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
     act = _archive(photo_setup, batch)
-    result = act.execute(_plan(act))
+    result = execute(act, _plan(act))
     assert result.outcome == "ok"
     assert not batch.exists()
     assert result.node_path is None
@@ -201,7 +219,7 @@ def test_photo_added_after_the_preview(photo_setup) -> None:
     plan = _plan(act)
     (batch / "c.jpg").write_bytes(b"c")
 
-    result = act.execute(plan)
+    result = execute(act, plan)
 
     archived = photo_setup.roots.archive / "2026" / "2026-04 two" / "Camera"
     assert (archived / "a.jpg").is_file()
@@ -209,9 +227,39 @@ def test_photo_added_after_the_preview(photo_setup) -> None:
     assert not (archived / "c.jpg").exists()
     assert (batch / "c.jpg").is_file()
     assert result.outcome == "ok"
-    assert [p.name for p in result.left] == ["c.jpg"]
+    assert result.left == ()
+    assert [p.name for p in result.remaining] == ["c.jpg"]
     assert result.node_path == batch
     assert "1 file(s) left" in result.message
+
+
+def test_cancelled_archive_lists_the_files_left_undone(
+    photo_setup, tmp_path: Path
+) -> None:
+    batch = photo_setup.roots.darkroom / "Camera" / "2026" / "2026-04 four"
+    batch.mkdir()
+    for name in ("a.jpg", "b.jpg", "c.jpg", "d.jpg"):
+        (batch / name).write_bytes(name.encode())
+    act = _archive(photo_setup, batch)
+    plan = _plan(act)
+    job = _CancelAfter(2, log_path=tmp_path / "archive.log")
+
+    with pytest.raises(JobCancelled) as stopped:
+        act.execute(plan, job=job)
+    job.close()
+
+    result = stopped.value.result
+    assert isinstance(result, ExecutionResult)
+    assert result.outcome == "cancelled"
+    assert result.fingerprint == plan.fingerprint
+    assert [s.source.name for s in result.done if isinstance(s, Move)] == [
+        "a.jpg",
+        "b.jpg",
+    ]
+    assert sorted(p.name for p in result.left) == ["c.jpg", "d.jpg"]
+    assert sorted(p.name for p in result.remaining) == ["c.jpg", "d.jpg"]
+    log = (tmp_path / "archive.log").read_text(encoding="utf-8")
+    assert log.count("event='step_done'") == 2
 
 
 def test_partial_archive(photo_setup, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,7 +277,7 @@ def test_partial_archive(photo_setup, monkeypatch: pytest.MonkeyPatch) -> None:
         real_move(src, dst, replace=replace)
 
     monkeypatch.setattr(file_utils, "move_file", fail_on_c)
-    result = act.execute(plan)
+    result = execute(act, plan)
 
     assert result.outcome == "failed"
     assert [s.source.name for s in result.done if isinstance(s, Move)] == [
@@ -241,7 +289,8 @@ def test_partial_archive(photo_setup, monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(failure.step, Move)
     assert failure.step.source.name == "c.jpg"
     assert "file is locked" in failure.reason
-    assert [p.name for p in result.left] == ["c.jpg"]
+    assert result.left == ()
+    assert [p.name for p in result.remaining] == ["c.jpg"]
 
 
 def test_archive_execute_blocked_when_conflict_appears_after_prepare(
@@ -258,7 +307,7 @@ def test_archive_execute_blocked_when_conflict_appears_after_prepare(
     block_at.parent.mkdir(parents=True, exist_ok=True)
     block_at.write_bytes(b"")
 
-    result = act.execute(plan)
+    result = execute(act, plan)
     assert result.outcome == "refused"
     assert result.rescan_node_path is None
     assert "Archive blocked" in result.message
@@ -274,7 +323,7 @@ def test_late_file_in_the_archive_with_skip(photo_setup) -> None:
     plan = _plan(act)
     _already_archived(photo_setup, "2026-04 late", "002.jpg")
 
-    result = act.execute(plan, policy="skip")
+    result = execute(act, plan, policy="skip")
 
     assert result.outcome == "ok"
     assert [c.move.source.name for c in result.skipped] == ["002.jpg"]
@@ -294,9 +343,9 @@ def test_folder_held_open_is_kept_and_reported(
         raise PermissionError("folder is in use")
 
     monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions.prune_empty_dirs", held_open
+        "photo_darkroom_manager.core.actions._actions.prune_empty_dirs", held_open
     )
-    result = act.execute(plan)
+    result = execute(act, plan)
 
     assert result.outcome == "ok"
     assert result.done == plan.steps

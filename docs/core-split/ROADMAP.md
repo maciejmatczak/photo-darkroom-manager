@@ -138,16 +138,16 @@ its items are.
 
 ## Phase 4: Jobs as a framework for actions
 
-- [ ] Propose the change in OpenSpec from
-      [jobs-framework.md](jobs-framework.md), settling its open question
-      (whether scans use the framework too)
+- [x] Built as the OpenSpec change `core-jobs-framework`; the specs
+      `engine/jobs`, `engine/engine-status` and `engine/action-requests`
+      state the behaviour. Scans stay jobs in the same slot
 - Heavy actions (tidy, archive, publish) are written against the job
   framework: they get a `Job`, report progress, decide where to check a
   cancel and write their own audit lines through it; one-shot actions
   (open, cull, edit, rename, new batch) never see a job
-- One engine lock: a job holds it for its run, an action with
-  `locks_engine` (rename, new batch) for its call; while it is taken,
-  locking actions, scans and config edits are refused as busy
+- One engine lock: a job holds it for its run, an `exclusive` action
+  (rename, new batch) for its call; while it is taken, exclusive actions,
+  scans and config edits are refused as busy
 - `Job` is a standalone object the slot runs and tests create directly; the
   hooks between engine and actions, `NO_JOB` and `state_of` are gone
 - A job's state follows from the run alone; a failed file move is in the
@@ -203,5 +203,6 @@ its items are.
 
 ## Next actionable step
 
-Phase 4: propose the jobs framework change in OpenSpec from
-[jobs-framework.md](jobs-framework.md), starting with its open questions.
+Phase 4: review `core-jobs-framework` and archive it with spec sync; then
+Phase 5, starting with the open questions of
+[showroom-albums.md](../research/showroom-albums.md).

@@ -168,10 +168,19 @@ is ever overwritten without `replace`.
 
 ### Jobs, progress and Ctrl+C
 
-Every action that changes files, and every scan, runs as one job in the
-engine. While it runs, the command shows its progress on stderr when
-stderr is a terminal (a counter and the current file, or a spinner for a
-scan) and nothing extra otherwise; stdout carries only the result.
+Tidy, archive and publish, and every scan, run as one job in the engine.
+While it runs, the command shows its progress on stderr when stderr is a
+terminal (a counter and the current file, or a spinner for a scan) and
+nothing extra otherwise; stdout carries only the result.
+
+`rename` and `new-batch` are quick and run at once, without a job: they
+show no progress and write no job log; their request and result go to the
+application log. Like a job, they run alone: while one runs or a job
+runs, the other is refused as busy (exit 3).
+
+A job ends `done` whenever its action ran to the end, also when a file
+failed or the action was refused; the result says what happened to each
+file. It ends `failed` only on an unexpected error.
 
 Ctrl+C cancels the job: it stops between files, never in the middle of
 one, prints its result (what was moved and what was left) and exits 130.
@@ -192,9 +201,10 @@ With `--json` (before the command), stdout holds exactly one document:
 `{"format": 1, "command": ..., "ok": ..., "result": ..., "error": ...}`.
 A result is a node view, a plan (with all its steps and the `confirm`
 command as argv, and its conflicts), or an execution result (steps done,
-failed and skipped, conflicts, files left, the node id afterwards). An
-error has a `kind`, a `message` and, where known, a `fix`. Logs go to
-stderr only: warnings by default, more with `-v` or `-vv`.
+failed and skipped, conflicts, `left` for the files a cancel left undone,
+`remaining` for the files still in an archived folder, the node id
+afterwards). An error has a `kind`, a `message` and, where known, a `fix`.
+Logs go to stderr only: warnings by default, more with `-v` or `-vv`.
 
 | Exit code | Meaning |
 | --- | --- |

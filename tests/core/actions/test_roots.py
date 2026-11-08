@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import execute
 
 from photo_darkroom_manager.core.actions import (
     Action,
@@ -89,7 +90,7 @@ def test_execute_refuses_root_lost_after_prepare(photo_setup, case: str) -> None
     moved = _unplug(getattr(photo_setup.roots, area))
     before = sorted(p.relative_to(moved) for p in moved.rglob("*"))
 
-    result = action.execute(plan)
+    result = execute(action, plan)
 
     assert result.outcome == "refused"
     assert area.capitalize() in result.message

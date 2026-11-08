@@ -163,6 +163,7 @@ def result_data(result: ExecutionResult) -> Data:
             {"step": _step_data(f.step), "reason": f.reason} for f in result.failed
         ],
         "left": [p.as_posix() for p in result.left],
+        "remaining": [p.as_posix() for p in result.remaining],
         "conflicts": [_conflict_data(c) for c in result.conflicts],
         "skipped": [_conflict_data(c) for c in result.skipped],
         "fingerprint": result.fingerprint,
@@ -192,6 +193,9 @@ def result_text(result: ExecutionResult) -> str:
     if result.left:
         lines.append(f"left: {len(result.left)} file(s)")
         lines.extend(_capped([str(p) for p in result.left]))
+    if result.remaining:
+        lines.append(f"remaining: {len(result.remaining)} file(s)")
+        lines.extend(_capped([str(p) for p in result.remaining]))
     if result.details and not (result.failed or result.conflicts):
         lines.append(result.details)
     if result.node_id is not None:

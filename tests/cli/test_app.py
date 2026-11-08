@@ -14,8 +14,8 @@ import yaml
 from cli.conftest import BATCH, Cli, Run
 from photo_darkroom_manager.cli import _app as app_module
 from photo_darkroom_manager.cli import main, run
-from photo_darkroom_manager.core import actions as actions_module
 from photo_darkroom_manager.core import file_utils
+from photo_darkroom_manager.core.actions import _actions as actions_module
 from photo_darkroom_manager.core.engine import Engine
 from photo_darkroom_manager.core.library import _scan as scan_module
 
@@ -567,3 +567,91 @@ def test_ctrl_c_cancels_the_job(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> No
     assert len(result["done"]) == 4
     assert len(result["left"]) == 6
     assert len(list((cli.roots.archive / ARCHIVED).iterdir())) == 4
+
+
+def test_archive_reports_the_files_remaining(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch = cli.batch("a.jpg", "b.jpg")
+    real = file_utils.move_file
+
+    def locked(src: Path, dst: Path, *, replace: bool = False) -> None:
+        if src.name == "b.jpg":
+            raise PermissionError("locked")
+        real(src, dst, replace=replace)
+
+    monkeypatch.setattr(file_utils, "move_file", locked)
+    out = cli("--json", "archive", ".", "--apply", cwd=batch)
+    assert out.code == 1, out
+    result = out.json()["result"]
+    assert result["outcome"] == "failed"
+    assert result["left"] == []
+    assert [Path(p).name for p in result["remaining"]] == ["b.jpg"]
+
+    text = cli("archive", ".", "--apply", cwd=batch)
+    assert "remaining: 1 file(s)" in text.out
+    assert "left:" not in text.out
+
+
+# ---------------------------------------------------------------------------
+# Rename and new batch run at once
+# ---------------------------------------------------------------------------
+
+
+def test_rename_and_new_batch_show_no_progress_and_leave_no_job_log(
+    cli: Cli, tmp_path: Path
+) -> None:
+    cli.batch()
+    rename = ("rename", f"id:{BATCH}", "--title", "Hike", "--apply")
+    new_batch = ("new-batch", "Drone", "--date", "2027-01", "--apply")
+    for argv in (rename, new_batch):
+        stderr = _Terminal()
+        assert _run_with_stderr(cli, stderr, *argv, cwd=cli.home) == 0
+        assert "\r" not in stderr.getvalue()
+    assert (cli.roots.darkroom / "Camera/2026/2026-10 Hike").is_dir()
+    assert (cli.roots.darkroom / "Drone/2027/2027-01").is_dir()
+    assert not (tmp_path / "logs" / "jobs").exists()
+
+
+def test_a_busy_engine_refuses_rename_and_new_batch(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch = cli.batch("a.jpg", "b.jpg")
+    other = "Camera/2026/2026-11 Hike"
+    cli.batch(node_id=other)
+    reached = threading.Event()
+    release = threading.Event()
+    real_move = file_utils.move_file
+
+    def gated(src: Path, dst: Path, *, replace: bool = False) -> None:
+        reached.set()
+        assert release.wait(5)
+        real_move(src, dst, replace=replace)
+
+    monkeypatch.setattr(file_utils, "move_file", gated)
+    engine = Engine(cli.config)
+    engine.action_start(engine.action_archive(BATCH))
+    try:
+        assert reached.wait(5)
+        for argv in (
+            ("rename", f"id:{other}", "--title", "Walk", "--apply"),
+            ("new-batch", "Drone", "--date", "2027-01", "--apply"),
+        ):
+            out = io.StringIO()
+            code = run(
+                ["--config", str(cli.config), "--json", *argv],
+                cwd=cli.home,
+                stdout=out,
+                stderr=io.StringIO(),
+                make_engine=lambda *_: engine,
+            )
+            assert code == 3
+            error = json.loads(out.getvalue())["error"]
+            assert error["kind"] == "busy"
+            assert f"archive {BATCH}" in error["message"]
+    finally:
+        release.set()
+        engine.job_wait(5)
+    assert (cli.roots.darkroom / other).is_dir()
+    assert not (cli.roots.darkroom / "Drone").exists()
+    assert not batch.exists()

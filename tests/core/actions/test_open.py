@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from photo_darkroom_manager.core import actions
 from photo_darkroom_manager.core.actions import (
     ActionPlan,
     ActionResult,
     OpenFolder,
     OpenFolderAction,
 )
+from photo_darkroom_manager.core.actions import _actions as actions
 
 
 @pytest.fixture

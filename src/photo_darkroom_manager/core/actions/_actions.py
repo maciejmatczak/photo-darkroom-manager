@@ -12,10 +12,9 @@ import os
 import shlex
 import subprocess
 import sys
-import traceback
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -30,6 +29,7 @@ from photo_darkroom_manager.core.file_utils import (
     preview_merge_into_archive,
     prune_empty_dirs,
 )
+from photo_darkroom_manager.core.jobs import Job, JobCancelled
 from photo_darkroom_manager.core.library import (
     ALL_IMAGE_EXTENSIONS,
     PHOTOS_FOLDER,
@@ -284,7 +284,9 @@ class ExecutionResult(ActionResult):
     done: tuple[Step, ...] = ()
     failed: tuple[StepFailure, ...] = ()
     left: tuple[Path, ...] = ()
-    """Files the action found but did not touch, e.g. added after the preview."""
+    """Sources of the moves a cancel left undone."""
+    remaining: tuple[Path, ...] = ()
+    """Files still in the acted-on folder after an archive and its cleanup."""
     conflicts: tuple[Conflict, ...] = ()
     """Conflicts found when running: planned ones and targets taken since."""
     skipped: tuple[Conflict, ...] = ()
@@ -326,64 +328,25 @@ def _failures_text(failed: Sequence[StepFailure], bases: Sequence[Path]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Run hooks
-# ---------------------------------------------------------------------------
-
-ProgressHook = Callable[[int, int | None, str | None], None]
-"""Called with (done, total, current file) as moves finish."""
-StopHook = Callable[[], bool]
-"""Checked before each move; true stops the run between moves."""
-StepHook = Callable[[MoveOutcome], None]
-"""Called with each move's outcome as it finishes, and for each conflict
-left undone."""
-
-
-@dataclass(frozen=True)
-class RunHooks:
-    """How a caller follows and stops an execution; each hook is optional."""
-
-    progress: ProgressHook | None = None
-    stop: StopHook | None = None
-    on_step: StepHook | None = None
-
-    def report(self, done: int, total: int | None, current: str | None) -> None:
-        if self.progress is not None:
-            self.progress(done, total, current)
-
-    def stopped(self) -> bool:
-        return self.stop is not None and self.stop()
-
-    def step(self, outcome: MoveOutcome) -> None:
-        if self.on_step is not None:
-            self.on_step(outcome)
-
-
-NO_HOOKS = RunHooks()
-
-
-# ---------------------------------------------------------------------------
 # Action base
 # ---------------------------------------------------------------------------
 
 
 class Action(ABC):
-    """Template method: public prepare/execute never raise.
+    """An action on a node: prepare a plan, then execute exactly that plan.
 
-    Subclasses implement _prepare / _execute. An action executes only a plan
-    prepared for its own request.
+    Subclasses implement ``_prepare`` and ``_execute``. An action executes
+    only a plan prepared for its own request. Unexpected errors reach the
+    caller.
     """
 
     action: ClassVar[NodeAction]
-    policies: ClassVar[tuple[ConflictPolicy, ...]] = ("refuse",)
-    """Conflict policies this action supports; ``refuse`` always."""
-    runs_as_job: ClassVar[bool] = True
-    """False for actions that change no files and run at once (open, apps)."""
+    exclusive: ClassVar[bool] = False
+    """True for an action that must run alone: while it runs, nothing else
+    that changes the library may start."""
 
     def __init__(self, request: ActionRequest | None) -> None:
         self.request = request or ActionRequest(self.action, "")
-
-    def log_context(self) -> dict[str, object]:
-        return {"node_id": self.request.node_id}
 
     def _plan(
         self,
@@ -396,92 +359,80 @@ class Action(ABC):
             self.request, summary, tuple(steps), tuple(notes), tuple(bases)
         )
 
+    def prepare(self) -> ActionPlan | ActionResult:
+        """The plan for the request, or why there is nothing to run."""
+        return self._prepare()
+
+    def execute(self, plan: ActionPlan) -> ExecutionResult:
+        """Run *plan* and return what it did.
+
+        Args:
+            plan: A plan this action prepared for its own request.
+        """
+        if plan.request != self.request:
+            return _refused("Plan was prepared for another request")
+        return replace(self._execute(plan), fingerprint=plan.fingerprint)
+
+    @abstractmethod
+    def _prepare(self) -> ActionPlan | ActionResult: ...
+
+    def _execute(self, plan: ActionPlan) -> ExecutionResult:
+        raise NotImplementedError
+
+
+class JobAction(Action):
+    """A heavy action: it moves files and runs as a job.
+
+    Subclasses implement ``_prepare`` and ``_run``. ``_run`` reports
+    progress, logs its steps and checks for a cancel through the job; when
+    it stops for a cancel it raises :class:`JobCancelled` with its partial
+    result.
+    """
+
+    exclusive: ClassVar[bool] = True
+    policies: ClassVar[tuple[ConflictPolicy, ...]] = ("refuse",)
+    """Conflict policies this action supports; ``refuse`` always."""
+
     def check_policy(self, policy: str) -> ConflictPolicy:
-        """Return *policy* if supported, else raise ``PolicyNotSupportedError``."""
+        """Return *policy* if supported, else raise ``PolicyNotSupportedError``.
+
+        Args:
+            policy: The conflict policy a client asked for.
+        """
         for supported in self.policies:
             if policy == supported:
                 return supported
         raise PolicyNotSupportedError(self.action, policy, self.policies)
 
-    def prepare(self) -> ActionPlan | ActionResult:
-        action_name = type(self).__name__
-        ctx = self.log_context()
-        try:
-            result = self._prepare()
-        except Exception:
-            log.exception("action_prepare", action=action_name, **ctx)
-            return ActionResult("failed", "Internal error", traceback.format_exc())
-
-        if isinstance(result, ActionPlan):
-            log.info(
-                "action_prepare",
-                action=action_name,
-                outcome="plan",
-                fingerprint=result.fingerprint,
-                steps=len(result.steps),
-                conflicts=len(result.conflicts),
-                **ctx,
-            )
-        else:
-            log.info(
-                "action_prepare",
-                action=action_name,
-                outcome=result.outcome,
-                message=result.message,
-                **ctx,
-            )
-        return result
-
-    def execute(
-        self,
-        plan: ActionPlan,
-        *,
-        policy: ConflictPolicy = "refuse",
-        progress: ProgressHook | None = None,
-        stop: StopHook | None = None,
-        on_step: StepHook | None = None,
+    def execute(  # ty: ignore[invalid-method-override]
+        self, plan: ActionPlan, *, policy: ConflictPolicy = "refuse", job: Job
     ) -> ExecutionResult:
-        """Run *plan* under the conflict *policy*.
+        """Run *plan* under the conflict *policy* as part of *job*.
 
-        *progress* hears how far the moves got, *stop* is checked between
-        moves, and *on_step* hears each move's outcome as it finishes.
+        Args:
+            plan: A plan this action prepared for its own request.
+            policy: What to do with conflicts; the caller has checked it
+                with :meth:`check_policy`.
+            job: The job the run belongs to: progress, cancel and log.
+
+        Raises:
+            JobCancelled: The run stopped for a cancel; its result is what
+                was done and left.
         """
-        hooks = RunHooks(progress, stop, on_step)
-        action_name = type(self).__name__
-        ctx = self.log_context()
         if plan.request != self.request:
-            result = _refused("Plan was prepared for another request")
-        elif policy not in self.policies:
-            result = _refused(f"{self.action} does not support policy {policy!r}")
-        else:
-            try:
-                result = self._execute(plan, policy, hooks)
-            except Exception:
-                log.exception("action_execute", action=action_name, **ctx)
-                result = ExecutionResult(
-                    "failed", "Internal error", traceback.format_exc()
-                )
-        result = replace(result, fingerprint=plan.fingerprint)
-        answered = result.success or result.outcome in ("refused", "cancelled")
-        log_method = log.info if answered else log.warning
-        log_method(
-            "action_execute",
-            action=action_name,
-            outcome=result.outcome,
-            message=result.message,
-            done=len(result.done),
-            failed=len(result.failed),
-            skipped=len(result.skipped),
-            **ctx,
-        )
-        return result
+            return _refused("Plan was prepared for another request")
+        try:
+            result = self._run(plan, policy, job)
+        except JobCancelled as stopped:
+            if not isinstance(stopped.result, ExecutionResult):
+                raise
+            done = replace(stopped.result, fingerprint=plan.fingerprint)
+            raise JobCancelled(done) from None
+        return replace(result, fingerprint=plan.fingerprint)
 
     @abstractmethod
-    def _prepare(self) -> ActionPlan | ActionResult: ...
-
-    @abstractmethod
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    def _run(
+        self, plan: ActionPlan, policy: ConflictPolicy, job: Job
     ) -> ExecutionResult: ...
 
 
@@ -528,15 +479,26 @@ def _skipped(conflict: Conflict, reason: str) -> MoveOutcome:
     return MoveOutcome(move.source, move.target, "skipped", reason)
 
 
-def _run_planned_moves(
-    plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
-) -> _MoveRun:
+def _log_move(job: Job, outcome: MoveOutcome) -> None:
+    """Write one finished, skipped or failed move to *job*'s log."""
+    fields = {"source": str(outcome.source), "target": str(outcome.target)}
+    if outcome.status == "done":
+        job.log.info("step_done", **fields)
+    elif outcome.status == "skipped":
+        job.log.info("step_skipped", reason=outcome.reason, **fields)
+    else:
+        job.log.warning("step_failed", reason=outcome.reason, **fields)
+
+
+def _run_planned_moves(plan: ActionPlan, policy: ConflictPolicy, job: Job) -> _MoveRun:
     """Run the plan's moves under *policy*, re-checking every target first.
 
     ``refuse``: any conflict, planned or new, refuses before a file moves.
     ``skip``: conflicting moves stay undone and are reported; a target taken
     during the run is skipped the same way. ``replace``: moves onto an
     existing file replace it (same-target conflicts are still skipped).
+    *job* hears each move and how far the run got; a cancel stops the run
+    between files.
     """
     free: list[Move] = []
     late: list[Conflict] = []
@@ -548,7 +510,7 @@ def _run_planned_moves(
     conflicts: list[Conflict] = [*plan.conflicts, *late]
     if conflicts and policy == "refuse":
         for conflict in conflicts:
-            hooks.step(_skipped(conflict, f"conflict ({conflict.reason}); refused"))
+            _log_move(job, _skipped(conflict, f"conflict ({conflict.reason}); refused"))
         return _MoveRun(conflicts=tuple(conflicts), refused=True)
 
     def replaces(conflict: Conflict) -> bool:
@@ -557,7 +519,7 @@ def _run_planned_moves(
     replacing = [replace(c.move, overwrite=True) for c in conflicts if replaces(c)]
     skipped = [c for c in conflicts if not replaces(c)]
     for conflict in skipped:
-        hooks.step(_skipped(conflict, f"conflict ({conflict.reason})"))
+        _log_move(job, _skipped(conflict, f"conflict ({conflict.reason})"))
     total = len(free) + len(replacing)
     by_pair = {(m.source, m.target): m for m in (*free, *replacing)}
     done: list[Step] = []
@@ -568,10 +530,10 @@ def _run_planned_moves(
     def on_move(outcome: MoveOutcome) -> None:
         nonlocal finished
         finished += 1
-        hooks.step(outcome)
-        hooks.report(finished, total, outcome.source.name)
+        _log_move(job, outcome)
+        job.progress(finished, total, outcome.source.name)
 
-    hooks.report(0, total, None)
+    job.progress(0, total, None)
     for moves, replace_existing in ((free, False), (replacing, True)):
         if not moves:
             continue
@@ -581,7 +543,7 @@ def _run_planned_moves(
         report = move_files(
             ((m.source, m.target) for m in moves),
             replace=replace_existing,
-            stop=hooks.stopped,
+            stop=lambda: job.cancelled,
             on_move=on_move,
         )
         done.extend(by_pair[pair] for pair in report.done)
@@ -729,7 +691,7 @@ def _format_extension_stats(paths: Sequence[Path]) -> list[str]:
     return [f"  {ext}: {n}" for ext, n in sorted(counts.items())]
 
 
-class TidyAction(Action):
+class TidyAction(JobAction):
     action = NodeAction.TIDY
     policies = ("refuse", "skip")
 
@@ -761,18 +723,18 @@ class TidyAction(Action):
             conflicts=tuple(conflicts),
         )
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    def _run(
+        self, plan: ActionPlan, policy: ConflictPolicy, job: Job
     ) -> ExecutionResult:
         folder_path = self._folder_path
         if not folder_path.is_dir():
             return _refused(f"Not a directory: {folder_path}")
 
-        run = _run_planned_moves(plan, policy, hooks)
+        run = _run_planned_moves(plan, policy, job)
         if run.refused:
             return _refused_for_conflicts(plan, run, "Tidy")
         planned = len(_moves(plan)) + len(plan.conflicts)
-        return ExecutionResult(
+        result = ExecutionResult(
             run.outcome,
             _run_message("Tidied", run, planned),
             _run_details(plan, run),
@@ -784,6 +746,9 @@ class TidyAction(Action):
             rescan_node_path=folder_path,
             node_path=folder_path,
         )
+        if run.cancelled:
+            raise JobCancelled(result)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +756,7 @@ class TidyAction(Action):
 # ---------------------------------------------------------------------------
 
 
-class ArchiveAction(Action):
+class ArchiveAction(JobAction):
     action = NodeAction.ARCHIVE
     policies = ("refuse", "skip")
 
@@ -859,8 +824,8 @@ class ArchiveAction(Action):
             conflicts=conflicts,
         )
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    def _run(
+        self, plan: ActionPlan, policy: ConflictPolicy, job: Job
     ) -> ExecutionResult:
         if problem := self._unavailable_root():
             return _refused(problem)
@@ -868,7 +833,7 @@ class ArchiveAction(Action):
         if not folder_path.is_dir():
             return _refused(f"Folder does not exist: {folder_path}")
 
-        run = _run_planned_moves(plan, policy, hooks)
+        run = _run_planned_moves(plan, policy, job)
         if run.refused:
             return _refused_for_conflicts(plan, run, "Archive")
         planned = len(_moves(plan)) + len(plan.conflicts)
@@ -880,22 +845,28 @@ class ArchiveAction(Action):
             kept = f"Emptied folders not removed: {e}"
         else:
             kept = None
-        left = tuple(collect_leaf_paths(folder_path)) if folder_path.is_dir() else ()
+        remaining = (
+            tuple(collect_leaf_paths(folder_path)) if folder_path.is_dir() else ()
+        )
         message = _run_message("Archived", run, planned)
-        if left:
-            message += f"; {len(left)} file(s) left in the darkroom"
-        return ExecutionResult(
+        if remaining:
+            message += f"; {len(remaining)} file(s) left in the darkroom"
+        result = ExecutionResult(
             run.outcome,
             message,
             _run_details(plan, run, kept),
             done=run.done,
             failed=run.failed,
-            left=left,
+            left=run.left,
+            remaining=remaining,
             conflicts=run.conflicts,
             skipped=run.skipped,
             rescan_node_path=folder_path.parent,
             node_path=folder_path if folder_path.is_dir() else None,
         )
+        if run.cancelled:
+            raise JobCancelled(result)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +874,7 @@ class ArchiveAction(Action):
 # ---------------------------------------------------------------------------
 
 
-class PublishAction(Action):
+class PublishAction(JobAction):
     action = NodeAction.PUBLISH
     policies = ("refuse", "skip", "replace")
 
@@ -972,16 +943,16 @@ class PublishAction(Action):
             conflict_label="replace",
         )
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
+    def _run(
+        self, plan: ActionPlan, policy: ConflictPolicy, job: Job
     ) -> ExecutionResult:
         if problem := self._unavailable_root():
             return _refused(problem)
-        run = _run_planned_moves(plan, policy, hooks)
+        run = _run_planned_moves(plan, policy, job)
         if run.refused:
             return _refused_for_conflicts(plan, run, "Publish")
         planned = len(_moves(plan)) + len(plan.conflicts)
-        return ExecutionResult(
+        result = ExecutionResult(
             run.outcome,
             _run_message("Published", run, planned),
             _run_details(plan, run),
@@ -993,6 +964,9 @@ class PublishAction(Action):
             rescan_node_path=self._batch_path,
             node_path=self._batch_path,
         )
+        if run.cancelled:
+            raise JobCancelled(result)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +976,7 @@ class PublishAction(Action):
 
 class NewBatchAction(Action):
     action = NodeAction.NEW_BATCH
+    exclusive = True
 
     def __init__(
         self,
@@ -1017,9 +992,6 @@ class NewBatchAction(Action):
         self._device = device
         self._date = date
         self._title = title
-
-    def log_context(self) -> dict[str, object]:
-        return {"device": self._device, "date": self._date, "title": self._title}
 
     def _folders(self) -> list[Path] | ActionResult:
         """Device, year, batch and publish folders, or why they are refused.
@@ -1062,9 +1034,7 @@ class NewBatchAction(Action):
             [self._darkroom_path],
         )
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
-    ) -> ExecutionResult:
+    def _execute(self, plan: ActionPlan) -> ExecutionResult:
         folders = self._folders()
         if isinstance(folders, ActionResult):
             return _refused(folders.message, folders.details)
@@ -1108,6 +1078,7 @@ def _same_folder(a: Path, b: Path) -> bool:
 
 class RenameAction(Action):
     action = NodeAction.RENAME
+    exclusive = True
 
     def __init__(
         self,
@@ -1185,9 +1156,7 @@ class RenameAction(Action):
             [f"Folder: {batch_path.parent}"],
         )
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
-    ) -> ExecutionResult:
+    def _execute(self, plan: ActionPlan) -> ExecutionResult:
         if refusal := self._check():
             return _refused(refusal.message, refusal.details)
         (step,) = plan.steps
@@ -1289,7 +1258,6 @@ class OpenExternalAppAction(Action):
 
     action = NodeAction.EDIT
     config_key: ClassVar[str] = "edit_command"
-    runs_as_job = False
 
     def __init__(
         self,
@@ -1314,9 +1282,7 @@ class OpenExternalAppAction(Action):
             return argv
         return self._plan(f"Launch {Path(argv[0]).name}", [Launch(tuple(argv))])
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
-    ) -> ExecutionResult:
+    def _execute(self, plan: ActionPlan) -> ExecutionResult:
         (step,) = plan.steps
         assert isinstance(step, Launch)
         try:
@@ -1372,7 +1338,6 @@ class OpenFolderAction(Action):
     """Show a node's folder in the system file manager; changes no files."""
 
     action = NodeAction.OPEN
-    runs_as_job = False
 
     def __init__(self, folder_path: Path, *, request: ActionRequest | None = None):
         super().__init__(request)
@@ -1385,9 +1350,7 @@ class OpenFolderAction(Action):
             )
         return self._plan(f"Open {self._folder_path}", [OpenFolder(self._folder_path)])
 
-    def _execute(
-        self, plan: ActionPlan, policy: ConflictPolicy, hooks: RunHooks
-    ) -> ExecutionResult:
+    def _execute(self, plan: ActionPlan) -> ExecutionResult:
         (step,) = plan.steps
         assert isinstance(step, OpenFolder)
         if not step.path.is_dir():

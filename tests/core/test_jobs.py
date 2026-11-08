@@ -9,12 +9,10 @@ from pathlib import Path
 import pytest
 
 from photo_darkroom_manager.core.jobs import (
-    NO_JOB,
+    Job,
     JobBusyError,
     JobCancelled,
-    JobContext,
     JobSlot,
-    JobState,
     Progress,
     job_log_path,
 )
@@ -29,7 +27,7 @@ class Gate:
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def hold(self, job: JobContext) -> str:
+    def hold(self, job: Job) -> str:
         self.entered.set()
         assert self.release.wait(5)
         return "held"
@@ -74,8 +72,7 @@ def test_one_job_at_a_time_names_the_running_job() -> None:
     running = _started(slot, gate, "scan")
     with pytest.raises(JobBusyError) as err:
         slot.start(lambda job: None, name="tidy", description="Camera")
-    assert err.value.job.id == running.id
-    assert err.value.job.name == "scan"
+    assert err.value.label == str(running) == "scan Camera"
     with pytest.raises(JobBusyError):
         slot.require_idle()
     gate.release.set()
@@ -111,7 +108,7 @@ def test_progress_is_reported() -> None:
     slot = JobSlot()
     gate = Gate()
 
-    def work(job: JobContext) -> None:
+    def work(job: Job) -> None:
         job.progress(10, 40, "a.jpg")
         gate.hold(job)
 
@@ -139,7 +136,7 @@ def test_cancel_before_the_work_runs() -> None:
     seen: list[bool] = []
     hold = threading.Event()
 
-    def work(job: JobContext) -> None:
+    def work(job: Job) -> None:
         assert hold.wait(5)
         seen.append(job.cancelled)
         raise JobCancelled
@@ -158,7 +155,7 @@ def test_cancel_during_a_run_stops_between_steps() -> None:
     step = threading.Event()
     steps: list[int] = []
 
-    def work(job: JobContext) -> list[int]:
+    def work(job: Job) -> list[int]:
         for i in range(100):
             if job.cancelled:
                 raise JobCancelled
@@ -185,33 +182,54 @@ def test_cancel_after_the_end_keeps_the_state() -> None:
     assert slot.view is not None and slot.view.state == "done"
 
 
-@pytest.mark.parametrize(
-    ("result", "state"),
-    [
-        ("ok", "done"),
-        ("noop", "done"),
-        ("refused", "done"),
-        ("cancelled", "cancelled"),
-        ("failed", "failed"),
-    ],
-)
-def test_results_map_to_final_states(result: str, state: JobState) -> None:
-    mapping: dict[str, JobState] = {"cancelled": "cancelled", "failed": "failed"}
+@pytest.mark.parametrize("result", ["ok", "noop", "refused", "failed"])
+def test_a_return_ends_the_job_done(result: str) -> None:
     slot = JobSlot()
-    slot.start(
-        lambda job: result,
-        name="tidy",
-        description="",
-        state_of=lambda r: mapping.get(r, "done"),
-    )
+    slot.start(lambda job: result, name="tidy", description="")
     final = slot.wait(5)
     assert final is not None
-    assert final.state == state
+    assert final.state == "done"
     assert final.result == result
 
 
+def test_a_cancel_keeps_the_partial_result() -> None:
+    def work(job: Job) -> None:
+        raise JobCancelled(["a.jpg"])
+
+    slot = JobSlot()
+    slot.start(work, name="archive", description="")
+    final = slot.wait(5)
+    assert final is not None
+    assert final.state == "cancelled"
+    assert final.result == ["a.jpg"]
+
+
+def test_a_bare_cancel_leaves_no_result() -> None:
+    def work(job: Job) -> None:
+        raise JobCancelled
+
+    slot = JobSlot()
+    slot.start(work, name="scan", description="")
+    final = slot.wait(5)
+    assert final is not None
+    assert final.state == "cancelled"
+    assert final.result is None
+
+
+def test_a_cancel_asked_but_not_acted_on_ends_done() -> None:
+    gate = Gate()
+    slot = JobSlot()
+    _started(slot, gate)
+    slot.cancel()
+    gate.release.set()
+    final = slot.wait(5)
+    assert final is not None
+    assert final.state == "done"
+    assert final.result == "held"
+
+
 def test_an_exception_ends_the_job_failed() -> None:
-    def boom(job: JobContext) -> None:
+    def boom(job: Job) -> None:
         raise RuntimeError("disk on fire")
 
     slot = JobSlot()
@@ -225,7 +243,7 @@ def test_an_exception_ends_the_job_failed() -> None:
 
 def test_a_finished_state_never_changes() -> None:
     slot = JobSlot()
-    holder: list[JobContext] = []
+    holder: list[Job] = []
     slot.start(holder.append, name="tidy", description="")
     slot.wait(5)
     holder[0].progress(5, 5)
@@ -279,7 +297,7 @@ def test_the_work_writes_to_the_jobs_log(tmp_path: Path) -> None:
     slot = JobSlot(tmp_path)
     gate = Gate()
 
-    def work(job: JobContext) -> None:
+    def work(job: Job) -> None:
         job.log.info("step_done", source="a.jpg")
         gate.hold(job)
 
@@ -304,7 +322,7 @@ def test_the_work_writes_to_the_jobs_log(tmp_path: Path) -> None:
 
 
 def test_a_failed_job_logs_its_traceback(tmp_path: Path) -> None:
-    def boom(job: JobContext) -> None:
+    def boom(job: Job) -> None:
         raise RuntimeError("disk on fire")
 
     slot = JobSlot(tmp_path)
@@ -336,5 +354,81 @@ def test_without_a_folder_there_is_no_log_file() -> None:
     assert view.log_path is None
 
 
-def test_work_outside_a_job_can_log() -> None:
-    NO_JOB.log.info("not_in_a_job")
+def test_work_outside_a_slot_can_log() -> None:
+    Job("tidy").log.info("not_in_a_slot")
+
+
+# ---------------------------------------------------------------------------
+# A job on its own
+# ---------------------------------------------------------------------------
+
+
+def test_a_job_made_directly_reports_progress_and_cancel() -> None:
+    job = Job("tidy")
+    assert job.last_progress == Progress()
+    assert not job.cancelled
+    job.progress(3, 10, "a.jpg")
+    job.cancel()
+    assert job.last_progress == Progress(3, 10, "a.jpg")
+    assert job.cancelled
+    assert str(job) == "tidy"
+
+
+def test_a_job_with_a_log_path_writes_its_file(tmp_path: Path) -> None:
+    path = tmp_path / "tidy.log"
+    job = Job("tidy", "Camera", log_path=path)
+    job.log.info("step_done", source="a.jpg")
+    job.close()
+    job.log.info("after_close")
+    text = path.read_text(encoding="utf-8")
+    assert "event='step_done'" in text
+    assert f"job_id='{job.id}'" in text
+    assert "after_close" not in text
+
+
+# ---------------------------------------------------------------------------
+# Holding the slot
+# ---------------------------------------------------------------------------
+
+
+def test_a_hold_blocks_a_start_and_a_second_hold() -> None:
+    slot = JobSlot()
+    with slot.hold("rename", "Camera/2026/2026-10 Walk"):
+        with pytest.raises(JobBusyError) as err:
+            slot.start(lambda job: None, name="scan")
+        assert err.value.label == "rename Camera/2026/2026-10 Walk"
+        with pytest.raises(JobBusyError), slot.hold("new-batch", "Camera"):
+            pass
+        with pytest.raises(JobBusyError):
+            slot.require_idle()
+    slot.require_idle()
+
+
+def test_a_hold_leaves_the_last_job_unchanged() -> None:
+    slot = JobSlot()
+    slot.start(lambda job: 1, name="tidy", description="a")
+    before = slot.wait(5)
+    with slot.hold("rename", "b"):
+        assert slot.view == before
+        assert slot.busy is None
+    assert slot.view == before
+
+
+def test_a_hold_is_released_after_an_exception() -> None:
+    slot = JobSlot()
+    with pytest.raises(RuntimeError), slot.hold("rename", "a"):
+        raise RuntimeError("boom")
+    slot.require_idle()
+    with slot.hold("rename", "a"):
+        pass
+
+
+def test_a_running_job_blocks_a_hold() -> None:
+    slot = JobSlot()
+    gate = Gate()
+    _started(slot, gate, "archive")
+    with pytest.raises(JobBusyError) as err, slot.hold("rename", "x"):
+        pass
+    assert err.value.label == "archive Camera"
+    gate.release.set()
+    slot.wait(5)

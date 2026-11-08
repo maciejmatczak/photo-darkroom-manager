@@ -10,7 +10,15 @@ from pathlib import Path
 import pytest
 import yaml
 
+from photo_darkroom_manager.core.actions import (
+    Action,
+    ActionPlan,
+    ConflictPolicy,
+    ExecutionResult,
+    JobAction,
+)
 from photo_darkroom_manager.core.engine import CONFIG_PATH_ENV, LOG_LEVEL_ENV, Engine
+from photo_darkroom_manager.core.jobs import Job
 from photo_darkroom_manager.core.logging_config import reset_logging_state_for_tests
 
 MakeEngine = Callable[..., Engine]
@@ -37,6 +45,23 @@ def write_config(path: Path, roots: Roots | None = None, **values: object) -> Pa
     data |= values
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
+
+
+def execute(
+    action: Action, plan: ActionPlan, policy: ConflictPolicy = "refuse"
+) -> ExecutionResult:
+    """Execute *plan* the way the engine does, without the engine.
+
+    Args:
+        action: The action that prepared *plan*.
+        plan: The plan to run.
+        policy: Conflict policy for a heavy action; others take none.
+
+    A heavy action runs with a fresh job that is never cancelled.
+    """
+    if isinstance(action, JobAction):
+        return action.execute(plan, policy=policy, job=Job(str(action.action)))
+    return action.execute(plan)
 
 
 def link_dir(link: Path, target: Path) -> None:

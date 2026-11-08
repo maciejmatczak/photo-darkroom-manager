@@ -25,6 +25,7 @@ from photo_darkroom_manager.core.actions import (
     Action,
     ActionPlan,
     ExecutionResult,
+    JobAction,
 )
 from photo_darkroom_manager.core.engine import (
     ROOT_KEYS,
@@ -306,7 +307,8 @@ def _wait(ctx: _Context) -> JobView:
             progress.clear()
 
 
-def _job_result(ctx: _Context, view: JobView) -> ExecutionResult:
+def _job_result(view: JobView) -> ExecutionResult:
+    """The finished action job's result; a failed job is an internal error."""
     if isinstance(view.result, ExecutionResult):
         return view.result
     return ExecutionResult("failed", "Internal error", view.error)
@@ -390,13 +392,15 @@ def _action(ctx: _Context) -> Reply:
     action = _action_factory(ctx)(ctx.target())
     node_id = action.request.node_id
     policy = getattr(args, "on_conflict", None) or "refuse"
-    action.check_policy(policy)
-    if not action.runs_as_job:
-        return _result_reply(engine.action_apply(action, confirm=args.confirm))
-    if args.apply or args.confirm is not None:
-        engine.action_start(action, confirm=args.confirm, policy=policy)
-        return _result_reply(_job_result(ctx, _wait(ctx)))
+    changes_files = isinstance(action, JobAction) or action.exclusive
+    if not changes_files or args.apply or args.confirm is not None:
+        if isinstance(action, JobAction):
+            engine.action_start(action, confirm=args.confirm, policy=policy)
+            return _result_reply(_job_result(_wait(ctx)))
+        return _result_reply(engine.action_apply(action, args.confirm, policy))
 
+    if isinstance(action, JobAction):
+        action.check_policy(policy)
     prepared = action.prepare()
     if not isinstance(prepared, ActionPlan):
         result = ExecutionResult(prepared.outcome, prepared.message, prepared.details)

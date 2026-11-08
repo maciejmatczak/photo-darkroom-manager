@@ -15,6 +15,8 @@ from photo_darkroom_manager.core.actions import (
     ExecutionResult,
     Launch,
     OpenExternalAppAction,
+)
+from photo_darkroom_manager.core.actions._actions import (
     _find_first_image,
     _resolve_command,
 )
@@ -141,7 +143,7 @@ def test_open_external_executes_exactly_the_planned_argv(
         return Mock(wait=Mock(return_value=0))
 
     monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions.subprocess.Popen", fake_popen
+        "photo_darkroom_manager.core.actions._actions.subprocess.Popen", fake_popen
     )
     result = act.execute(plan)
     assert result.outcome == "ok"
@@ -162,7 +164,7 @@ def test_open_external_execute_uses_devnull_and_wait(
         return proc
 
     monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions.subprocess.Popen",
+        "photo_darkroom_manager.core.actions._actions.subprocess.Popen",
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
@@ -186,7 +188,7 @@ def test_open_external_execute_timeout_means_still_running(
         return proc
 
     monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions.subprocess.Popen",
+        "photo_darkroom_manager.core.actions._actions.subprocess.Popen",
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)
@@ -204,7 +206,7 @@ def test_open_external_execute_nonzero_exit(
         return proc
 
     monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions.subprocess.Popen",
+        "photo_darkroom_manager.core.actions._actions.subprocess.Popen",
         fake_popen,
     )
     act = OpenExternalAppAction(f'echo "{tmp_path}"', tmp_path)

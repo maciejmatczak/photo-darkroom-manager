@@ -12,18 +12,20 @@ from photo_darkroom_manager.core.actions import (
     ArchiveAction,
     Conflict,
     ExecutionResult,
+    JobAction,
     Launch,
     MakeDir,
     Move,
     NewBatchAction,
     OpenFolder,
+    OpenFolderAction,
     PolicyNotSupportedError,
     PublishAction,
     Rename,
     RenameAction,
     TidyAction,
 )
-from photo_darkroom_manager.core.file_utils import MoveOutcome
+from photo_darkroom_manager.core.jobs import Job, JobCancelled
 from photo_darkroom_manager.core.library import NodeAction
 
 pytestmark = pytest.mark.internal
@@ -144,8 +146,16 @@ def test_policies_per_action() -> None:
     assert ArchiveAction.policies == ("refuse", "skip")
     assert TidyAction.policies == ("refuse", "skip")
     assert PublishAction.policies == ("refuse", "skip", "replace")
-    assert RenameAction.policies == ("refuse",)
-    assert NewBatchAction.policies == ("refuse",)
+
+
+def test_heavy_actions_are_job_actions_and_exclusive() -> None:
+    for heavy in (TidyAction, ArchiveAction, PublishAction):
+        assert issubclass(heavy, JobAction)
+        assert heavy.exclusive
+    for alone in (RenameAction, NewBatchAction):
+        assert not issubclass(alone, JobAction)
+        assert alone.exclusive
+    assert not OpenFolderAction.exclusive
 
 
 def test_unsupported_policy_is_a_typed_error(tmp_path: Path) -> None:
@@ -164,39 +174,52 @@ def test_stop_between_steps_reports_done_and_left(tmp_path: Path) -> None:
     plan = action.prepare()
     assert isinstance(plan, ActionPlan)
     reported: list[tuple[int, int | None, str | None]] = []
-    steps: list[MoveOutcome] = []
 
-    result = action.execute(
-        plan,
-        progress=lambda done, total, current: reported.append((done, total, current)),
-        stop=lambda: len(steps) >= 2,
-        on_step=steps.append,
-    )
+    class CancelAfterTwo(Job):
+        def progress(
+            self, done: int, total: int | None = None, current: str | None = None
+        ) -> None:
+            super().progress(done, total, current)
+            reported.append((done, total, current))
+            if done >= 2:
+                self.cancel()
 
+    log_path = tmp_path / "logs" / "tidy.log"
+    log_path.parent.mkdir()
+    job = CancelAfterTwo("tidy", log_path=log_path)
+    with pytest.raises(JobCancelled) as stopped:
+        action.execute(plan, job=job)
+    job.close()
+
+    result = stopped.value.result
+    assert isinstance(result, ExecutionResult)
     assert result.outcome == "cancelled"
     assert len(result.done) == 2
     assert sorted(p.name for p in result.left) == ["2.jpg", "3.jpg", "4.jpg"]
     assert reported[0] == (0, 5, None)
     assert reported[1][:2] == (1, 5)
-    assert [o.status for o in steps] == ["done", "done"]
     assert "cancelled" in result.message
+    assert log_path.read_text(encoding="utf-8").count("event='step_done'") == 2
 
 
-def test_conflicts_left_undone_reach_the_step_hook(tmp_path: Path) -> None:
+def test_conflicts_left_undone_reach_the_job_log(tmp_path: Path) -> None:
     (tmp_path / "a.jpg").write_bytes(b"loose")
     (tmp_path / "PHOTOS").mkdir()
     (tmp_path / "PHOTOS" / "a.jpg").write_bytes(b"other")
     action = TidyAction(tmp_path)
     plan = action.prepare()
     assert isinstance(plan, ActionPlan)
-    steps: list[MoveOutcome] = []
+    log_path = tmp_path / "logs" / "tidy.log"
+    log_path.parent.mkdir()
+    job = Job("tidy", log_path=log_path)
 
-    action.execute(plan, policy="skip", on_step=steps.append)
+    action.execute(plan, policy="skip", job=job)
+    job.close()
 
-    ((outcome),) = steps
-    assert outcome.status == "skipped"
-    assert outcome.source == tmp_path / "a.jpg"
-    assert outcome.reason == "conflict (exists)"
+    (line,) = log_path.read_text(encoding="utf-8").splitlines()
+    assert "event='step_skipped'" in line
+    assert "a.jpg" in line
+    assert "reason='conflict (exists)'" in line
 
 
 def test_success_follows_the_outcome() -> None:
@@ -212,12 +235,12 @@ def test_execute_refuses_a_plan_for_another_request(tmp_path: Path) -> None:
     plan = action.prepare()
     assert isinstance(plan, ActionPlan)
     foreign = ActionPlan(ActionRequest.of(A.TIDY, "y"), plan.summary, plan.steps)
-    result = action.execute(foreign)
+    result = action.execute(foreign, job=Job("tidy"))
     assert result.outcome == "refused"
     assert (tmp_path / "a.jpg").exists()
 
 
-def test_execute_wraps_exceptions(
+def test_execute_lets_errors_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "a.jpg").write_bytes(b"")
@@ -228,9 +251,6 @@ def test_execute_wraps_exceptions(
     def boom(*_a: object, **_k: object) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(TidyAction, "_execute", boom)
-    result = action.execute(plan)
-    assert result.outcome == "failed"
-    assert result.details is not None
-    assert "RuntimeError" in result.details
-    assert result.fingerprint == plan.fingerprint
+    monkeypatch.setattr(TidyAction, "_run", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        action.execute(plan, job=Job("tidy"))

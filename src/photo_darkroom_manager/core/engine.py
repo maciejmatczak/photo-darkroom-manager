@@ -12,6 +12,7 @@ from typing import Literal, cast
 
 import structlog
 from platformdirs import user_config_path, user_log_dir
+from structlog.stdlib import BoundLogger
 
 from photo_darkroom_manager.core.actions import (
     Action,
@@ -22,6 +23,7 @@ from photo_darkroom_manager.core.actions import (
     CullAction,
     EditAction,
     ExecutionResult,
+    JobAction,
     NewBatchAction,
     OpenFolderAction,
     ParamValue,
@@ -30,14 +32,11 @@ from photo_darkroom_manager.core.actions import (
     RenameAction,
     TidyAction,
 )
-from photo_darkroom_manager.core.file_utils import MoveOutcome
 from photo_darkroom_manager.core.jobs import (
-    NO_JOB,
+    Job,
     JobBusyError,
     JobCancelled,
-    JobContext,
     JobSlot,
-    JobState,
     JobView,
 )
 from photo_darkroom_manager.core.library import (
@@ -120,7 +119,7 @@ def _node_id(darkroom: Path, path: Path) -> NodeId:
     return "" if relative == "." else relative
 
 
-def _visitor(job: JobContext):
+def _visitor(job: Job):
     """Scan hook: stop on cancel, count folders as indeterminate progress."""
     count = 0
 
@@ -148,7 +147,8 @@ JOBS_DIR_NAME = "jobs"
 _CHANGES_KEPT = 64
 
 EngineBusyError = JobBusyError
-"""A job or a configuration edit was requested while a job runs."""
+"""Work that must run alone was requested while a job or an exclusive
+action runs."""
 
 
 class EngineNotReadyError(RuntimeError):
@@ -185,13 +185,6 @@ class ActionNotAllowedError(ValueError):
         self.kind = kind
 
 
-def _action_state(result: ExecutionResult) -> JobState:
-    """Final job state for an action result; a refusal is a valid answer."""
-    if result.outcome == "cancelled":
-        return "cancelled"
-    return "failed" if result.outcome == "failed" else "done"
-
-
 @dataclass(frozen=True)
 class ScanResult:
     """Result of a scan or refresh job.
@@ -208,9 +201,9 @@ def _job_description(node_id: NodeId) -> str:
     return node_id or "darkroom root"
 
 
-def _log_result(job: JobContext, result: ExecutionResult) -> None:
-    """Write what an action did to its job's log, as its last line."""
-    job.log.info(
+def _log_result(logger: BoundLogger, result: ExecutionResult) -> None:
+    """Write what an action did, as the last line of its log."""
+    logger.info(
         "action_result",
         outcome=result.outcome,
         message=result.message,
@@ -219,19 +212,9 @@ def _log_result(job: JobContext, result: ExecutionResult) -> None:
         skipped=len(result.skipped),
         conflicts=len(result.conflicts),
         left=[str(p) for p in result.left],
+        remaining=[str(p) for p in result.remaining],
         refreshed=result.library_refreshed,
     )
-
-
-def _log_step(job: JobContext, outcome: MoveOutcome) -> None:
-    """Write one finished or skipped move to its job's log."""
-    fields = {"source": str(outcome.source), "target": str(outcome.target)}
-    if outcome.status == "done":
-        job.log.info("step_done", **fields)
-    elif outcome.status == "skipped":
-        job.log.info("step_skipped", reason=outcome.reason, **fields)
-    else:
-        job.log.warning("step_failed", reason=outcome.reason, **fields)
 
 
 def _under(node_id: NodeId, other: NodeId) -> bool:
@@ -418,8 +401,7 @@ class Engine:
             raise error
         return view
 
-        # ------------------------------------------------------------------
-
+    # ------------------------------------------------------------------
     # Library
     # ------------------------------------------------------------------
 
@@ -488,7 +470,7 @@ class Engine:
         return view.result.node_id
 
     def _scan(
-        self, job: JobContext, root: Path, node_id: NodeId, kind: NodeKind
+        self, job: Job, root: Path, node_id: NodeId, kind: NodeKind
     ) -> ScanResult:
         job.log.info("scan_started", root=str(root), node_id=node_id)
         started = time.perf_counter()
@@ -528,8 +510,8 @@ class Engine:
         self._require_ready()
         self._require_library()
 
-        def work(job: JobContext) -> ScanResult:
-            refreshed = self._refresh(node_id, job)
+        def work(job: Job) -> ScanResult:
+            refreshed = self._refresh(node_id, job.log, job)
             job.log.info("refresh_result", node_id=node_id, refreshed=refreshed)
             return ScanResult(refreshed)
 
@@ -563,24 +545,35 @@ class Engine:
             raise LibraryNotScannedError()
         return self._library
 
-    def _refresh(self, node_id: NodeId, job: JobContext = NO_JOB) -> NodeId:
-        """Rescan inside the running job; disk is read outside the tree lock."""
+    def _refresh(
+        self, node_id: NodeId, logger: BoundLogger, job: Job | None = None
+    ) -> NodeId:
+        """Rescan *node_id*; disk is read outside the tree lock.
+
+        Args:
+            node_id: The id to rescan, or the nearest existing ancestor.
+            logger: Where the rescan's lines go.
+            job: The refresh job, which may cancel the rescan and hears its
+                progress; ``None`` for the rescan after an action, which is
+                never cancelled.
+        """
         with self._tree_lock:
             library = self._require_library()
             target = library.nearest(node_id)
             while target and not library.path(target).is_dir():
                 target = library.nearest(parent_id(target))
             root, kind = library.root, library.kind(target)
-        job.log.info("refresh_started", node_id=node_id, target=target)
+        logger.info("refresh_started", node_id=node_id, target=target)
         started = time.perf_counter()
-        facts = scan_subtree(root, target, kind, visit=_visitor(job))
+        visit = _visitor(job) if job is not None else None
+        facts = scan_subtree(root, target, kind, visit=visit)
         with self._tree_lock:
             if self._library is not library:
                 return target
             library.replace_subtree(target, facts)
             self._record_change(target)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        job.log.info("refresh_complete", target=target, duration_ms=duration_ms)
+        logger.info("refresh_complete", target=target, duration_ms=duration_ms)
         return target
 
     def _folder(self, node_id: NodeId) -> Path:
@@ -627,33 +620,30 @@ class Engine:
 
     def action_start(
         self,
-        action: Action,
+        action: JobAction,
         *,
         confirm: str | None = None,
         policy: str = "refuse",
     ) -> JobView:
-        """Start preparing and executing *action* as a job; return it.
+        """Start preparing and executing a heavy *action* as a job; return it.
 
-        With *confirm*, execute only when the new plan has that fingerprint;
-        otherwise the job ends with a refusal naming both fingerprints.
-        *policy* says what to do with conflicts; an action that does not
-        support it raises ``PolicyNotSupportedError``.
+        Args:
+            action: The heavy action to run (tidy, archive, publish).
+            confirm: Execute only when the new plan has this fingerprint;
+                otherwise the job ends with a refusal naming both.
+            policy: What to do with conflicts.
+
+        Raises:
+            PolicyNotSupportedError: The action does not support *policy*.
+            EngineBusyError: A job or an exclusive action runs.
         """
-        checked = action.check_policy(policy)
-        if not action.runs_as_job:
+        if not isinstance(action, JobAction):
             raise ValueError(f"{action.action} runs at once; use action_apply")
-        request = action.request
-
-        def work(job: JobContext) -> ExecutionResult:
-            result = self._apply(action, confirm, checked, job)
-            _log_result(job, result)
-            return result
-
+        checked = action.check_policy(policy)
         return self._jobs.start(
-            work,
+            lambda job: self._apply(action, confirm, checked, job),
             name=str(action.action),
-            description=_job_description(request.node_id),
-            state_of=_action_state,
+            description=_job_description(action.request.node_id),
         )
 
     def action_apply(
@@ -664,28 +654,74 @@ class Engine:
     ) -> ExecutionResult:
         """Prepare and execute *action*, waiting for the result.
 
-        Actions that change files run as a job; open, cull and edit run at
-        once, also while a job runs.
+        A heavy action runs as a job. Any other runs at once; an exclusive
+        one (rename, new batch) holds the engine while it runs, the others
+        (open, cull, edit) also run while a job runs.
+
+        Args:
+            action: The action to run.
+            confirm: Execute only when the new plan has this fingerprint.
+            policy: What to do with conflicts; only heavy actions take one
+                other than ``refuse``.
+
+        Raises:
+            PolicyNotSupportedError: The action does not support *policy*.
+            EngineBusyError: The action must run alone and the engine is
+                busy.
         """
-        if not action.runs_as_job:
-            return self._apply(action, confirm, action.check_policy(policy), NO_JOB)
-        self.action_start(action, confirm=confirm, policy=policy)
-        view = self._wait_finished()
-        assert isinstance(view.result, ExecutionResult)
-        return view.result
+        if isinstance(action, JobAction):
+            self.action_start(action, confirm=confirm, policy=policy)
+            view = self._wait_finished()
+            assert isinstance(view.result, ExecutionResult)
+            return view.result
+        if policy != "refuse":
+            raise PolicyNotSupportedError(action.action, policy, ("refuse",))
+        if not action.exclusive:
+            return self._apply(action, confirm, "refuse", None)
+        description = _job_description(action.request.node_id)
+        with self._jobs.hold(str(action.action), description):
+            return self._apply(action, confirm, "refuse", None)
 
     def _apply(
         self,
         action: Action,
         confirm: str | None,
         policy: ConflictPolicy,
-        job: JobContext,
+        job: Job | None,
+    ) -> ExecutionResult:
+        """Prepare, check *confirm*, execute and rescan; log request and result.
+
+        Args:
+            action: The action to run.
+            confirm: Fingerprint the new plan must have, if given.
+            policy: Conflict policy, already checked.
+            job: The job of a heavy action; ``None`` for one run at once,
+                which logs to the application log.
+        """
+        logger = job.log if job is not None else log
+        try:
+            result = self._prepare_and_run(action, confirm, policy, job, logger)
+        except JobCancelled as stopped:
+            if isinstance(stopped.result, ExecutionResult):
+                _log_result(logger, stopped.result)
+            raise
+        _log_result(logger, result)
+        return result
+
+    def _prepare_and_run(
+        self,
+        action: Action,
+        confirm: str | None,
+        policy: ConflictPolicy,
+        job: Job | None,
+        logger: BoundLogger,
     ) -> ExecutionResult:
         request = action.request
-        job.progress(0)
+        if job is not None:
+            job.progress(0)
         prepared = action.prepare()
         if not isinstance(prepared, ActionPlan):
-            job.log.info(
+            logger.info(
                 "action_request",
                 action=str(request.action),
                 node_id=request.node_id,
@@ -696,7 +732,7 @@ class Engine:
             )
             return ExecutionResult(prepared.outcome, prepared.message, prepared.details)
         current = prepared.fingerprint
-        job.log.info(
+        logger.info(
             "action_request",
             action=str(request.action),
             node_id=request.node_id,
@@ -715,23 +751,19 @@ class Engine:
                 f"plan changed since {confirm} (now {current}); preview again",
                 fingerprint=current,
             )
-        return self._run(action, prepared, policy, job)
+        if not isinstance(action, JobAction):
+            return self._after(action.execute(prepared), logger)
+        assert job is not None
+        try:
+            result = action.execute(prepared, policy=policy, job=job)
+        except JobCancelled as stopped:
+            if not isinstance(stopped.result, ExecutionResult):
+                raise
+            raise JobCancelled(self._after(stopped.result, logger)) from None
+        return self._after(result, logger)
 
-    def _run(
-        self,
-        action: Action,
-        plan: ActionPlan,
-        policy: ConflictPolicy = "refuse",
-        job: JobContext = NO_JOB,
-    ) -> ExecutionResult:
-        """Execute, then rescan what changed; the rescan is never cancelled."""
-        result = action.execute(
-            plan,
-            policy=policy,
-            progress=job.progress,
-            stop=lambda: job.cancelled,
-            on_step=lambda outcome: _log_step(job, outcome),
-        )
+    def _after(self, result: ExecutionResult, logger: BoundLogger) -> ExecutionResult:
+        """Name the acted-on node and rescan what changed; never cancelled."""
         darkroom = self.darkroom
         if result.node_path is not None and darkroom is not None:
             result = replace(result, node_id=_node_id(darkroom, result.node_path))
@@ -739,13 +771,13 @@ class Engine:
         if result.rescan_node_path is None or library is None:
             return result
         node_id = _node_id(library.root, result.rescan_node_path)
-        return replace(result, library_refreshed=self._refresh(node_id))
+        return replace(result, library_refreshed=self._refresh(node_id, logger))
 
     def action_open(self, node_id: NodeId) -> Action:
         request, path = self._request(NodeAction.OPEN, node_id)
         return OpenFolderAction(path, request=request)
 
-    def action_tidy(self, node_id: NodeId) -> Action:
+    def action_tidy(self, node_id: NodeId) -> JobAction:
         request, path = self._request(NodeAction.TIDY, node_id)
         return TidyAction(path, request=request)
 
@@ -759,7 +791,7 @@ class Engine:
         request, path = self._request(NodeAction.EDIT, node_id)
         return EditAction(self.edit_command, path, request=request)
 
-    def action_archive(self, node_id: NodeId) -> Action:
+    def action_archive(self, node_id: NodeId) -> JobAction:
         request, path = self._request(NodeAction.ARCHIVE, node_id)
         return ArchiveAction(
             path,
@@ -768,7 +800,7 @@ class Engine:
             request=request,
         )
 
-    def action_publish(self, node_id: NodeId) -> Action:
+    def action_publish(self, node_id: NodeId) -> JobAction:
         request, path = self._request(NodeAction.PUBLISH, node_id)
         return PublishAction(
             path,

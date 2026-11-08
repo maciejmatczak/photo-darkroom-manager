@@ -176,7 +176,7 @@ def test_during_a_scan(
         seen["archive"] = engine.archive
         with pytest.raises(EngineBusyError) as edit:
             engine.config_set("archive", tmp_path / "elsewhere")
-        seen["edit_busy"] = edit.value.job.name
+        seen["edit_busy"] = edit.value.label
         with pytest.raises(EngineBusyError):
             engine.library_scan()
         with pytest.raises(EngineBusyError):
@@ -190,7 +190,7 @@ def test_during_a_scan(
         "scanning": True,
         "status": "ready",
         "archive": roots.archive,
-        "edit_busy": "scan",
+        "edit_busy": "scan darkroom root",
     }
     assert engine.archive == roots.archive
     assert not (roots.darkroom / "Camera").exists()
