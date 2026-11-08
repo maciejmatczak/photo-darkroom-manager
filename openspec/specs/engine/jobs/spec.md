@@ -9,9 +9,9 @@ every client sees running work the same way.
 ## Requirements
 
 ### Requirement: What runs as a job
-Every action that changes files (tidy, archive, publish, rename, new
-batch) and every library scan and refresh SHALL run as a job. Actions that
-change no files (open, cull, edit) SHALL run at once and never as a job.
+The heavy actions that change files (tidy, archive and publish) and every
+library scan and refresh SHALL run as a job. All other actions (open,
+cull, edit, rename and new batch) SHALL run at once and never as a job.
 
 #### Scenario: Archive is a job
 - **WHEN** a client applies archive of a batch
@@ -20,6 +20,11 @@ change no files (open, cull, edit) SHALL run at once and never as a job.
 #### Scenario: Opening a folder is not a job
 - **WHEN** a client opens a batch's folder
 - **THEN** the folder SHALL open and no job SHALL be started
+
+#### Scenario: Rename is not a job
+- **WHEN** a client applies rename of a batch
+- **THEN** the batch SHALL be renamed and no job SHALL be started
+- **AND** the engine's job SHALL be the one it had before, if any
 
 ### Requirement: Starting a job returns at once
 Starting a job SHALL return before its work is done; the work SHALL run
@@ -69,7 +74,8 @@ three, and a finished job's state SHALL never change.
 
 #### Scenario: Action that fails on a file
 - **WHEN** an archive moves some files and fails on one
-- **THEN** the job SHALL end `failed`
+- **THEN** the job SHALL end `done`
+- **AND** its result SHALL have the `failed` outcome and name the file
 
 #### Scenario: Nothing to do
 - **WHEN** a tidy job finds nothing to tidy
@@ -99,8 +105,8 @@ without a time limit, and get its final snapshot.
 
 ### Requirement: Cancelling a job
 A client SHALL be able to cancel the running job. The job SHALL stop at
-the next point between steps, never in the middle of a file, and end
-`cancelled`. Cancelling when no job runs SHALL do nothing.
+the next point where its work can stop safely, never in the middle of a
+file, and end `cancelled`. Cancelling when no job runs SHALL do nothing.
 
 #### Scenario: Cancel an archive
 - **WHEN** an archive of 40 files is cancelled after 10 were moved
@@ -112,10 +118,26 @@ the next point between steps, never in the middle of a file, and end
 - **THEN** the job SHALL stay `done`
 
 ### Requirement: Blocking calls run as jobs
-The engine's blocking calls for scanning, refreshing and applying an
+The engine's blocking calls for scanning, refreshing and applying a heavy
 action SHALL start a job and wait for it, so they follow the same busy
 rule and leave the same job, state and log as a job started directly.
 
 #### Scenario: Blocking scan
 - **WHEN** a client calls the blocking scan and it returns
 - **THEN** the engine's job SHALL be a finished scan
+
+### Requirement: A job's final state follows from its run
+A job's final state SHALL follow from how its work ended, never from the
+content of its result: `failed` when the work raised an error,
+`cancelled` when a cancel was asked and the work stopped for it, and
+`done` otherwise. What the work did to each file SHALL be reported in its
+result.
+
+#### Scenario: Work raises an error
+- **WHEN** a scan stops because of an unexpected error
+- **THEN** the job SHALL end `failed` with the error
+
+#### Scenario: Refused at run time
+- **WHEN** a tidy job finds at run time that its conflicts block it and
+  moves nothing
+- **THEN** the job SHALL end `done` with a `refused` result

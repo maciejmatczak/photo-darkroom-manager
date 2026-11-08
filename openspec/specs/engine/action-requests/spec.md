@@ -118,7 +118,9 @@ fingerprints.
 ### Requirement: Applying an action
 A client SHALL be able to apply an action in one request that prepares
 and executes it, without confirming a plan first, and with a conflict
-policy. An action that changes files SHALL be applied as a job.
+policy. A heavy action (tidy, archive, publish) SHALL be applied as a
+job; rename and new batch SHALL be applied at once and return their
+result.
 
 #### Scenario: Apply at once
 - **WHEN** a client applies tidy of an untidy batch
@@ -127,6 +129,11 @@ policy. An action that changes files SHALL be applied as a job.
 #### Scenario: Apply starts a job
 - **WHEN** a client starts applying archive of a batch
 - **THEN** the engine's job SHALL be that archive until it finishes
+
+#### Scenario: Rename returns its result
+- **WHEN** a client applies a rename of a batch
+- **THEN** the call SHALL return the rename's result once the folder is
+  renamed
 
 ### Requirement: Confirming a plan
 A client SHALL be able to apply an action by confirming the fingerprint
