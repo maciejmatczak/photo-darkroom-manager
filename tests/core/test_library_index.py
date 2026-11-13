@@ -5,10 +5,9 @@ import threading
 from pathlib import Path
 
 import pytest
-from conftest import Roots
+from conftest import Roots, run_planned
 
 from photo_darkroom_manager.core import engine as engine_module
-from photo_darkroom_manager.core.actions import ActionPlan
 from photo_darkroom_manager.core.engine import (
     Engine,
     EngineBusyError,
@@ -124,37 +123,30 @@ def test_tidy_updates_the_tree(roots: Roots, engine: Engine) -> None:
     engine.library_scan()
     assert "untidy" in engine.library_node(BATCH).issues
 
-    action = engine.action_tidy(BATCH)
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan)
-    result = engine.action_apply(action, confirm=plan.fingerprint)
+    done = run_planned(engine, "tidy", BATCH)
 
-    assert result.success
-    assert result.library_refreshed == BATCH
+    assert done.result.outcome == "ok"
+    assert done.library_refreshed == BATCH
     view = engine.library_node(BATCH)
     assert "untidy" not in view.issues
     assert [c.name for c in view.children] == [PHOTOS_FOLDER]
     assert "untidy" not in engine.library_node("").issues
 
 
-def test_opening_an_external_app(roots: Roots, make_engine) -> None:
+def test_opening_an_external_app_changes_nothing(roots: Roots, make_engine) -> None:
     _batch(roots)
     engine = make_engine(roots, edit_command="echo {folder}")
     engine.library_scan()
-    action = engine.action_edit(BATCH)
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan)
-    result = engine.action_apply(action, confirm=plan.fingerprint)
-    assert result.success
-    assert result.library_refreshed is None
+    revision = engine.library_revision
+    engine.action_edit(BATCH)
+    assert engine.library_revision == revision
 
 
 @pytest.mark.internal
 def test_action_without_a_scan_refreshes_nothing(roots: Roots, engine: Engine) -> None:
-    result = engine.action_apply(engine.action_new_batch("Camera", date="2026-10"))
-    assert result.success
-    assert result.rescan_node_path is not None
-    assert result.library_refreshed is None
+    done = run_planned(engine, "new_batch", "Camera", date="2026-10")
+    assert done.result.outcome == "ok"
+    assert done.library_refreshed is None
     assert not engine.library_scanned
 
 
@@ -179,8 +171,9 @@ def test_during_a_scan(
         seen["edit_busy"] = edit.value.label
         with pytest.raises(EngineBusyError):
             engine.library_scan()
+        plan = engine.action_prepare_new_batch("Camera", date="2026-10")
         with pytest.raises(EngineBusyError):
-            engine.action_apply(engine.action_new_batch("Camera", date="2026-10"))
+            engine.action_new_batch(plan)
         return real_scan(root, node_id, kind, **kwargs)
 
     monkeypatch.setattr(engine_module, "scan_subtree", scan_and_probe)
@@ -405,7 +398,7 @@ def test_tidy_changes_the_revision(roots: Roots, engine: Engine) -> None:
     (_batch(roots) / "loose.jpg").write_bytes(b"image")
     engine.library_scan()
     revision = engine.library_revision
-    engine.action_apply(engine.action_tidy(BATCH))
+    run_planned(engine, "tidy", BATCH)
     assert engine.library_revision > revision
     assert engine.library_changes(revision) == (BATCH,)
 
@@ -424,7 +417,7 @@ def test_archive_of_one_batch_changes_its_year(roots: Roots, engine: Engine) -> 
     (_batch(roots) / "a.jpg").write_bytes(b"image")
     engine.library_scan()
     revision = engine.library_revision
-    engine.action_apply(engine.action_archive(BATCH))
+    run_planned(engine, "archive", BATCH)
     assert engine.library_changes(revision) == ("Camera/2026",)
 
 

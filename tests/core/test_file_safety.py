@@ -1,19 +1,18 @@
 """Contract: file actions never lose user files and report what changed.
 
-Each test runs an action through the public engine factories,
-``prepare()`` and ``engine.action_apply()`` with the plan's fingerprint,
-then compares the whole workspace (darkroom, showroom and archive) before
-and after.
+Each test prepares and executes an action through the engine, then
+compares the whole workspace (darkroom, showroom and archive) before and
+after.
 """
 
 import hashlib
 from collections import Counter
 from pathlib import Path
 
-from conftest import execute
+import pytest
+from conftest import run_planned
 
-from photo_darkroom_manager.core.actions import ActionPlan
-from photo_darkroom_manager.core.engine import Engine
+from photo_darkroom_manager.core.engine import ActionRefusedError, Engine
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
 
 BATCHES = Path("Camera") / "2026"
@@ -53,18 +52,16 @@ def _snapshot(manager: Engine) -> dict[Path, bytes]:
     }
 
 
-def _run(manager: Engine, action):
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan), plan
-    return manager.action_apply(action, confirm=plan.fingerprint)
+def _ok(manager: Engine, name: str, relative: Path) -> None:
+    done = run_planned(manager, name, _id(relative))
+    assert done.result.outcome == "ok", done
 
 
 def test_tidy_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
     photo_setup.darkroom_has_dir(TIDY_BASIC)
     before = _contents(mgr)
-    result = _run(mgr, mgr.action_tidy(_id(TIDY_BASIC)))
-    assert result.success
+    _ok(mgr, "tidy", TIDY_BASIC)
     assert _contents(mgr) == before
 
 
@@ -72,8 +69,7 @@ def test_archive_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
     photo_setup.darkroom_has_dir(ARCHIVE_BASIC)
     before = _contents(mgr)
-    result = _run(mgr, mgr.action_archive(_id(ARCHIVE_BASIC)))
-    assert result.success
+    _ok(mgr, "archive", ARCHIVE_BASIC)
     assert _contents(mgr) == before
 
 
@@ -81,8 +77,7 @@ def test_publish_keeps_every_file(photo_setup) -> None:
     mgr = photo_setup.engine
     photo_setup.darkroom_has_dir(PUBLISH_BASIC)
     before = _contents(mgr)
-    result = _run(mgr, mgr.action_publish(_id(PUBLISH_BASIC)))
-    assert result.success
+    _ok(mgr, "publish", PUBLISH_BASIC)
     assert _contents(mgr) == before
 
 
@@ -92,39 +87,35 @@ def test_archive_subfolder_leaves_rest_of_batch(photo_setup) -> None:
     photos = batch / PHOTOS_FOLDER
     others = {p for p in batch.rglob("*") if p.is_file() and photos not in p.parents}
     assert others
-    result = _run(mgr, mgr.action_archive(_id(ARCHIVE_BASIC / PHOTOS_FOLDER)))
-    assert result.success
+    _ok(mgr, "archive", ARCHIVE_BASIC / PHOTOS_FOLDER)
     assert not photos.exists() or not any(photos.rglob("*.*"))
     assert all(p.is_file() for p in others)
 
 
-def test_conflict_refused_by_policy_leaves_disk_unchanged(photo_setup) -> None:
+def test_conflicts_without_an_answer_leave_disk_unchanged(photo_setup) -> None:
     mgr = photo_setup.engine
     photo_setup.darkroom_has_dir(ARCHIVE_CONFLICT)
     before = _snapshot(mgr)
-    action = mgr.action_archive(_id(ARCHIVE_CONFLICT))
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan)
+    plan = mgr.action_prepare_archive(_id(ARCHIVE_CONFLICT))
     assert plan.conflicts
-    result = execute(action, plan)
-    assert result.outcome == "refused"
+    with pytest.raises(ActionRefusedError):
+        mgr.action_archive(plan)
     assert _snapshot(mgr) == before
 
 
 def test_tree_changing_actions_report_what_to_refresh(photo_setup) -> None:
-    """Each successful file action names a darkroom path covering its change."""
+    """Each successful file action rescans a node covering its change."""
     mgr = photo_setup.engine
-    darkroom = photo_setup.roots.darkroom
+    mgr.library_scan()
     cases = [
-        (mgr.action_tidy, TIDY_BASIC),
-        (mgr.action_archive, ARCHIVE_BASIC),
-        (mgr.action_publish, PUBLISH_BASIC),
+        ("tidy", TIDY_BASIC),
+        ("archive", ARCHIVE_BASIC),
+        ("publish", PUBLISH_BASIC),
     ]
-    for factory, rel in cases:
-        target = photo_setup.darkroom_has_dir(rel)
-        result = _run(mgr, factory(_id(rel)))
-        assert result.success, rel
-        hint = result.rescan_node_path
-        assert hint is not None, rel
-        assert hint == target or hint in target.parents, rel
-        assert hint == darkroom or darkroom in hint.parents, rel
+    for name, rel in cases:
+        photo_setup.darkroom_has_dir(rel)
+        done = run_planned(mgr, name, _id(rel))
+        assert done.result.outcome == "ok", rel
+        refreshed = done.library_refreshed
+        assert refreshed is not None, rel
+        assert _id(rel) == refreshed or _id(rel).startswith(f"{refreshed}/"), rel

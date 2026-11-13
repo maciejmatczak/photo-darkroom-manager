@@ -18,9 +18,6 @@ Lifecycle of a job:
    ``failed``; write ``job_finished``, close the log and store the final
    snapshot.
 
-The slot can also be held (:meth:`JobSlot.hold`) by a short call that must
-run alone without becoming a job.
-
 The module depends only on the standard library and structlog.
 """
 
@@ -31,8 +28,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -118,11 +114,10 @@ class JobView:
 
 
 class JobBusyError(RuntimeError):
-    """Work was refused while a job is active or the slot is held.
+    """Work was refused while a job is active.
 
     Args:
-        label: What is running: the job's name and description, or those of
-            the call holding the slot.
+        label: What is running: the job's name and description.
     """
 
     def __init__(self, label: str) -> None:
@@ -283,8 +278,7 @@ class JobSlot:
     """Holds at most one job and runs it on a new non-daemon thread.
 
     A finished job stays readable until the next one replaces it; there is
-    no list of past jobs. The slot is busy while its job is active or while
-    a call holds it (:meth:`hold`).
+    no list of past jobs. The slot is busy while its job is active.
 
     Args:
         jobs_dir: Folder for one log file per job; ``None`` writes job logs
@@ -296,7 +290,6 @@ class JobSlot:
         self._lock = threading.Lock()
         self._record: _Record | None = None
         self._thread: threading.Thread | None = None
-        self._held: str | None = None
 
     @property
     def view(self) -> JobView | None:
@@ -322,38 +315,11 @@ class JobSlot:
         """Raise :class:`JobBusyError` while busy; the lock must be held."""
         if self._record is not None and self._record.view.active:
             raise JobBusyError(str(self._record.view))
-        if self._held is not None:
-            raise JobBusyError(self._held)
 
     def require_idle(self) -> None:
-        """Raise :class:`JobBusyError` while a job is active or a hold taken."""
+        """Raise :class:`JobBusyError` while a job is active."""
         with self._lock:
             self._refuse_if_busy()
-
-    @contextmanager
-    def hold(self, name: str, description: str = "") -> Iterator[None]:
-        """Keep the slot busy for the ``with`` block, without starting a job.
-
-        The slot's current or last job stays as it was. The hold is released
-        when the block ends, also by an exception.
-
-        Args:
-            name: Short name of what holds the slot, e.g. ``rename``; used in
-                the busy error.
-            description: Free-form text, e.g. what it works on; also used in
-                the busy error.
-
-        Raises:
-            JobBusyError: A job is active or another call holds the slot.
-        """
-        with self._lock:
-            self._refuse_if_busy()
-            self._held = _label(name, description)
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._held = None
 
     def start[R](
         self,
@@ -377,7 +343,7 @@ class JobSlot:
                 used, shortened, in the log file name.
 
         Raises:
-            JobBusyError: Another job is active or a call holds the slot.
+            JobBusyError: Another job is active.
         """
         started = datetime.now()
         with self._lock:

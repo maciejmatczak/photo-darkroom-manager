@@ -59,20 +59,21 @@ engine.action_edit(node_id) -> ExternalAppResult
 # executing hands the plan back to that action's own call
 engine.action_prepare_rename(node_id, date=None, title=None,
                              clear_title=False) -> RenamePlan
-engine.action_rename(plan: RenamePlan, answers={}) -> Job
+engine.action_rename(plan: RenamePlan, answers={}) -> JobView
 
 engine.action_prepare_new_batch(device_id, date="2026-10",
                                 title=None) -> NewBatchPlan
-engine.action_new_batch(plan: NewBatchPlan, answers={}) -> Job
+engine.action_new_batch(plan: NewBatchPlan, answers={}) -> JobView
 
 engine.action_prepare_tidy(node_id) -> TidyPlan
-engine.action_tidy(plan: TidyPlan, answers={}) -> Job
+engine.action_tidy(plan: TidyPlan, answers={}) -> JobView
 
 engine.action_prepare_archive(node_id) -> ArchivePlan
-engine.action_archive(plan: ArchivePlan, answers={}) -> Job
+engine.action_archive(plan: ArchivePlan, answers={}) -> JobView
 
 engine.action_prepare_publish(node_id) -> PublishPlan
-engine.action_publish(plan: PublishPlan, answers={"existing": "replace"}) -> Job
+engine.action_publish(plan: PublishPlan,
+                      answers={"existing": "replace"}) -> JobView
 ```
 
 Every call refuses the same way: by raising a typed error, as the engine
@@ -117,14 +118,16 @@ class Question:                       # one form field with choices
 
 Answers = Mapping[str, str]           # posted form data
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ActionPlan(ABC):                # some actions have a plan
-    questions: Mapping[str, Question]
-    fingerprint: str
+    questions: Mapping[str, Question] = field(default_factory=dict)
 
     @property
     @abstractmethod
     def nothing_to_do(self) -> bool: ...  # each plan answers from its fields
+
+    @property
+    def fingerprint(self) -> str: ...  # of every field, questions included
 
 class ActionRefusedError(Exception):  # cannot plan or run as asked
     message: str
@@ -148,7 +151,9 @@ def check_answers(questions: Mapping[str, Question],
 - **Refusing:** `ActionRefusedError` is the one way an action says it
   cannot plan or run as asked (a missing `PUBLISH/`, a taken name, an
   invalid month, a bad command).
-- **`fingerprint`:** every action hashes the same way.
+- **`fingerprint`:** every action hashes the same way. A plan's
+  fingerprint is a property computed from all its fields, so no action
+  can forget to cover its work.
 - **`require_unchanged_plan`:** raises `ActionRefusedError` naming both
   fingerprints when a fresh plan differs from the one handed back.
 - **`check_answers`:** applies the web-form rules (a known question, a
@@ -168,8 +173,9 @@ for little gain; the questions already say what can be answered.
 A planned action module defines its plan and result types and two plain
 functions, `prepare` and `run`; the module name says which action, so the
 engine calls them as `archive.prepare` and `archive.run`. Nothing makes
-the modules alike
-except the foundation they use.
+the modules alike except the foundation they use. Library checks two
+or more of them share (available roots, recognizing a batch) live in
+`_library.py`.
 
 ```python
 # core/actions/archive.py
@@ -177,14 +183,18 @@ except the foundation they use.
 class ArchivePlan(ActionPlan):
     source: Path                      # also the input to prepare again
     target: Path
-    files: int
-    conflicts: tuple[Path, ...]
-    _moves: tuple[Move, ...] = field(repr=False)   # private work
+    darkroom_root: Path
+    archive_root: Path
+    moves: tuple[FileMove, ...]       # the work the run does
+    conflicts: tuple[FileMove, ...] = ()
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ArchiveResult(ActionResult):
+    source: Path
     moves: MoveReport
-    removed_folders: tuple[Path, ...]
+    remaining: tuple[Path, ...] = ()
+    source_removed: bool = False
+    cleanup_problem: str | None = None
 
 def prepare(source: Path, darkroom_root: Path,
             archive_root: Path) -> ArchivePlan: ...
@@ -194,23 +204,23 @@ def run(plan: ArchivePlan, answers: Answers, job: Job) -> ArchiveResult: ...
 - **The plan is the preview:** its fields say what will happen, in the
   action's own terms. There is no shared preview text.
 - **Plans are plain data:** a plan carries the inputs its prepare got, so
-  the engine can prepare it again from the plan alone, and the work the
-  run will do in a private field. The fingerprint covers that work and
-  the questions, so any change in what the action would do changes it.
-  Frontends never show private fields.
-- **Private helpers:** `Move`, `MakeDir` and friends belong to the actions
-  that use them.
+  the engine can prepare it again from the plan alone, and the work its
+  run does (for a move action, the list of `FileMove`s, which is also
+  what the preview shows). The fingerprint covers every field, so any
+  change in what the action would do changes it.
+- **No steps:** moves are plain `FileMove` data; the old step types
+  (`Move`, `MakeDir`, `Rename`, `OpenFolder`, `Launch`) are gone.
 
 | Action | Plan says | Result says |
 | --- | --- | --- |
 | tidy | folder, files to move with their targets, conflicts | `MoveReport` |
-| archive | source, target, files, conflicts | `MoveReport`, emptied dirs |
+| archive | source, target, moves, conflicts | `MoveReport`, remaining |
 | publish | source, showroom folder, files, files to replace | `MoveReport` |
 | rename | old folder, the inputs, new folder | new folder |
 | new batch | device folder, the inputs, folders to create | created batch |
 
-Actions that move files put a `MoveReport` (moved, failed with reasons,
-skipped, left by a cancel, remaining) from the shared move helper
+Actions that move files put a `MoveReport` (moved, replaced, failed with
+reasons, skipped, left by a cancel) from the shared move helper
 (`_moves.py`) in their result, the one place spec `app/file-moves`
 "Moves are reported" lives.
 
@@ -258,11 +268,14 @@ Each execute call follows the same steps, through one engine-private
 helper so that none can skip the checks:
 
 ```python
-# core/engine.py — one execute call
-from photo_darkroom_manager.core.actions import archive
+# core/engine.py — one execute call; inside Engine the name `archive` is
+# the archive root's property, so the engine imports the module as
+# `archive_action`
+from photo_darkroom_manager.core.actions import archive as archive_action
 
-def action_archive(self, plan: archive.ArchivePlan,
-                   answers: Answers = {}) -> Job:
+def action_archive(
+    self, plan: archive_action.ArchivePlan, answers: Answers = {}
+) -> JobView:
     fresh_plan = self.action_prepare_archive(
         self._node_id_for_folder(plan.source)
     )
@@ -270,14 +283,17 @@ def action_archive(self, plan: archive.ArchivePlan,
         plan,
         fresh_plan,
         answers,
-        run_action=archive.run,
+        run_action=archive_action.run,
         after_run=self._after_archive_run,
     )
 
 # core/engine.py — archive's callback, next to its call
 def _after_archive_run(
-    self, plan: archive.ArchivePlan, result: archive.ArchiveResult, job: Job
-) -> NodeActionResult[archive.ArchiveResult]:
+    self,
+    plan: archive_action.ArchivePlan,
+    result: archive_action.ArchiveResult,
+    job: Job,
+) -> NodeActionResult[archive_action.ArchiveResult]:
     refreshed = self._refresh(
         self._node_id_for_folder(plan.source.parent), job.log
     )
@@ -289,7 +305,7 @@ def _after_archive_run(
 # core/engine.py — the steps every execute call shares, private, universal
 def _execute_planned_action(
     self, plan, fresh_plan, answers, run_action, after_run
-) -> Job:
+) -> JobView:
     require_unchanged_plan(plan, fresh_plan)        # raises: stale plan
     checked_answers = check_answers(fresh_plan.questions, answers)
     return self._jobs.start(...)    # result = run_action(fresh_plan,
@@ -378,6 +394,7 @@ actions never touch the slot.
 core/actions/
   __init__.py      public names
   README.md        design rules
+  _library.py      library checks several actions share
   _base.py         the foundation: ActionResult, ActionPlan, Question,
                    Answers, ActionRefusedError, fingerprint,
                    require_unchanged_plan, check_answers

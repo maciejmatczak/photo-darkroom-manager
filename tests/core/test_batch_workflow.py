@@ -1,39 +1,32 @@
 """Behavioral contracts for device-first intake and mapped destinations."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
-from conftest import execute, link_dir
+from conftest import link_dir, run_planned
 
-from photo_darkroom_manager.core.actions import ActionPlan, Move, NewBatchAction
+from photo_darkroom_manager.core.actions import ActionRefusedError, new_batch
+from photo_darkroom_manager.core.engine import ActionRefusedError as EngineRefused
 from photo_darkroom_manager.core.engine import Engine
+from photo_darkroom_manager.core.jobs import Job
 from photo_darkroom_manager.core.library import validate_device_name
 
 
-def _apply(action) -> None:
-    result = execute(action, _plan(action))
-    assert result.success, result
-
-
-def _plan(action) -> ActionPlan:
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan), plan
-    return plan
-
-
-def _new_batch(darkroom: Path, device: str, date: str = "2026-10"):
-    return NewBatchAction(darkroom, device, date=date)
+def _ok(engine: Engine, name: str, node_id: str, **inputs: Any) -> None:
+    done = run_planned(engine, name, node_id, **inputs)
+    assert done.result.outcome == "ok", done
 
 
 @pytest.mark.parametrize("existing", [False, True])
 def test_new_batch_existing_and_custom_device(roots, existing: bool) -> None:
     if existing:
         (roots.darkroom / "Camera").mkdir()
-    action = _new_batch(roots.darkroom, "Camera")
-    result = execute(action, _plan(action))
+    plan = new_batch.prepare(roots.darkroom, "Camera", date="2026-10")
+    result = new_batch.run(plan, {}, Job("new_batch"))
     batch = roots.darkroom / "Camera/2026/2026-10"
-    assert result.success
-    assert result.rescan_node_path == batch.parent
+    assert result.outcome == "ok"
+    assert result.batch_folder == batch
     assert (batch / "PUBLISH").is_dir()
     assert not (batch / "PHOTOS").exists()
     assert not (batch / "VIDEOS").exists()
@@ -62,9 +55,8 @@ def test_new_batch_existing_and_custom_device(roots, existing: bool) -> None:
     ],
 )
 def test_invalid_device_creates_nothing(roots, name: str) -> None:
-    out = _new_batch(roots.darkroom, name).prepare()
-    assert not isinstance(out, ActionPlan)
-    assert out.outcome == "refused"
+    with pytest.raises(ActionRefusedError):
+        new_batch.prepare(roots.darkroom, name, date="2026-10")
     assert list(roots.darkroom.iterdir()) == []
 
 
@@ -76,9 +68,8 @@ def test_device_names_allow_unicode_and_trim_whitespace(name: str) -> None:
 def test_blocking_device_file_preserved(roots) -> None:
     blocking = roots.darkroom / "Camera"
     blocking.write_bytes(b"keep")
-    out = _new_batch(roots.darkroom, "Camera").prepare()
-    assert not isinstance(out, ActionPlan)
-    assert out.outcome == "refused"
+    with pytest.raises(ActionRefusedError):
+        new_batch.prepare(roots.darkroom, "Camera", date="2026-10")
     assert blocking.read_bytes() == b"keep"
 
 
@@ -86,20 +77,20 @@ def test_device_symlink_outside_darkroom_rejected(roots, tmp_path: Path) -> None
     outside = tmp_path / "outside"
     outside.mkdir()
     link_dir(roots.darkroom / "Camera", outside)
-    out = _new_batch(roots.darkroom, "Camera").prepare()
-    assert not isinstance(out, ActionPlan)
-    assert out.outcome == "refused"
+    with pytest.raises(ActionRefusedError):
+        new_batch.prepare(roots.darkroom, "Camera", date="2026-10")
     assert list(outside.iterdir()) == []
 
 
-def test_device_symlink_made_after_the_preview_rejected(roots, tmp_path: Path) -> None:
+def test_device_symlink_made_after_the_preview_rejected(
+    roots, engine: Engine, tmp_path: Path
+) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
-    action = _new_batch(roots.darkroom, "Camera")
-    plan = _plan(action)
+    plan = engine.action_prepare_new_batch("Camera", date="2026-10")
     link_dir(roots.darkroom / "Camera", outside)
-    result = execute(action, plan)
-    assert result.outcome == "refused"
+    with pytest.raises(EngineRefused):
+        engine.action_new_batch(plan)
     assert list(outside.iterdir()) == []
 
 
@@ -118,9 +109,9 @@ def test_scan_device_year_batch_and_scoped_refresh(roots, engine: Engine) -> Non
     mgr = engine
     mgr.library_scan()
     assert mgr.library_node("").children == ()
-    result = mgr.action_apply(mgr.action_new_batch("Camera", date="2026-10"))
-    assert result.success
-    assert result.library_refreshed == ""
+    done = run_planned(mgr, "new_batch", "Camera", date="2026-10")
+    assert done.result.outcome == "ok"
+    assert done.library_refreshed == ""
     tree = mgr.library_node("")
     device = tree.children[0]
     year = device.children[0]
@@ -143,41 +134,37 @@ def test_scan_device_year_batch_and_scoped_refresh(roots, engine: Engine) -> Non
         and "untidy" in mgr.library_node(n.id).issues
         for n in (tree, device, year, batch)
     )
-    result = mgr.action_apply(mgr.action_new_batch("Camera", date="2027-01"))
-    assert result.library_refreshed == "Camera"
+    done = run_planned(mgr, "new_batch", "Camera", date="2027-01")
+    assert done.library_refreshed == "Camera"
     assert [n.name for n in mgr.library_node("Camera").children] == ["2026", "2027"]
 
 
 def test_devices_publish_and_archive_independently(roots, engine: Engine) -> None:
     mgr = engine
     for device in ("Camera", "Phone"):
-        _apply(mgr.action_new_batch(device, date="2026-10", title="Walk"))
+        _ok(mgr, "new_batch", device, date="2026-10", title="Walk")
         batch_id = f"{device}/2026/2026-10 Walk"
         batch = roots.darkroom / batch_id
         (batch / "PUBLISH/export.jpg").write_bytes(device.encode())
         (batch / "PHOTOS/nested").mkdir(parents=True)
         (batch / "PHOTOS/nested/original.raw").write_bytes(b"raw")
-        publish = mgr.action_publish(batch_id)
-        plan = _plan(publish)
+        plan = mgr.action_prepare_publish(batch_id)
         expected = roots.showroom / "2026/2026-10 Walk" / device
         assert expected == mgr.showroom_path(darkroom_path=batch)
-        assert {s.target.parent for s in plan.steps if isinstance(s, Move)} == {
-            expected
-        }
-        assert execute(publish, plan).success
+        assert {m.target.parent for m in plan.moves} == {expected}
+        _ok(mgr, "publish", batch_id)
         assert (expected / "export.jpg").read_bytes() == device.encode()
         assert not (expected / "PUBLISH").exists()
         nested = batch / "PHOTOS/nested"
-        archive = mgr.action_archive(f"{batch_id}/PHOTOS/nested")
-        archive_plan = _plan(archive)
+        archive_plan = mgr.action_prepare_archive(f"{batch_id}/PHOTOS/nested")
         expected_archive = (
             roots.archive / "2026/2026-10 Walk" / device / "PHOTOS/nested"
         )
         assert expected_archive == mgr.archive_path(darkroom_path=nested)
-        assert [s.target for s in archive_plan.steps if isinstance(s, Move)] == [
-            expected_archive / "original.raw"
+        assert [m.target for m in archive_plan.moves] == [
+            expected_archive.resolve() / "original.raw"
         ]
-        assert execute(archive, archive_plan).success
+        _ok(mgr, "archive", f"{batch_id}/PHOTOS/nested")
         assert (expected_archive / "original.raw").read_bytes() == b"raw"
 
 
@@ -185,10 +172,10 @@ def test_fully_archived_batch_disappears_from_darkroom_tree(
     roots, engine: Engine
 ) -> None:
     mgr = engine
-    _apply(mgr.action_new_batch("Camera", date="2026-10"))
+    _ok(mgr, "new_batch", "Camera", date="2026-10")
     batch = roots.darkroom / "Camera/2026/2026-10"
     (batch / "original.raw").write_bytes(b"raw")
-    _apply(mgr.action_archive("Camera/2026/2026-10"))
+    _ok(mgr, "archive", "Camera/2026/2026-10")
     assert not batch.exists()
     mgr.library_scan()
     assert mgr.library_node("Camera/2026").children == ()
@@ -196,11 +183,11 @@ def test_fully_archived_batch_disappears_from_darkroom_tree(
 
 def test_rename_leaves_archive_and_showroom_at_old_name(roots, engine: Engine) -> None:
     mgr = engine
-    _apply(mgr.action_new_batch("Camera", date="2026-10"))
+    _ok(mgr, "new_batch", "Camera", date="2026-10")
     old = roots.darkroom / "Camera/2026/2026-10"
     for root in (roots.archive, roots.showroom):
         (root / "2026/2026-10/Camera").mkdir(parents=True)
-    _apply(mgr.action_rename("Camera/2026/2026-10", title="Walk"))
+    _ok(mgr, "rename", "Camera/2026/2026-10", title="Walk")
     assert (old.parent / "2026-10 Walk").is_dir()
     for root in (roots.archive, roots.showroom):
         assert (root / "2026/2026-10/Camera").is_dir()
@@ -209,7 +196,7 @@ def test_rename_leaves_archive_and_showroom_at_old_name(roots, engine: Engine) -
 
 def test_tidy_loose_media_preserves_publish(roots, engine: Engine) -> None:
     mgr = engine
-    _apply(mgr.action_new_batch("Camera", date="2026-10"))
+    _ok(mgr, "new_batch", "Camera", date="2026-10")
     batch = roots.darkroom / "Camera/2026/2026-10"
     for filename in (
         "shot.cr3",
@@ -220,8 +207,7 @@ def test_tidy_loose_media_preserves_publish(roots, engine: Engine) -> None:
         "PUBLISH/export.jpg",
     ):
         (batch / filename).write_bytes(b"media")
-    action = mgr.action_tidy("Camera/2026/2026-10")
-    assert mgr.action_apply(action, confirm=_plan(action).fingerprint).success
+    _ok(mgr, "tidy", "Camera/2026/2026-10")
     assert (batch / "PUBLISH/export.jpg").read_bytes() == b"media"
     for filename in ("shot.cr3", "shot.jpg", "shot.xmp", "other.jpg"):
         assert (batch / "PHOTOS" / filename).is_file()

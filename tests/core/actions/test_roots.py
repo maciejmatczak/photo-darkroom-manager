@@ -1,8 +1,10 @@
-"""Contract: actions check their own library roots at prepare and execute.
+"""Contract: actions check their own library roots when they prepare.
 
 The engine refuses work early when not ready, but a root can disappear
 between that check and the action (e.g. an unplugged drive), so each action
-checks the roots it touches itself and refuses without changing files.
+checks the roots it touches itself and refuses without changing files. The
+engine prepares again before running a plan, so a root lost after the
+preview is refused the same way.
 """
 
 import shutil
@@ -10,55 +12,46 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import execute
 
 from photo_darkroom_manager.core.actions import (
-    Action,
-    ActionPlan,
-    ActionResult,
-    ArchiveAction,
-    NewBatchAction,
-    PublishAction,
-    RenameAction,
+    ActionRefusedError,
+    archive,
+    new_batch,
+    publish,
+    rename,
 )
 
 ARCHIVE_BASIC = Path("Camera/2026/2026-03 archive basic success")
 PUBLISH_BASIC = Path("Camera/2026/2026-03 publish basic success")
 
-Build = Callable[[object], Action]
+Prepare = Callable[[object], object]
 
-CASES: dict[str, tuple[str, Build]] = {
+CASES: dict[str, tuple[str, Prepare]] = {
     "archive/darkroom": (
         "darkroom",
-        lambda s: ArchiveAction(
-            s.roots.darkroom / ARCHIVE_BASIC,
-            darkroom=s.roots.darkroom,
-            archive=s.roots.archive,
+        lambda s: archive.prepare(
+            s.roots.darkroom / ARCHIVE_BASIC, s.roots.darkroom, s.roots.archive
         ),
     ),
     "archive/archive": (
         "archive",
-        lambda s: ArchiveAction(
-            s.roots.darkroom / ARCHIVE_BASIC,
-            darkroom=s.roots.darkroom,
-            archive=s.roots.archive,
+        lambda s: archive.prepare(
+            s.roots.darkroom / ARCHIVE_BASIC, s.roots.darkroom, s.roots.archive
         ),
     ),
     "publish/showroom": (
         "showroom",
-        lambda s: PublishAction(
-            s.roots.darkroom / PUBLISH_BASIC,
-            darkroom=s.roots.darkroom,
-            showroom=s.roots.showroom,
+        lambda s: publish.prepare(
+            s.roots.darkroom / PUBLISH_BASIC, s.roots.darkroom, s.roots.showroom
         ),
     ),
     "new_batch/darkroom": (
         "darkroom",
-        lambda s: NewBatchAction(s.roots.darkroom, "Camera", date="2027-01"),
+        lambda s: new_batch.prepare(s.roots.darkroom, "Camera", date="2027-01"),
     ),
     "rename/darkroom": (
         "darkroom",
-        lambda s: RenameAction(
+        lambda s: rename.prepare(
             s.roots.darkroom / ARCHIVE_BASIC, s.roots.darkroom, date="2026-04"
         ),
     ),
@@ -71,27 +64,11 @@ def _unplug(root: Path) -> Path:
 
 
 @pytest.mark.parametrize("case", CASES)
-def test_prepare_refuses_missing_root(photo_setup, case: str) -> None:
-    area, build = CASES[case]
-    action = build(photo_setup)
-    _unplug(getattr(photo_setup.roots, area))
-    out = action.prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
-    assert area.capitalize() in out.message
-
-
-@pytest.mark.parametrize("case", CASES)
-def test_execute_refuses_root_lost_after_prepare(photo_setup, case: str) -> None:
-    area, build = CASES[case]
-    action = build(photo_setup)
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan), plan
+def test_preparing_refuses_a_missing_root(photo_setup, case: str) -> None:
+    area, prepare = CASES[case]
+    prepare(photo_setup)
     moved = _unplug(getattr(photo_setup.roots, area))
     before = sorted(p.relative_to(moved) for p in moved.rglob("*"))
-
-    result = execute(action, plan)
-
-    assert result.outcome == "refused"
-    assert area.capitalize() in result.message
+    with pytest.raises(ActionRefusedError, match=area.capitalize()):
+        prepare(photo_setup)
     assert sorted(p.relative_to(moved) for p in moved.rglob("*")) == before

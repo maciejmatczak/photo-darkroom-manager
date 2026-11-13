@@ -6,19 +6,17 @@ import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
-from photo_darkroom_manager.core.actions import (
-    Action,
-    ActionPlan,
-    ConflictPolicy,
-    ExecutionResult,
-    JobAction,
+from photo_darkroom_manager.core.engine import (
+    CONFIG_PATH_ENV,
+    LOG_LEVEL_ENV,
+    Engine,
+    NodeActionResult,
 )
-from photo_darkroom_manager.core.engine import CONFIG_PATH_ENV, LOG_LEVEL_ENV, Engine
-from photo_darkroom_manager.core.jobs import Job
 from photo_darkroom_manager.core.logging_config import reset_logging_state_for_tests
 
 MakeEngine = Callable[..., Engine]
@@ -47,21 +45,34 @@ def write_config(path: Path, roots: Roots | None = None, **values: object) -> Pa
     return path
 
 
-def execute(
-    action: Action, plan: ActionPlan, policy: ConflictPolicy = "refuse"
-) -> ExecutionResult:
-    """Execute *plan* the way the engine does, without the engine.
+def run_planned(
+    engine: Engine,
+    name: str,
+    node_id: str,
+    answers: dict[str, str] | None = None,
+    **inputs: Any,
+) -> NodeActionResult:
+    """Prepare and execute a planned action through *engine*; wait for it.
 
     Args:
-        action: The action that prepared *plan*.
-        plan: The plan to run.
-        policy: Conflict policy for a heavy action; others take none.
+        engine: The engine to run it on.
+        name: The action's name in its engine calls, e.g. ``archive`` for
+            ``action_prepare_archive`` and ``action_archive``.
+        node_id: The node to prepare it on.
+        answers: The answers to the plan's questions.
+        inputs: The action's own inputs, e.g. ``date=``.
 
-    A heavy action runs with a fresh job that is never cancelled.
+    Raises:
+        Exception: The error that ended the job ``failed``.
     """
-    if isinstance(action, JobAction):
-        return action.execute(plan, policy=policy, job=Job(str(action.action)))
-    return action.execute(plan)
+    plan = getattr(engine, f"action_prepare_{name}")(node_id, **inputs)
+    getattr(engine, f"action_{name}")(plan, answers)
+    view = engine.job_wait(10)
+    assert view is not None and view.finished, view
+    if view.state == "failed" and (error := engine._jobs.exception) is not None:
+        raise error
+    assert isinstance(view.result, NodeActionResult), view
+    return view.result
 
 
 def link_dir(link: Path, target: Path) -> None:

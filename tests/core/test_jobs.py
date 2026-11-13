@@ -182,7 +182,7 @@ def test_cancel_after_the_end_keeps_the_state() -> None:
     assert slot.view is not None and slot.view.state == "done"
 
 
-@pytest.mark.parametrize("result", ["ok", "noop", "refused", "failed"])
+@pytest.mark.parametrize("result", ["ok", "failed", "cancelled"])
 def test_a_return_ends_the_job_done(result: str) -> None:
     slot = JobSlot()
     slot.start(lambda job: result, name="tidy", description="")
@@ -384,51 +384,3 @@ def test_a_job_with_a_log_path_writes_its_file(tmp_path: Path) -> None:
     assert "event='step_done'" in text
     assert f"job_id='{job.id}'" in text
     assert "after_close" not in text
-
-
-# ---------------------------------------------------------------------------
-# Holding the slot
-# ---------------------------------------------------------------------------
-
-
-def test_a_hold_blocks_a_start_and_a_second_hold() -> None:
-    slot = JobSlot()
-    with slot.hold("rename", "Camera/2026/2026-10 Walk"):
-        with pytest.raises(JobBusyError) as err:
-            slot.start(lambda job: None, name="scan")
-        assert err.value.label == "rename Camera/2026/2026-10 Walk"
-        with pytest.raises(JobBusyError), slot.hold("new-batch", "Camera"):
-            pass
-        with pytest.raises(JobBusyError):
-            slot.require_idle()
-    slot.require_idle()
-
-
-def test_a_hold_leaves_the_last_job_unchanged() -> None:
-    slot = JobSlot()
-    slot.start(lambda job: 1, name="tidy", description="a")
-    before = slot.wait(5)
-    with slot.hold("rename", "b"):
-        assert slot.view == before
-        assert slot.busy is None
-    assert slot.view == before
-
-
-def test_a_hold_is_released_after_an_exception() -> None:
-    slot = JobSlot()
-    with pytest.raises(RuntimeError), slot.hold("rename", "a"):
-        raise RuntimeError("boom")
-    slot.require_idle()
-    with slot.hold("rename", "a"):
-        pass
-
-
-def test_a_running_job_blocks_a_hold() -> None:
-    slot = JobSlot()
-    gate = Gate()
-    _started(slot, gate, "archive")
-    with pytest.raises(JobBusyError) as err, slot.hold("rename", "x"):
-        pass
-    assert err.value.label == "archive Camera"
-    gate.release.set()
-    slot.wait(5)

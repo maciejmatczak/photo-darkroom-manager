@@ -14,7 +14,7 @@ def _target(cli: Cli, *argv: str, cwd: Path | None = None) -> str:
     out = cli("--json", *argv, cwd=cwd)
     assert out.code == 0, out
     result = out.json()["result"]
-    return result["request"]["node_id"] if result["kind"] == "plan" else result["id"]
+    return result["node_id"] if result["kind"] == "plan" else result["id"]
 
 
 def test_inside_a_batch_folder(cli: Cli) -> None:

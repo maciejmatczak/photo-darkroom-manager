@@ -15,7 +15,8 @@ from cli.conftest import BATCH, Cli, Run
 from photo_darkroom_manager.cli import _app as app_module
 from photo_darkroom_manager.cli import main, run
 from photo_darkroom_manager.core import file_utils
-from photo_darkroom_manager.core.actions import _actions as actions_module
+from photo_darkroom_manager.core.actions import _moves as moves_module
+from photo_darkroom_manager.core.actions import apps as apps_module
 from photo_darkroom_manager.core.engine import Engine
 from photo_darkroom_manager.core.library import _scan as scan_module
 
@@ -277,7 +278,7 @@ def test_both_options(cli: Cli) -> None:
 def test_open_runs_at_once(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
     batch = cli.batch()
     opened: list[Path] = []
-    monkeypatch.setattr(actions_module, "_open_folder", opened.append)
+    monkeypatch.setattr(apps_module, "_open_in_file_manager", opened.append)
     out = cli("open", ".", cwd=batch)
     assert out.code == 0, out
     assert opened == [batch]
@@ -326,7 +327,10 @@ def test_nothing_to_do_exits_zero(cli: Cli) -> None:
     cli.batch()
     out = cli("--json", "tidy", f"id:{BATCH}")
     assert out.code == 0
-    assert out.json()["result"]["outcome"] == "noop"
+    result = out.json()["result"]
+    assert result["kind"] == "plan"
+    assert result["nothing_to_do"] is True
+    assert result["confirm"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +359,7 @@ def test_exit_code_failed(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(*_a: object, **_k: object) -> None:
         raise RuntimeError("disk on fire")
 
-    monkeypatch.setattr(actions_module, "move_files", boom)
+    monkeypatch.setattr(moves_module, "move_files", boom)
     out = cli("--json", "archive", f"id:{BATCH}", "--apply")
     assert out.code == 1
     assert out.json()["error"]["kind"] == "failed"
@@ -383,11 +387,22 @@ def test_unknown_id(cli: Cli) -> None:
     assert "Camera/1999" in out.err
 
 
+def test_a_taken_rename_name_exits_three(cli: Cli) -> None:
+    cli.batch()
+    cli.batch(node_id="Camera/2026/2026-10 Hike")
+    out = cli("--json", "rename", f"id:{BATCH}", "--title", "Hike", "--apply")
+    assert out.code == 3
+    error = out.json()["error"]
+    assert error["kind"] == "refused"
+    assert "2026-10 Hike" in error["message"]
+    assert (cli.roots.darkroom / BATCH).is_dir()
+
+
 def test_refused_prepare_exits_three(cli: Cli) -> None:
     cli.batch()
     out = cli("cull", f"id:{BATCH}")
     assert out.code == 3
-    assert "cull_command" in out.out
+    assert "cull_command" in out.err
 
 
 def test_json_is_one_document_and_logs_stay_off_stdout(cli: Cli) -> None:
@@ -428,8 +443,9 @@ def test_preview_with_conflicts(cli: Cli) -> None:
     out = cli("archive", ".", cwd=batch)
     assert out.code == 0
     assert "Archive 90 files, 10 already in the archive" in out.out
-    assert "Conflicts (conflict): 10" in out.out
-    assert "conflict 000.jpg → 000.jpg" in out.out
+    assert "Already in the archive: 10" in out.out
+    assert "000.jpg → 000.jpg (target already exists)" in out.out
+    assert "existing: 10 file(s) already in the archive" in out.out
     plan = _ok(cli("--json", "archive", ".", "--on-conflict", "skip", cwd=batch))
     assert len(plan["result"]["conflicts"]) == 10
     assert plan["result"]["confirm"][-4:-2] == ["--on-conflict", "skip"]
@@ -443,6 +459,9 @@ def test_conflicts_without_an_option(cli: Cli) -> None:
     assert document["error"]["kind"] == "refused"
     assert len(document["result"]["conflicts"]) == 10
     assert len(list(batch.iterdir())) == 100
+    text = cli("archive", ".", "--apply", cwd=batch).out
+    assert text.startswith("refused: answer needed for 'existing'")
+    assert "fix: choose with --on-conflict skip" in text
 
 
 def test_archive_skipping_conflicts(cli: Cli) -> None:
@@ -461,7 +480,7 @@ def test_confirm_carries_the_conflict_option(cli: Cli) -> None:
     )
     out = cli(*argv)
     assert out.code == 0, out
-    assert len(out.json()["result"]["skipped"]) == 10
+    assert len(out.json()["result"]["moves"]["skipped"]) == 10
 
 
 def test_replace_on_archive_is_a_usage_error(cli: Cli) -> None:
@@ -564,8 +583,8 @@ def test_ctrl_c_cancels_the_job(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> No
     assert out.code == 130
     result = out.json()["result"]
     assert result["outcome"] == "cancelled"
-    assert len(result["done"]) == 4
-    assert len(result["left"]) == 6
+    assert len(result["moves"]["moved"]) == 4
+    assert len(result["moves"]["left"]) == 6
     assert len(list((cli.roots.archive / ARCHIVED).iterdir())) == 4
 
 
@@ -585,7 +604,7 @@ def test_archive_reports_the_files_remaining(
     assert out.code == 1, out
     result = out.json()["result"]
     assert result["outcome"] == "failed"
-    assert result["left"] == []
+    assert result["moves"]["left"] == []
     assert [Path(p).name for p in result["remaining"]] == ["b.jpg"]
 
     text = cli("archive", ".", "--apply", cwd=batch)
@@ -594,23 +613,23 @@ def test_archive_reports_the_files_remaining(
 
 
 # ---------------------------------------------------------------------------
-# Rename and new batch run at once
+# Rename and new batch run as jobs
 # ---------------------------------------------------------------------------
 
 
-def test_rename_and_new_batch_show_no_progress_and_leave_no_job_log(
+def test_rename_and_new_batch_run_as_jobs_with_a_job_log(
     cli: Cli, tmp_path: Path
 ) -> None:
     cli.batch()
     rename = ("rename", f"id:{BATCH}", "--title", "Hike", "--apply")
     new_batch = ("new-batch", "Drone", "--date", "2027-01", "--apply")
     for argv in (rename, new_batch):
-        stderr = _Terminal()
-        assert _run_with_stderr(cli, stderr, *argv, cwd=cli.home) == 0
-        assert "\r" not in stderr.getvalue()
+        assert _run_with_stderr(cli, _Terminal(), *argv, cwd=cli.home) == 0
     assert (cli.roots.darkroom / "Camera/2026/2026-10 Hike").is_dir()
     assert (cli.roots.darkroom / "Drone/2027/2027-01").is_dir()
-    assert not (tmp_path / "logs" / "jobs").exists()
+    logs = sorted(p.name for p in (tmp_path / "logs" / "jobs").iterdir())
+    assert [n for n in logs if "_rename_" in n]
+    assert [n for n in logs if "_new_batch_" in n]
 
 
 def test_a_busy_engine_refuses_rename_and_new_batch(
@@ -630,7 +649,7 @@ def test_a_busy_engine_refuses_rename_and_new_batch(
 
     monkeypatch.setattr(file_utils, "move_file", gated)
     engine = Engine(cli.config)
-    engine.action_start(engine.action_archive(BATCH))
+    engine.action_archive(engine.action_prepare_archive(BATCH))
     try:
         assert reached.wait(5)
         for argv in (

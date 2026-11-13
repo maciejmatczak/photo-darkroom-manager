@@ -128,15 +128,26 @@ its ancestors', so it is fast in a large library.
 
 ### Preview, apply, confirm
 
-A command that moves, creates or renames files prints its plan and
-changes nothing:
+A command that moves, creates or renames files prints its plan, in that
+action's own terms, and changes nothing:
 
 ```text
 $ darkroom archive .
-Archive 4 files
-...
-plan 8e9e0dd80ad2
-run it: darkroom archive "id:Camera/2026/2026-10 Walk" --confirm 8e9e0dd80ad2
+Archive 2 files, 1 already in the archive
+From: ...\darkroom\Camera\2026\2026-10 Walk
+To:   ...\archive\2026\2026-10 Walk\Camera
+
+Moves: 2
+  move a.jpg → a.jpg
+  move b.jpg → b.jpg
+Already in the archive: 1
+  c.jpg → c.jpg (target already exists)
+
+Decide before running:
+  existing: 1 file(s) already in the archive stay in the darkroom (skip)
+
+plan a22139c60dcc
+run it: darkroom archive "id:Camera/2026/2026-10 Walk" --confirm a22139c60dcc
 ```
 
 - `--confirm FINGERPRINT` runs the action only if its plan is still the
@@ -144,6 +155,8 @@ run it: darkroom archive "id:Camera/2026/2026-10 Walk" --confirm 8e9e0dd80ad2
   fingerprints are printed. The fingerprint is derived from the plan and
   stored nowhere.
 - `--apply` runs the action as it is prepared now.
+- A plan with nothing to do (e.g. nothing to tidy) prints no `run it`
+  line, is never run, and exits 0.
 - The two options cannot be combined. `open`, `cull` and `edit` change no
   files and run at once.
 - No command ever asks a question, so it is safe to run without a
@@ -152,9 +165,10 @@ run it: darkroom archive "id:Camera/2026/2026-10 Walk" --confirm 8e9e0dd80ad2
 ### Conflicts
 
 A conflict is a file whose target already holds a file, or two files that
-need the same target. The preview counts and lists them next to the free
-moves. Without an option, an action with conflicts is refused (exit 3) and
-nothing moves. `--on-conflict` chooses otherwise:
+need the same target. The preview lists them next to the free moves and
+asks what to do with them (`Decide before running`). Without an answer,
+running is refused (exit 3) before anything starts, and nothing moves.
+`--on-conflict` answers:
 
 - `skip` (tidy, archive, publish) moves the free files and leaves each
   conflicting file where it is; the result lists them as skipped.
@@ -162,25 +176,27 @@ nothing moves. `--on-conflict` chooses otherwise:
   in the showroom. Republishing over existing files needs it.
 
 Any other combination is a usage error (exit 2). The printed `--confirm`
-command carries the option you gave. A file that appears at a target after
-the preview is treated the same way: refused, skipped or replaced. Nothing
-is ever overwritten without `replace`.
+command carries the option you gave. A file that appears at a target
+while the action runs is skipped, or replaced when you chose `replace`.
+Nothing is ever overwritten without `replace`.
 
 ### Jobs, progress and Ctrl+C
 
-Tidy, archive and publish, and every scan, run as one job in the engine.
+Tidy, archive, publish, rename and new batch, and every scan, run as one
+job in the engine; open, cull and edit run at once, also while a job
+runs.
 While it runs, the command shows its progress on stderr when stderr is a
 terminal (a counter and the current file, or a spinner for a scan) and
 nothing extra otherwise; stdout carries only the result.
 
-`rename` and `new-batch` are quick and run at once, without a job: they
-show no progress and write no job log; their request and result go to the
-application log. Like a job, they run alone: while one runs or a job
-runs, the other is refused as busy (exit 3).
+`rename` and `new-batch` are one step: they report no progress and
+ignore Ctrl+C, but write a job log like the others. While any job runs,
+another is refused as busy (exit 3), naming the job that runs.
 
-A job ends `done` whenever its action ran to the end, also when a file
-failed or the action was refused; the result says what happened to each
-file. It ends `failed` only on an unexpected error.
+A refusal (a stale plan, a missing answer, a taken name) happens before
+any job starts. A job ends `done` whenever its action ran to the end,
+also when a file failed or was skipped; the result says what happened
+to each file. It ends `failed` only on an unexpected error.
 
 Ctrl+C cancels the job: it stops between files, never in the middle of
 one, prints its result (what was moved and what was left) and exits 130.
@@ -191,19 +207,31 @@ failed copy leaves the source and removes the partial file.
 
 Each job writes an audit log to the `jobs` folder in the logs folder,
 named `{date}_{time}_{name}_{description}.log` (for example
-`2026-11-07_143012_archive_Camera-2026-2026-10-Walk.log`): the request,
-the plan summary, the policy, every step done, skipped or failed, and the
-outcome. Job logs are kept when old application logs are cleaned up.
+`2026-11-07_143012_archive_Camera-2026-2026-10-Walk.log`): the request
+(action, node, fingerprint and answers), every step done, skipped or
+failed, and the outcome. Job logs are kept when old application logs are
+cleaned up.
 
 ### JSON and exit codes
 
 With `--json` (before the command), stdout holds exactly one document:
 `{"format": 1, "command": ..., "ok": ..., "result": ..., "error": ...}`.
-A result is a node view, a plan (with all its steps and the `confirm`
-command as argv, and its conflicts), or an execution result (steps done,
-failed and skipped, conflicts, `left` for the files a cancel left undone,
-`remaining` for the files still in an archived folder, the node id
-afterwards). An error has a `kind`, a `message` and, where known, a `fix`.
+A result is a node view, a plan or an action's result:
+
+- A plan is `{kind: "plan", action, node_id, ...its own fields,
+  questions, nothing_to_do, fingerprint, confirm}`; `confirm` is the
+  command as argv, `null` when there is nothing to do. Its own fields
+  differ per action, e.g. archive has `source`, `target`, `moves` and
+  `conflicts`, rename has `folder` and `new_folder`.
+- A result is `{kind: "result", action, outcome, message, ...its own
+  fields, node_id, library_refreshed}`. Actions that move files report
+  `moves` with `moved`, `replaced`, `failed`, `skipped` and `left` (the
+  files a cancel left undone); archive adds `remaining`, the files still
+  in the archived folder. `node_id` is the node afterwards, `null` when
+  it is gone.
+
+A refused run returns the current plan with an error. An error has a
+`kind`, a `message` and, where known, a `fix`.
 Logs go to stderr only: warnings by default, more with `-v` or `-vv`.
 
 | Exit code | Meaning |

@@ -3,9 +3,6 @@
 An action is something done to a node of the darkroom tree: open a batch,
 rename it, archive it. That is all the word means.
 
-> The code here still predates some of these rules; the OpenSpec change
-> `core-actions-as-forms` brings it in line.
-
 ## What this package is
 
 - **A collection of actions**, each unique

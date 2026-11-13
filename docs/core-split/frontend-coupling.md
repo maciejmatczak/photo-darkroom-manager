@@ -122,8 +122,9 @@ Done in `experimental-cli`: structured previews are core data.
   `OpenFolder`, `Launch`) in `core/actions.py`. It says whether it changes
   files (`changes_files`, the "needs confirmation" flag) and carries a
   derived `fingerprint`. `preview_text()` is rendered from the steps.
-- `engine.action_apply(action, confirm=None)` prepares, checks a confirmed
-  fingerprint and executes in one guarded call.
+- One engine call prepared, checked a confirmed fingerprint and
+  executed. Since `core-actions-as-forms` each action has its own
+  `action_prepare_<name>` and `action_<name>` calls instead.
 - `ExecutionResult` reports each step done and failed, files `left`, and
   the acted-on `node_id` afterwards.
 - Jobs stay open.

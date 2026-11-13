@@ -7,16 +7,18 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from conftest import MakeEngine, Roots
+from conftest import MakeEngine, Roots, run_planned
 
 from photo_darkroom_manager.core import engine as engine_module
 from photo_darkroom_manager.core import file_utils
-from photo_darkroom_manager.core.actions import ExecutionResult, Move
-from photo_darkroom_manager.core.actions import _actions as actions_module
+from photo_darkroom_manager.core.actions import apps as apps_module
+from photo_darkroom_manager.core.actions import rename as rename_module
 from photo_darkroom_manager.core.engine import (
+    ActionRefusedError,
     Engine,
     EngineBusyError,
-    PolicyNotSupportedError,
+    JobView,
+    NodeActionResult,
     ScanResult,
 )
 from photo_darkroom_manager.core.jobs import Progress
@@ -31,6 +33,10 @@ def _batch(roots: Roots, *files: str, node: str = BATCH) -> Path:
     for name in files:
         (path / name).write_bytes(name.encode())
     return path
+
+
+def _start_archive(engine: Engine, node_id: str = BATCH) -> JobView:
+    return engine.action_archive(engine.action_prepare_archive(node_id))
 
 
 def _files(n: int) -> list[str]:
@@ -99,13 +105,13 @@ def released() -> Iterator[list[threading.Event]]:
 
 def test_archive_is_a_job(roots: Roots, engine: Engine) -> None:
     _batch(roots, "a.jpg")
-    view = engine.action_start(engine.action_archive(BATCH))
+    view = _start_archive(engine)
     assert view.name == "archive"
     assert view.description == BATCH
     final = engine.job_wait(5)
     assert final is not None and final.state == "done"
-    assert isinstance(final.result, ExecutionResult)
-    assert final.result.outcome == "ok"
+    assert isinstance(final.result, NodeActionResult)
+    assert final.result.result.outcome == "ok"
 
 
 def test_opening_a_folder_is_not_a_job(
@@ -113,28 +119,23 @@ def test_opening_a_folder_is_not_a_job(
 ) -> None:
     _batch(roots)
     opened: list[Path] = []
-    monkeypatch.setattr(actions_module, "_open_folder", opened.append)
-    result = engine.action_apply(engine.action_open(BATCH))
+    monkeypatch.setattr(apps_module, "_open_in_file_manager", opened.append)
+    result = engine.action_open(BATCH)
     assert result.outcome == "ok"
     assert opened == [roots.darkroom / BATCH]
     assert engine.job is None
-    with pytest.raises(ValueError, match="runs at once"):
-        engine.action_start(engine.action_open(BATCH))  # ty: ignore[invalid-argument-type]
 
 
-def test_rename_is_not_a_job(roots: Roots, engine: Engine) -> None:
-    _batch(roots, "a.jpg")
-    engine.action_apply(engine.action_tidy(BATCH))
-    tidy = engine.job
-
-    result = engine.action_apply(engine.action_rename(BATCH, title="Hike"))
-
-    assert result.outcome == "ok"
+def test_rename_is_a_job_with_a_job_log(roots: Roots, engine: Engine) -> None:
+    _batch(roots)
+    plan = engine.action_prepare_rename(BATCH, title="Hike")
+    view = engine.action_rename(plan)
+    assert view.name == "rename"
+    assert view.description == BATCH
+    final = engine.job_wait(5)
+    assert final is not None and final.state == "done"
     assert (roots.darkroom / "Camera/2026/2026-10 Hike").is_dir()
-    assert engine.job == tidy
-    rename = engine.action_rename("Camera/2026/2026-10 Hike", title="x")
-    with pytest.raises(ValueError, match="runs at once"):
-        engine.action_start(rename)  # ty: ignore[invalid-argument-type]
+    assert final.log_path is not None and final.log_path.is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ def test_start_returns_while_files_are_moved(
     gate = MoveGate(monkeypatch, after=2)
     released.append(gate.release)
 
-    view = engine.action_start(engine.action_archive(BATCH))
+    view = _start_archive(engine)
     gate.wait()
 
     assert view.state == "new"
@@ -178,7 +179,7 @@ def test_second_job_while_busy_names_the_scan(
     gate.wait()
 
     with pytest.raises(EngineBusyError) as err:
-        engine.action_start(engine.action_tidy(BATCH))
+        engine.action_tidy(engine.action_prepare_tidy(BATCH))
     assert err.value.label == "scan darkroom root"
     with pytest.raises(EngineBusyError):
         engine.library_scan_start()
@@ -188,9 +189,9 @@ def test_second_job_while_busy_names_the_scan(
 
 def test_next_job_replaces_the_finished_one(roots: Roots, engine: Engine) -> None:
     _batch(roots, "a.jpg")
-    engine.action_apply(engine.action_tidy(BATCH))
+    run_planned(engine, "tidy", BATCH)
     tidy = engine.job
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     engine.job_wait(5)
     job = engine.job
     assert tidy is not None and job is not None
@@ -200,11 +201,11 @@ def test_next_job_replaces_the_finished_one(roots: Roots, engine: Engine) -> Non
 
 def test_finished_job_keeps_its_result(roots: Roots, engine: Engine) -> None:
     _batch(roots, "a.jpg")
-    result = engine.action_apply(engine.action_tidy(BATCH))
+    done = run_planned(engine, "tidy", BATCH)
     job = engine.job
     assert job is not None
     assert job.state == "done"
-    assert job.result == result
+    assert job.result == done
     assert job.log_path is not None and job.log_path.is_file()
 
 
@@ -225,11 +226,9 @@ def test_action_that_fails_on_a_file_ends_done(
         real(src, dst, replace=replace)
 
     monkeypatch.setattr(file_utils, "move_file", locked)
-    result = engine.action_apply(engine.action_archive(BATCH))
+    result = run_planned(engine, "archive", BATCH).result
     assert result.outcome == "failed"
-    assert [f.step.source.name for f in result.failed if isinstance(f.step, Move)] == [
-        "b.jpg"
-    ]
+    assert [m.source.name for m in result.moves.failed] == ["b.jpg"]
     job = engine.job
     assert job is not None and job.state == "done"
 
@@ -249,23 +248,24 @@ def test_a_scan_that_raises_ends_failed(
     assert final.error == "RuntimeError: disk on fire"
 
 
-def test_nothing_to_tidy_ends_done_with_noop(roots: Roots, engine: Engine) -> None:
+def test_nothing_to_tidy_ends_done_with_ok(roots: Roots, engine: Engine) -> None:
     _batch(roots)
-    result = engine.action_apply(engine.action_tidy(BATCH))
-    assert result.outcome == "noop"
+    result = run_planned(engine, "tidy", BATCH).result
+    assert result.outcome == "ok"
+    assert result.moves.done == 0
     job = engine.job
     assert job is not None and job.state == "done"
 
 
-def test_refused_conflict_ends_done(roots: Roots, engine: Engine) -> None:
-    batch = _batch(roots, "a.jpg")
+def test_a_file_in_the_way_at_run_time_is_skipped(roots: Roots, engine: Engine) -> None:
+    batch = _batch(roots, "a.jpg", "b.jpg")
+    plan = engine.action_prepare_tidy(BATCH)
     (batch / "PHOTOS").mkdir()
-    (batch / "PHOTOS" / "a.jpg").write_bytes(b"other")
-    result = engine.action_apply(engine.action_tidy(BATCH))
-    assert result.outcome == "refused"
-    assert [c.move.source.name for c in result.conflicts] == ["a.jpg"]
-    job = engine.job
-    assert job is not None and job.state == "done"
+    engine.action_tidy(plan)
+    final = engine.job_wait(5)
+    assert final is not None and final.state == "done"
+    result = final.result.result
+    assert result.outcome == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ def test_archive_progress(
     _batch(roots, *_files(40))
     gate = MoveGate(monkeypatch, after=10)
     released.append(gate.release)
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     gate.wait()
 
     job = engine.job
@@ -322,7 +322,7 @@ def test_wait_with_a_limit(
     _batch(roots, *_files(3))
     gate = MoveGate(monkeypatch, after=1)
     released.append(gate.release)
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     gate.wait()
     view = engine.job_wait(0.05)
     assert view is not None and view.state == "running"
@@ -342,7 +342,7 @@ def test_cancel_an_archive(
     engine.library_scan()
     gate = MoveGate(monkeypatch, after=10)
     released.append(gate.release)
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     gate.wait()
 
     engine.job_cancel()
@@ -353,17 +353,17 @@ def test_cancel_an_archive(
 
     assert final is not None and final.state == "cancelled"
     result = final.result
-    assert isinstance(result, ExecutionResult)
-    assert result.outcome == "cancelled"
-    assert len([s for s in result.done if isinstance(s, Move)]) == 11
-    assert len(result.left) == 29
+    assert isinstance(result, NodeActionResult)
+    assert result.result.outcome == "cancelled"
+    assert len(result.result.moves.moved) == 11
+    assert len(result.result.moves.left) == 29
     assert result.library_refreshed is not None
     assert engine.library_node(BATCH).stats.image_count == 29
 
 
 def test_cancel_after_the_end(roots: Roots, engine: Engine) -> None:
     _batch(roots, "a.jpg")
-    engine.action_apply(engine.action_tidy(BATCH))
+    run_planned(engine, "tidy", BATCH)
     engine.job_cancel()
     job = engine.job
     assert job is not None and job.state == "done"
@@ -394,7 +394,7 @@ def test_config_edit_refused_during_an_archive(
     _batch(roots, *_files(3))
     gate = MoveGate(monkeypatch, after=1)
     released.append(gate.release)
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     gate.wait()
     with pytest.raises(EngineBusyError):
         engine.config_set("archive", tmp_path / "elsewhere")
@@ -423,15 +423,15 @@ def test_open_and_edit_during_an_archive(
         launched.append(tuple(argv))
         return FakeProc()
 
-    monkeypatch.setattr(actions_module, "_open_folder", opened.append)
-    monkeypatch.setattr(actions_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(apps_module, "_open_in_file_manager", opened.append)
+    monkeypatch.setattr(apps_module.subprocess, "Popen", popen)
     gate = MoveGate(monkeypatch, after=1)
     released.append(gate.release)
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     gate.wait()
 
-    assert engine.action_apply(engine.action_open(OTHER)).outcome == "ok"
-    assert engine.action_apply(engine.action_edit(OTHER)).outcome == "ok"
+    assert engine.action_open(OTHER).outcome == "ok"
+    assert engine.action_edit(OTHER).outcome == "ok"
     assert opened == [roots.darkroom / OTHER]
     assert launched and launched[0][0] == "editor"
     job = engine.job
@@ -450,11 +450,12 @@ def test_rename_during_an_archive_is_refused_naming_it(
     _batch(roots, "x.jpg", node=OTHER)
     gate = MoveGate(monkeypatch, after=1)
     released.append(gate.release)
-    engine.action_start(engine.action_archive(BATCH))
+    _start_archive(engine)
     gate.wait()
 
+    plan = engine.action_prepare_rename(OTHER, title="Walk 2")
     with pytest.raises(EngineBusyError) as err:
-        engine.action_apply(engine.action_rename(OTHER, title="Walk 2"))
+        engine.action_rename(plan)
 
     assert err.value.label == f"archive {BATCH}"
     assert (roots.darkroom / OTHER).is_dir()
@@ -464,19 +465,19 @@ def test_rename_during_an_archive_is_refused_naming_it(
 
 
 class RenameGate:
-    """Holds every rename inside its execute until released."""
+    """Holds every rename inside its run until released."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.reached = threading.Event()
         self.release = threading.Event()
-        real = actions_module.RenameAction._execute
+        real = rename_module.run
 
-        def execute(action, plan):
+        def run(plan, answers, job):
             self.reached.set()
             assert self.release.wait(5)
-            return real(action, plan)
+            return real(plan, answers, job)
 
-        monkeypatch.setattr(actions_module.RenameAction, "_execute", execute)
+        monkeypatch.setattr(rename_module, "run", run)
 
 
 def test_scan_and_config_refused_but_open_allowed_during_a_rename(
@@ -489,15 +490,10 @@ def test_scan_and_config_refused_but_open_allowed_during_a_rename(
     _batch(roots)
     _batch(roots, node=OTHER)
     opened: list[Path] = []
-    monkeypatch.setattr(actions_module, "_open_folder", opened.append)
+    monkeypatch.setattr(apps_module, "_open_in_file_manager", opened.append)
     gate = RenameGate(monkeypatch)
     released.append(gate.release)
-    rename = engine.action_rename(BATCH, title="Hike 2")
-    results: list[ExecutionResult] = []
-    worker = threading.Thread(
-        target=lambda: results.append(engine.action_apply(rename))
-    )
-    worker.start()
+    engine.action_rename(engine.action_prepare_rename(BATCH, title="Hike 2"))
     try:
         assert gate.reached.wait(5)
         with pytest.raises(EngineBusyError) as err:
@@ -505,15 +501,15 @@ def test_scan_and_config_refused_but_open_allowed_during_a_rename(
         assert err.value.label == f"rename {BATCH}"
         with pytest.raises(EngineBusyError):
             engine.config_set("archive", tmp_path / "elsewhere")
+        other = engine.action_prepare_rename(OTHER, title="Other")
         with pytest.raises(EngineBusyError):
-            engine.action_apply(engine.action_rename(OTHER, title="Other"))
-        assert engine.action_apply(engine.action_open(OTHER)).outcome == "ok"
+            engine.action_rename(other)
+        assert engine.action_open(OTHER).outcome == "ok"
         assert opened == [roots.darkroom / OTHER]
     finally:
         gate.release.set()
-        worker.join(5)
-    assert [r.outcome for r in results] == ["ok"]
-    assert engine.job is None
+    final = engine.job_wait(5)
+    assert final is not None and final.result.result.outcome == "ok"
     engine.library_scan()
 
 
@@ -524,9 +520,12 @@ def test_scan_and_config_refused_but_open_allowed_during_a_rename(
 
 def test_replace_is_publish_only(roots: Roots, engine: Engine) -> None:
     _batch(roots, "a.jpg")
-    with pytest.raises(PolicyNotSupportedError) as err:
-        engine.action_start(engine.action_archive(BATCH), policy="replace")
-    assert err.value.supported == ("refuse", "skip")
+    taken = roots.archive / "2026/2026-10 Walk/Camera/a.jpg"
+    taken.parent.mkdir(parents=True)
+    taken.write_bytes(b"old")
+    plan = engine.action_prepare_archive(BATCH)
+    with pytest.raises(ActionRefusedError, match="skip"):
+        engine.action_archive(plan, {"existing": "replace"})
     assert engine.job is None
 
 
@@ -535,9 +534,9 @@ def test_archive_skip_through_the_engine(roots: Roots, engine: Engine) -> None:
     taken = roots.archive / "2026/2026-10 Walk/Camera/a.jpg"
     taken.parent.mkdir(parents=True)
     taken.write_bytes(b"old")
-    result = engine.action_apply(engine.action_archive(BATCH), policy="skip")
+    result = run_planned(engine, "archive", BATCH, {"existing": "skip"}).result
     assert result.outcome == "ok"
-    assert [c.move.source.name for c in result.skipped] == ["a.jpg"]
+    assert [m.source.name for m in result.moves.skipped] == ["a.jpg"]
     assert taken.read_bytes() == b"old"
 
 
@@ -562,7 +561,7 @@ def test_partial_archive_log_lists_every_step(
         real(src, dst, replace=replace)
 
     monkeypatch.setattr(file_utils, "move_file", full_disk)
-    engine.action_apply(engine.action_archive(BATCH), policy="skip")
+    run_planned(engine, "archive", BATCH, {"existing": "skip"})
     job = engine.job
     assert job is not None and job.log_path is not None
     assert job.log_path.parent == engine.logs_dir / "jobs"
@@ -575,8 +574,8 @@ def test_partial_archive_log_lists_every_step(
     (started,) = events("job_started")
     assert "name='archive'" in started
     (request,) = events("action_request")
-    assert "policy='skip'" in request
-    assert "summary='Archive 3 files, 2 already in the archive'" in request
+    assert "answers={'existing': 'skip'}" in request
+    assert "fingerprint=" in request
     done = events("step_done")
     assert len(done) == 2
     assert all("source=" in line and "target=" in line for line in done)
@@ -600,23 +599,24 @@ def _app_log(engine: Engine) -> str:
     )
 
 
-def test_rename_logs_its_request_and_result_to_the_app_log(
+def test_rename_logs_its_request_and_result_in_its_job_log(
     roots: Roots, engine: Engine
 ) -> None:
     _batch(roots)
-    engine.action_apply(engine.action_rename(BATCH, title="Hike"))
-    text = _app_log(engine)
-    assert text.count("action_request") == 1
-    assert text.count("action_result") == 1
+    run_planned(engine, "rename", BATCH, title="Hike")
+    job = engine.job
+    assert job is not None and job.log_path is not None
+    text = job.log_path.read_text(encoding="utf-8")
+    assert text.count("event='action_request'") == 1
+    assert text.count("event='action_result'") == 1
     assert "Renamed to 2026-10 Hike" in text
-    assert not (engine.logs_dir / "jobs").exists()
 
 
 def test_tidy_logs_its_request_and_result_once_in_its_job_log(
     roots: Roots, engine: Engine
 ) -> None:
     _batch(roots, "a.jpg")
-    engine.action_apply(engine.action_tidy(BATCH))
+    run_planned(engine, "tidy", BATCH)
     job = engine.job
     assert job is not None and job.log_path is not None
     text = job.log_path.read_text(encoding="utf-8")
@@ -629,7 +629,7 @@ def test_the_rescan_after_an_archive_logs_to_its_job_log(
 ) -> None:
     _batch(roots, "a.jpg")
     engine.library_scan()
-    engine.action_apply(engine.action_archive(BATCH))
+    run_planned(engine, "archive", BATCH)
     job = engine.job
     assert job is not None and job.log_path is not None
     lines = job.log_path.read_text(encoding="utf-8").splitlines()
@@ -647,7 +647,7 @@ def test_log_holds_finished_steps_while_the_job_runs(
     _batch(roots, *_files(40))
     gate = MoveGate(monkeypatch, after=10)
     released.append(gate.release)
-    view = engine.action_start(engine.action_archive(BATCH))
+    view = _start_archive(engine)
     gate.wait()
     assert view.log_path is not None
     text = view.log_path.read_text(encoding="utf-8")

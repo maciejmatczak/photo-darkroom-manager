@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from photo_darkroom_manager.cli import _render
 from photo_darkroom_manager.cli._targets import (
@@ -22,10 +22,13 @@ from photo_darkroom_manager.cli._targets import (
     resolve,
 )
 from photo_darkroom_manager.core.actions import (
-    Action,
     ActionPlan,
-    ExecutionResult,
-    JobAction,
+    ActionRefusedError,
+    ActionResult,
+    Answers,
+    archive,
+    publish,
+    tidy,
 )
 from photo_darkroom_manager.core.engine import (
     ROOT_KEYS,
@@ -34,9 +37,9 @@ from photo_darkroom_manager.core.engine import (
     EngineBusyError,
     EngineNotReadyError,
     JobCancelled,
+    NodeActionResult,
     NodeNotFoundError,
     PathOutsideDarkroomError,
-    PolicyNotSupportedError,
 )
 from photo_darkroom_manager.core.jobs import JobView
 from photo_darkroom_manager.core.library import NodeId, node_actions
@@ -59,8 +62,7 @@ EXIT_CANCELLED = 130
 
 _OUTCOME_EXIT = {
     "ok": EXIT_OK,
-    "noop": EXIT_OK,
-    "refused": EXIT_REFUSED,
+    "failed": EXIT_FAILED,
     "cancelled": EXIT_CANCELLED,
 }
 _WAIT_STEP_S = 0.2
@@ -307,13 +309,6 @@ def _wait(ctx: _Context) -> JobView:
             progress.clear()
 
 
-def _job_result(view: JobView) -> ExecutionResult:
-    """The finished action job's result; a failed job is an internal error."""
-    if isinstance(view.result, ExecutionResult):
-        return view.result
-    return ExecutionResult("failed", "Internal error", view.error)
-
-
 def _inspect(ctx: _Context) -> Reply:
     args, engine = ctx.args, ctx.engine
     target = args.target
@@ -356,80 +351,172 @@ def _confirm_argv(args: argparse.Namespace, node_id: NodeId, fp: str) -> list[st
     return [*argv, "--confirm", fp]
 
 
-def _result_reply(result: ExecutionResult) -> Reply:
+def _result_reply(
+    command: str,
+    result: ActionResult,
+    node_id: NodeId | None = None,
+    library_refreshed: NodeId | None = None,
+) -> Reply:
     code = _OUTCOME_EXIT.get(result.outcome, EXIT_FAILED)
     error: dict[str, object] | None = None
     if code != EXIT_OK:
         error = {"kind": result.outcome, "message": result.message}
-        if result.outcome == "refused" and result.fingerprint is not None:
-            error["fix"] = "preview again, then confirm the new plan"
-    return Reply(code, _render.result_data(result), _render.result_text(result), error)
-
-
-def _action_factory(ctx: _Context) -> Callable[[NodeId], Action]:
-    args, engine = ctx.args, ctx.engine
-    simple: dict[str, Callable[[NodeId], Action]] = {
-        "open": engine.action_open,
-        "tidy": engine.action_tidy,
-        "cull": engine.action_cull,
-        "edit": engine.action_edit,
-        "publish": engine.action_publish,
-        "archive": engine.action_archive,
-    }
-    if args.command in simple:
-        return simple[args.command]
-    if args.command == "rename":
-        return lambda node_id: engine.action_rename(
-            node_id, date=args.date, title=args.title, clear_title=args.no_title
-        )
-    return lambda node_id: engine.action_new_batch(
-        node_id, date=args.date, title=args.title
-    )
-
-
-def _action(ctx: _Context) -> Reply:
-    args, engine = ctx.args, ctx.engine
-    action = _action_factory(ctx)(ctx.target())
-    node_id = action.request.node_id
-    policy = getattr(args, "on_conflict", None) or "refuse"
-    changes_files = isinstance(action, JobAction) or action.exclusive
-    if not changes_files or args.apply or args.confirm is not None:
-        if isinstance(action, JobAction):
-            engine.action_start(action, confirm=args.confirm, policy=policy)
-            return _result_reply(_job_result(_wait(ctx)))
-        return _result_reply(engine.action_apply(action, args.confirm, policy))
-
-    if isinstance(action, JobAction):
-        action.check_policy(policy)
-    prepared = action.prepare()
-    if not isinstance(prepared, ActionPlan):
-        result = ExecutionResult(prepared.outcome, prepared.message, prepared.details)
-        return _result_reply(result)
-    confirm = _confirm_argv(args, node_id, prepared.fingerprint)
     return Reply(
-        EXIT_OK,
-        _render.plan_data(prepared, confirm),
-        _render.plan_text(prepared, " ".join(_quote(a) for a in confirm)),
+        code,
+        _render.action_result_data(command, result, node_id, library_refreshed),
+        _render.action_result_text(result, node_id),
+        error,
     )
+
+
+def _job_reply(command: str, view: JobView) -> Reply:
+    """The finished action job as a reply; a failed job is an internal error."""
+    if isinstance(view.result, NodeActionResult):
+        done = view.result
+        return _result_reply(command, done.result, done.node_id, done.library_refreshed)
+    message = view.error or "the job ended without a result"
+    return Reply(EXIT_FAILED, error={"kind": "failed", "message": message})
+
+
+@dataclass(frozen=True)
+class _PlannedCommand:
+    """How one planned command prepares and executes its action.
+
+    Args:
+        prepare: Calls the action's ``action_prepare_<name>`` on a node.
+        execute: Calls the action's execute call with a plan and answers.
+        conflict_question: The plan question ``--on-conflict`` answers.
+        conflict_choices: What ``--on-conflict`` may say for this command.
+    """
+
+    prepare: Callable[[Engine, argparse.Namespace, NodeId], ActionPlan]
+    execute: Callable[[Engine, Any, Answers], JobView]
+    conflict_question: str | None = None
+    conflict_choices: tuple[str, ...] = ()
+
+
+_PLANNED_COMMANDS: dict[str, _PlannedCommand] = {
+    "tidy": _PlannedCommand(
+        lambda engine, args, node_id: engine.action_prepare_tidy(node_id),
+        lambda engine, plan, answers: engine.action_tidy(plan, answers),
+        tidy.CONFLICTS_QUESTION,
+        ("skip",),
+    ),
+    "archive": _PlannedCommand(
+        lambda engine, args, node_id: engine.action_prepare_archive(node_id),
+        lambda engine, plan, answers: engine.action_archive(plan, answers),
+        archive.EXISTING_QUESTION,
+        ("skip",),
+    ),
+    "publish": _PlannedCommand(
+        lambda engine, args, node_id: engine.action_prepare_publish(node_id),
+        lambda engine, plan, answers: engine.action_publish(plan, answers),
+        publish.EXISTING_QUESTION,
+        ("skip", "replace"),
+    ),
+    "rename": _PlannedCommand(
+        lambda engine, args, node_id: engine.action_prepare_rename(
+            node_id, date=args.date, title=args.title, clear_title=args.no_title
+        ),
+        lambda engine, plan, answers: engine.action_rename(plan, answers),
+    ),
+    "new-batch": _PlannedCommand(
+        lambda engine, args, node_id: engine.action_prepare_new_batch(
+            node_id, date=args.date, title=args.title
+        ),
+        lambda engine, plan, answers: engine.action_new_batch(plan, answers),
+    ),
+}
+
+_DIRECT_COMMANDS: dict[str, Callable[[Engine, NodeId], ActionResult]] = {
+    "open": lambda engine, node_id: engine.action_open(node_id),
+    "cull": lambda engine, node_id: engine.action_cull(node_id),
+    "edit": lambda engine, node_id: engine.action_edit(node_id),
+}
+
+
+def _direct_action(ctx: _Context) -> Reply:
+    command = ctx.args.command
+    result = _DIRECT_COMMANDS[command](ctx.engine, ctx.target())
+    return _result_reply(command, result)
+
+
+def _answers(
+    command: _PlannedCommand, args: argparse.Namespace, plan: ActionPlan
+) -> Answers:
+    """The plan's answers from the command's flags; only for questions it asks."""
+    on_conflict = getattr(args, "on_conflict", None)
+    if on_conflict is None or command.conflict_question is None:
+        return {}
+    if on_conflict not in command.conflict_choices:
+        choices = ", ".join(command.conflict_choices)
+        raise CliError(
+            EXIT_USAGE,
+            "usage",
+            f"{args.command} does not support --on-conflict {on_conflict}; "
+            f"it supports: {choices}",
+        )
+    if command.conflict_question not in plan.questions:
+        return {}
+    return {command.conflict_question: on_conflict}
+
+
+def _planned_action(ctx: _Context) -> Reply:
+    args, engine = ctx.args, ctx.engine
+    command = _PLANNED_COMMANDS[args.command]
+    node_id = ctx.target()
+    plan = command.prepare(engine, args, node_id)
+    answers = _answers(command, args, plan)
+    if plan.nothing_to_do:
+        return Reply(
+            EXIT_OK,
+            _render.action_plan_data(args.command, node_id, plan, None),
+            _render.action_plan_text(plan, None),
+        )
+    confirm = _confirm_argv(args, node_id, plan.fingerprint)
+    plan_data = _render.action_plan_data(args.command, node_id, plan, confirm)
+    if not args.apply and args.confirm is None:
+        return Reply(
+            EXIT_OK,
+            plan_data,
+            _render.action_plan_text(plan, " ".join(_quote(a) for a in confirm)),
+        )
+    if args.confirm is not None and args.confirm != plan.fingerprint:
+        return _refused_plan_reply(
+            plan_data,
+            f"plan changed since {args.confirm} (now {plan.fingerprint}); "
+            "preview again",
+            "preview again, then confirm the new plan",
+        )
+    try:
+        command.execute(engine, plan, answers)
+    except ActionRefusedError as refused:
+        fix = None
+        if command.conflict_question in plan.questions:
+            choices = "|".join(command.conflict_choices)
+            fix = f"choose with --on-conflict {choices}"
+        return _refused_plan_reply(plan_data, refused.message, fix)
+    return _job_reply(args.command, _wait(ctx))
+
+
+def _refused_plan_reply(
+    plan_data: _render.Data, message: str, fix: str | None
+) -> Reply:
+    """A refused execution: the current plan as data, the reason as text."""
+    error: dict[str, object] = {"kind": "refused", "message": message}
+    lines = [f"refused: {message}"]
+    if fix is not None:
+        error["fix"] = fix
+        lines.append(f"fix: {fix}")
+    return Reply(EXIT_REFUSED, plan_data, "\n".join(lines), error)
 
 
 _COMMANDS: dict[str, Callable[[_Context], Reply]] = {
     "status": _status,
     "config": _config,
     "inspect": _inspect,
-    **{
-        name: _action
-        for name in (
-            "open",
-            "tidy",
-            "cull",
-            "edit",
-            "rename",
-            "publish",
-            "archive",
-            "new-batch",
-        )
-    },
+    **{name: _direct_action for name in _DIRECT_COMMANDS},
+    **{name: _planned_action for name in _PLANNED_COMMANDS},
 }
 
 
@@ -485,8 +572,13 @@ def _as_cli_error(engine: Engine, error: Exception) -> CliError | None:
             )
         case EngineBusyError():
             return CliError(EXIT_REFUSED, "busy", str(error))
-        case PolicyNotSupportedError():
-            return CliError(EXIT_USAGE, "usage", str(error))
+        case ActionRefusedError():
+            message = error.message
+            if error.details:
+                message = f"{message}\n{error.details}"
+            return CliError(EXIT_REFUSED, "refused", message)
+        case CliError():
+            return error
         case JobCancelled():
             return CliError(EXIT_CANCELLED, "cancelled", "cancelled by the user")
         case ConfigValueError():

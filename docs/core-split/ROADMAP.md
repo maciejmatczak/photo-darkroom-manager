@@ -138,20 +138,26 @@ its items are.
 
 ## Phase 4: Jobs as a framework for actions
 
-- [x] Built as the OpenSpec change `core-jobs-framework`; the specs
-      `engine/jobs`, `engine/engine-status` and `engine/action-requests`
-      state the behaviour. Scans stay jobs in the same slot
-- Heavy actions (tidy, archive, publish) are written against the job
-  framework: they get a `Job`, report progress, decide where to check a
-  cancel and write their own audit lines through it; one-shot actions
-  (open, cull, edit, rename, new batch) never see a job
-- One engine lock: a job holds it for its run, an `exclusive` action
-  (rename, new batch) for its call; while it is taken, exclusive actions,
-  scans and config edits are refused as busy
-- `Job` is a standalone object the slot runs and tests create directly; the
-  hooks between engine and actions, `NO_JOB` and `state_of` are gone
-- A job's state follows from the run alone; a failed file move is in the
-  action's result
+- [x] Jobs built as the OpenSpec change `core-jobs-framework`: `Job` is a
+      standalone object the slot runs and tests create directly; a
+      job's state follows from the run alone. Scans stay jobs in the
+      same slot
+- [x] Actions reworked as the OpenSpec change `core-actions-as-forms`;
+      the specs `engine/actions` and `engine/planned-actions` state the
+      behaviour
+  - `core/actions` is a collection of unique actions on a shared
+    foundation (result, plan and question types, `ActionRefusedError`,
+    fingerprint and answer checks); no common interface to execute
+  - Direct actions (open, cull, edit) run at once and return their own
+    result
+  - Planned actions (tidy, archive, publish, rename, new batch) work
+    like a web form: `action_prepare_<name>` returns that action's own
+    plan type, `action_<name>(plan, answers)` checks it and runs it as
+    a job
+  - One busy rule: a job is running; the slot's hold and the
+    `exclusive` flag are gone
+  - The engine decides what to rescan and where the node is after a
+    run; actions never name nodes
 
 ## Phase 5: Batch metadata and showroom albums
 
@@ -203,6 +209,6 @@ its items are.
 
 ## Next actionable step
 
-Phase 4: review `core-jobs-framework` and archive it with spec sync; then
-Phase 5, starting with the open questions of
+Phase 4: review `core-actions-as-forms` and archive it with spec sync;
+then Phase 5, starting with the open questions of
 [showroom-albums.md](../research/showroom-albums.md).

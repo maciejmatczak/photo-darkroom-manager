@@ -1,137 +1,91 @@
-"""Tests for TidyAction."""
+"""Tests for tidy: its plan, its question for conflicts and its run."""
 
 from pathlib import Path
 
 import pytest
-from conftest import execute
 
 from photo_darkroom_manager.core.actions import (
-    ActionPlan,
-    ActionResult,
-    Move,
-    TidyAction,
+    ActionRefusedError,
+    check_answers,
+    tidy,
 )
+from photo_darkroom_manager.core.actions._moves import (
+    CONFLICT_EXISTS,
+    CONFLICT_SAME_TARGET,
+    FileMove,
+)
+from photo_darkroom_manager.core.jobs import Job
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER, VIDEOS_FOLDER
 
 TIDY_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 tidy basic moves jpg and xmp"
 
 
-def _plan(action: TidyAction) -> ActionPlan:
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan), plan
-    return plan
+def _run(plan: tidy.TidyPlan, **answers: str) -> tidy.TidyResult:
+    return tidy.run(plan, answers, Job("tidy"))
 
 
-@pytest.mark.internal
-def test_tidy_preview_text_extension_stats(tmp_path: Path) -> None:
-    batch = tmp_path / "batch"
-    batch.mkdir()
-    (batch / "a.jpg").write_bytes(b"")
-    (batch / "a.xmp").write_bytes(b"")
-    (batch / "b.mp4").write_bytes(b"")
-    text = _plan(TidyAction(batch)).preview_text()
-    assert "Tidy 3 files" in text
-    assert ".jpg: 1" in text
-    assert ".xmp: 1" in text
-    assert ".mp4: 1" in text
-    assert "move a.jpg → PHOTOS/a.jpg" in text
-
-
-@pytest.mark.internal
-def test_tidy_prepare_lets_errors_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    act = TidyAction(Path("/tmp/will-not-use"))
-
-    def boom(*_a: object, **_k: object) -> None:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions._actions.TidyAction._prepare",
-        boom,
-    )
-    with pytest.raises(RuntimeError, match="boom"):
-        act.prepare()
-
-
-def test_tidy_executes_on_copied_data_fixture(photo_setup) -> None:
+def test_tidy_on_copied_data_fixture(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(TIDY_BATCH_BASIC_REL)
-    act = TidyAction(batch)
-    plan = _plan(act)
-    assert plan.changes_files
-    ex = execute(act, plan)
-    assert ex.outcome == "ok"
-    assert ex.done == plan.steps
+    plan = tidy.prepare(batch)
+    assert not plan.nothing_to_do
+    result = _run(plan)
+    assert result.outcome == "ok"
+    assert result.moves.moved == plan.moves
     assert (batch / PHOTOS_FOLDER).is_dir()
 
 
-def test_tidy_prepare_not_a_directory(tmp_path: Path) -> None:
-    f = tmp_path / "file"
-    f.write_text("x", encoding="utf-8")
-    out = TidyAction(f).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
-    assert "Not a directory" in out.message
+def test_not_a_directory_is_refused(tmp_path: Path) -> None:
+    file = tmp_path / "file"
+    file.write_text("x", encoding="utf-8")
+    with pytest.raises(ActionRefusedError, match="Not a directory"):
+        tidy.prepare(file)
 
 
 def test_nothing_to_tidy(tmp_path: Path) -> None:
-    batch = tmp_path / "batch"
-    photos = batch / PHOTOS_FOLDER
+    photos = tmp_path / "batch" / PHOTOS_FOLDER
     photos.mkdir(parents=True)
     (photos / "already.jpg").write_bytes(b"")
-    out = TidyAction(batch).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "noop"
-    assert out.success
-    assert out.message == "Nothing to tidy"
+    plan = tidy.prepare(tmp_path / "batch")
+    assert plan.nothing_to_do
+    assert plan.questions == {}
 
 
-def test_tidy_prepare_execute_moves_to_photos(tmp_path: Path) -> None:
+def test_loose_photo_moves_to_photos(tmp_path: Path) -> None:
     batch = tmp_path / "batch"
     batch.mkdir()
     (batch / "a.jpg").write_bytes(b"")
-    act = TidyAction(batch)
-    plan = _plan(act)
-    assert plan.steps == (Move(batch / "a.jpg", batch / PHOTOS_FOLDER / "a.jpg"),)
-    result = execute(act, plan)
-    assert result.success
+    plan = tidy.prepare(batch)
+    assert plan.moves == (FileMove(batch / "a.jpg", batch / PHOTOS_FOLDER / "a.jpg"),)
+    result = _run(plan)
+    assert result.outcome == "ok"
+    assert result.message == "Tidied 1 of 1 file(s)"
     assert (batch / PHOTOS_FOLDER / "a.jpg").exists()
     assert not (batch / "a.jpg").exists()
 
 
-def test_tidy_recursive_from_batch_moves_to_subfolder_photos(tmp_path: Path) -> None:
-    batch = tmp_path / "batch"
-    iphone = batch / "iPhone"
+def test_a_subfolder_gets_its_own_photos(tmp_path: Path) -> None:
+    iphone = tmp_path / "batch" / "iPhone"
     iphone.mkdir(parents=True)
     (iphone / "img.jpg").write_bytes(b"")
-    act = TidyAction(batch)
-    result = execute(act, _plan(act))
-    assert result.success
+    _run(tidy.prepare(tmp_path / "batch"))
     assert (iphone / PHOTOS_FOLDER / "img.jpg").exists()
-    assert not (iphone / "img.jpg").exists()
-    assert not (batch / PHOTOS_FOLDER / "img.jpg").exists()
+    assert not (tmp_path / "batch" / PHOTOS_FOLDER / "img.jpg").exists()
 
 
-def test_tidy_sibling_bucket_video_in_photos(tmp_path: Path) -> None:
-    batch = tmp_path / "batch"
-    photos = batch / "iPhone" / PHOTOS_FOLDER
+def test_video_in_photos_moves_to_the_sibling_videos(tmp_path: Path) -> None:
+    photos = tmp_path / "batch" / "iPhone" / PHOTOS_FOLDER
     photos.mkdir(parents=True)
     (photos / "clip.mp4").write_bytes(b"")
-    act = TidyAction(batch)
-    result = execute(act, _plan(act))
-    assert result.success
-    assert (batch / "iPhone" / VIDEOS_FOLDER / "clip.mp4").exists()
-    assert not (photos / "clip.mp4").exists()
+    _run(tidy.prepare(tmp_path / "batch"))
+    assert (tmp_path / "batch" / "iPhone" / VIDEOS_FOLDER / "clip.mp4").exists()
 
 
-def test_tidy_sibling_bucket_photo_in_videos(tmp_path: Path) -> None:
-    batch = tmp_path / "batch"
-    videos = batch / "iPhone" / VIDEOS_FOLDER
+def test_photo_in_videos_moves_to_the_sibling_photos(tmp_path: Path) -> None:
+    videos = tmp_path / "batch" / "iPhone" / VIDEOS_FOLDER
     videos.mkdir(parents=True)
     (videos / "shot.jpg").write_bytes(b"")
-    act = TidyAction(batch)
-    result = execute(act, _plan(act))
-    assert result.success
-    assert (batch / "iPhone" / PHOTOS_FOLDER / "shot.jpg").exists()
-    assert not (videos / "shot.jpg").exists()
+    _run(tidy.prepare(tmp_path / "batch"))
+    assert (tmp_path / "batch" / "iPhone" / PHOTOS_FOLDER / "shot.jpg").exists()
 
 
 def _same_name_in_photos(tmp_path: Path) -> Path:
@@ -144,78 +98,73 @@ def _same_name_in_photos(tmp_path: Path) -> Path:
     return batch
 
 
-def test_tidy_prepare_lists_conflicts(tmp_path: Path) -> None:
+def test_conflicts_are_listed_and_asked_about(tmp_path: Path) -> None:
     batch = _same_name_in_photos(tmp_path)
-    plan = _plan(TidyAction(batch))
-    assert [s.source.name for s in plan.steps if isinstance(s, Move)] == ["b.jpg"]
+    plan = tidy.prepare(batch)
+    assert [m.source.name for m in plan.moves] == ["b.jpg"]
     ((conflict),) = plan.conflicts
-    assert conflict.move.source == batch / "a.jpg"
-    assert conflict.reason == "exists"
-    assert plan.summary == "Tidy 1 files, 1 conflict(s)"
-    assert "conflict a.jpg → PHOTOS/a.jpg" in plan.preview_text()
+    assert conflict.source == batch / "a.jpg"
+    assert conflict.reason == CONFLICT_EXISTS
+    assert plan.questions[tidy.CONFLICTS_QUESTION].choices == ("skip",)
 
 
-def test_tidy_skip_moves_the_free_files(tmp_path: Path) -> None:
+def test_conflicts_without_an_answer_are_refused(tmp_path: Path) -> None:
+    plan = tidy.prepare(_same_name_in_photos(tmp_path))
+    with pytest.raises(ActionRefusedError, match=tidy.CONFLICTS_QUESTION):
+        check_answers(plan.questions, {})
+
+
+def test_skip_moves_the_free_files(tmp_path: Path) -> None:
     batch = _same_name_in_photos(tmp_path)
-    act = TidyAction(batch)
-    result = execute(act, _plan(act), policy="skip")
+    result = _run(tidy.prepare(batch), conflicts="skip")
     assert result.outcome == "ok"
     assert (batch / PHOTOS_FOLDER / "b.jpg").exists()
     assert (batch / "a.jpg").read_bytes() == b"loose"
     assert (batch / PHOTOS_FOLDER / "a.jpg").read_bytes() == b"other"
-    assert [c.move.source.name for c in result.skipped] == ["a.jpg"]
+    assert [m.source.name for m in result.moves.skipped] == ["a.jpg"]
 
 
-def test_tidy_with_conflicts_refused_by_default(tmp_path: Path) -> None:
-    batch = _same_name_in_photos(tmp_path)
-    act = TidyAction(batch)
-    result = execute(act, _plan(act))
-    assert result.outcome == "refused"
-    assert "Tidy blocked" in result.message
-    assert [c.move.source.name for c in result.conflicts] == ["a.jpg"]
-    assert (batch / "b.jpg").exists()
-
-
-def test_tidy_two_files_for_one_target(tmp_path: Path) -> None:
+def test_two_files_for_one_target(tmp_path: Path) -> None:
     batch = tmp_path / "batch"
     (batch / PHOTOS_FOLDER).mkdir(parents=True)
-    (batch / "VIDEOS").mkdir()
+    (batch / VIDEOS_FOLDER).mkdir()
     (batch / "a.jpg").write_bytes(b"loose")
-    (batch / "VIDEOS" / "a.jpg").write_bytes(b"misfiled")
-    plan = _plan(TidyAction(batch))
-    assert len(plan.steps) == 1
+    (batch / VIDEOS_FOLDER / "a.jpg").write_bytes(b"misfiled")
+    plan = tidy.prepare(batch)
+    assert len(plan.moves) == 1
     ((conflict),) = plan.conflicts
-    assert conflict.reason == "same_target"
+    assert conflict.reason == CONFLICT_SAME_TARGET
 
 
-def test_tidy_policies() -> None:
-    assert TidyAction.policies == ("refuse", "skip")
-
-
-def test_tidy_execute_aborts_on_late_conflict(tmp_path: Path) -> None:
+def test_a_target_taken_after_the_plan_is_skipped(tmp_path: Path) -> None:
     batch = tmp_path / "batch"
     batch.mkdir()
     (batch / "a.jpg").write_bytes(b"")
-    act = TidyAction(batch)
-    plan = _plan(act)
+    plan = tidy.prepare(batch)
     (batch / PHOTOS_FOLDER).mkdir()
     (batch / PHOTOS_FOLDER / "a.jpg").write_bytes(b"blocker")
-    result = execute(act, plan)
-    assert result.outcome == "refused"
-    assert result.rescan_node_path is None
-    assert "Tidy blocked" in result.message
+    result = _run(plan)
+    assert result.outcome == "ok"
+    assert [m.source.name for m in result.moves.skipped] == ["a.jpg"]
     assert (batch / "a.jpg").exists()
+    assert (batch / PHOTOS_FOLDER / "a.jpg").read_bytes() == b"blocker"
 
 
-def test_late_file_in_a_tidy_folder(tmp_path: Path) -> None:
+def test_a_late_file_in_a_tidy_folder_stays(tmp_path: Path) -> None:
     batch = tmp_path / "batch"
     batch.mkdir()
     (batch / "a.jpg").write_bytes(b"")
-    act = TidyAction(batch)
-    plan = _plan(act)
+    plan = tidy.prepare(batch)
     (batch / "late.jpg").write_bytes(b"")
-    result = execute(act, plan)
+    result = _run(plan)
     assert result.outcome == "ok"
     assert (batch / PHOTOS_FOLDER / "a.jpg").exists()
     assert (batch / "late.jpg").exists()
-    assert not (batch / PHOTOS_FOLDER / "late.jpg").exists()
+
+
+def test_preparing_twice_gives_the_same_fingerprint(tmp_path: Path) -> None:
+    batch = _same_name_in_photos(tmp_path)
+    assert tidy.prepare(batch).fingerprint == tidy.prepare(batch).fingerprint
+    before = tidy.prepare(batch).fingerprint
+    (batch / "c.jpg").write_bytes(b"")
+    assert tidy.prepare(batch).fingerprint != before

@@ -1,18 +1,16 @@
-"""Tests for ArchiveAction prepare and execute."""
+"""Tests for archive: its plan, its question and its run."""
 
 from pathlib import Path
 
 import pytest
-from conftest import execute
 
 from photo_darkroom_manager.core import file_utils
 from photo_darkroom_manager.core.actions import (
-    ActionPlan,
-    ActionResult,
-    ArchiveAction,
-    ExecutionResult,
-    Move,
+    ActionRefusedError,
+    archive,
+    check_answers,
 )
+from photo_darkroom_manager.core.actions._moves import CONFLICT_EXISTS
 from photo_darkroom_manager.core.jobs import Job, JobCancelled
 from photo_darkroom_manager.core.library import PHOTOS_FOLDER
 
@@ -20,12 +18,7 @@ ARCHIVE_BATCH_BASIC_REL = Path("Camera") / "2026" / "2026-03 archive basic succe
 ARCHIVE_BATCH_CONFLICT_REL = (
     Path("Camera") / "2026" / "2026-03 archive will fail on conflict"
 )
-
-
 ARCHIVE_BATCH_BASIC_DEST = Path("2026") / "2026-03 archive basic success" / "Camera"
-ARCHIVE_BATCH_CONFLICT_DEST = (
-    Path("2026") / "2026-03 archive will fail on conflict" / "Camera"
-)
 
 
 class _CancelAfter(Job):
@@ -44,47 +37,18 @@ class _CancelAfter(Job):
 
 
 def _relative_leaf_paths(folder: Path) -> frozenset[Path]:
-    """Paths of every file under *folder*, relative to *folder*."""
     folder = folder.resolve()
     return frozenset(p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
 
 
-def _archive(photo_setup, folder: Path) -> ArchiveAction:
-    return ArchiveAction(
-        folder,
-        darkroom=photo_setup.roots.darkroom,
-        archive=photo_setup.roots.archive,
+def _prepare(photo_setup, folder: Path) -> archive.ArchivePlan:
+    return archive.prepare(
+        folder, photo_setup.roots.darkroom, photo_setup.roots.archive
     )
 
 
-def _plan(action: ArchiveAction) -> ActionPlan:
-    plan = action.prepare()
-    assert isinstance(plan, ActionPlan), plan
-    return plan
-
-
-def test_archive_prepare_happy_batch_root(photo_setup) -> None:
-    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
-    plan = _plan(_archive(photo_setup, batch))
-    assert plan.summary == "Archive 4 files"
-    assert plan.changes_files
-    expected_target = (photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST).resolve()
-    rels = _relative_leaf_paths(batch)
-    assert {step.target for step in plan.steps if isinstance(step, Move)} == {
-        expected_target / rel for rel in rels
-    }
-
-
-def test_archive_prepare_lists_files_already_in_archive(photo_setup) -> None:
-    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_CONFLICT_REL)
-    plan = _plan(_archive(photo_setup, batch))
-    assert plan.conflicts
-    assert all(c.reason == "exists" for c in plan.conflicts)
-    assert all(c.move.target.is_file() for c in plan.conflicts)
-    taken = {c.move.source for c in plan.conflicts}
-    assert not taken & {s.source for s in plan.steps if isinstance(s, Move)}
-    assert "already in the archive" in plan.summary
-    assert f"Conflicts (conflict): {len(plan.conflicts)}" in plan.preview_text()
+def _run(plan: archive.ArchivePlan, **answers: str) -> archive.ArchiveResult:
+    return archive.run(plan, answers, Job("archive"))
 
 
 def _batch_of(photo_setup, name: str, files: int) -> Path:
@@ -102,253 +66,191 @@ def _already_archived(photo_setup, name: str, *files: str) -> None:
         (archived / file).write_bytes(b"old")
 
 
-def test_archive_skipping_conflicts(photo_setup) -> None:
-    """100 files, 10 already archived, skip: 90 archived, 10 stay and are reported."""
+def test_a_batch_goes_to_its_mapped_location(photo_setup) -> None:
+    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
+    plan = _prepare(photo_setup, batch)
+    expected = (photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST).resolve()
+    assert plan.target == expected
+    assert {m.target for m in plan.moves} == {
+        expected / rel for rel in _relative_leaf_paths(batch)
+    }
+    assert plan.questions == {}
+
+
+def test_a_subfolder_keeps_its_nested_tail(photo_setup) -> None:
+    photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
+    plan = _prepare(photo_setup, photos)
+    (move,) = plan.moves
+    expected = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST / PHOTOS_FOLDER
+    assert move.target.parent == expected.resolve()
+
+
+def test_files_already_archived_are_listed_and_asked_about(photo_setup) -> None:
+    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_CONFLICT_REL)
+    plan = _prepare(photo_setup, batch)
+    assert plan.conflicts
+    assert all(c.reason == CONFLICT_EXISTS for c in plan.conflicts)
+    assert all(c.target.is_file() for c in plan.conflicts)
+    assert not {c.source for c in plan.conflicts} & {m.source for m in plan.moves}
+    assert plan.questions[archive.EXISTING_QUESTION].choices == ("skip",)
+
+
+def test_conflicts_without_an_answer_are_refused(photo_setup) -> None:
+    batch = _batch_of(photo_setup, "2026-04 refused", 3)
+    _already_archived(photo_setup, "2026-04 refused", "001.jpg")
+    plan = _prepare(photo_setup, batch)
+    with pytest.raises(ActionRefusedError, match=archive.EXISTING_QUESTION):
+        check_answers(plan.questions, {})
+
+
+def test_skipping_ten_of_a_hundred(photo_setup) -> None:
     batch = _batch_of(photo_setup, "2026-04 hundred", 100)
     taken = [f"{i:03}.jpg" for i in range(0, 100, 10)]
     _already_archived(photo_setup, "2026-04 hundred", *taken)
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
-    assert len(plan.steps) == 90
+    plan = _prepare(photo_setup, batch)
+    assert len(plan.moves) == 90
     assert len(plan.conflicts) == 10
 
-    result = execute(act, plan, policy="skip")
+    result = _run(plan, existing="skip")
 
     assert result.outcome == "ok"
-    assert len(result.done) == 90
-    assert sorted(c.move.source.name for c in result.skipped) == taken
+    assert len(result.moves.moved) == 90
+    assert sorted(m.source.name for m in result.moves.skipped) == taken
     assert sorted(p.name for p in batch.iterdir()) == taken
     archived = photo_setup.roots.archive / "2026" / "2026-04 hundred" / "Camera"
     assert len(list(archived.iterdir())) == 100
     assert all((archived / name).read_bytes() == b"old" for name in taken)
     assert "10 skipped" in result.message
+    assert not result.source_removed
 
 
-def test_archive_with_conflicts_refused_by_default(photo_setup) -> None:
-    batch = _batch_of(photo_setup, "2026-04 refused", 3)
-    _already_archived(photo_setup, "2026-04 refused", "001.jpg")
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
-
-    result = execute(act, plan)
-
-    assert result.outcome == "refused"
-    assert [c.move.source.name for c in result.conflicts] == ["001.jpg"]
-    assert result.done == ()
-    assert len(list(batch.iterdir())) == 3
-    assert result.rescan_node_path is None
+def test_not_a_batch_is_refused(photo_setup) -> None:
+    year = photo_setup.darkroom_has_dir(Path("Camera") / "2026")
+    with pytest.raises(ActionRefusedError, match="Could not recognize batch"):
+        _prepare(photo_setup, year)
 
 
-def test_archive_policies() -> None:
-    assert ArchiveAction.policies == ("refuse", "skip")
-
-
-def test_archive_prepare_unrecognized_batch_path(photo_setup) -> None:
-    """Path under darkroom but not a batch folder (device/year only) → no batch."""
-    year_only = photo_setup.darkroom_has_dir(Path("Camera") / "2026")
-    out = _archive(photo_setup, year_only).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "refused"
-    assert out.message == "Could not recognize batch for this path"
-
-
-def test_archive_prepare_empty_folder_is_a_noop(photo_setup) -> None:
+def test_an_empty_folder_has_nothing_to_do(photo_setup) -> None:
     empty = photo_setup.roots.darkroom / "Camera" / "2026" / "2026-04 empty"
     empty.mkdir()
-    out = _archive(photo_setup, empty).prepare()
-    assert isinstance(out, ActionResult)
-    assert out.outcome == "noop"
+    assert _prepare(photo_setup, empty).nothing_to_do
 
 
-def test_archive_prepare_does_not_create_archive_directories(photo_setup) -> None:
-    """Prepare must not mkdir under archive; destination dirs are created on execute."""
+def test_preparing_creates_no_archive_folder(photo_setup) -> None:
     photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
     archive_root = photo_setup.roots.archive
-
-    def archive_tree_snapshot() -> frozenset[Path]:
-        return frozenset(p.relative_to(archive_root) for p in archive_root.rglob("*"))
-
-    before = archive_tree_snapshot()
-    _plan(_archive(photo_setup, photos))
-    assert before == archive_tree_snapshot()
+    before = frozenset(archive_root.rglob("*"))
+    _prepare(photo_setup, photos)
+    assert frozenset(archive_root.rglob("*")) == before
 
 
-def test_archive_prepare_subfolder_photos(photo_setup) -> None:
-    """A subfolder (e.g. PHOTOS/) maps to the same subfolder in the archive."""
-    photos = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL / PHOTOS_FOLDER)
-    plan = _plan(_archive(photo_setup, photos))
-    assert len(plan.steps) == 1
-    (step,) = plan.steps
-    assert isinstance(step, Move)
-    expected_rel = ARCHIVE_BATCH_BASIC_DEST / PHOTOS_FOLDER
-    assert step.target.parent == (photo_setup.roots.archive / expected_rel).resolve()
-
-
-def test_archive_execute_moves_all_leaves(photo_setup) -> None:
+def test_a_whole_batch_is_archived_and_removed(photo_setup) -> None:
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
-    expected_rels = _relative_leaf_paths(batch)
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
-    assert len(plan.steps) == len(expected_rels)
-    result = execute(act, plan)
+    expected = _relative_leaf_paths(batch)
+    result = _run(_prepare(photo_setup, batch))
     assert result.outcome == "ok"
-    assert result.done == plan.steps
-    assert f"{len(expected_rels)} of {len(expected_rels)} file" in result.message
-
-    arch_batch = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST
-    for rel in expected_rels:
-        assert (arch_batch / rel).is_file()
-
-
-def test_archive_empties_the_batch(photo_setup) -> None:
-    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
-    act = _archive(photo_setup, batch)
-    result = execute(act, _plan(act))
-    assert result.outcome == "ok"
+    assert f"{len(expected)} of {len(expected)} file" in result.message
+    assert result.source_removed
     assert not batch.exists()
-    assert result.node_path is None
-    assert result.left == ()
+    archived = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST
+    assert all((archived / rel).is_file() for rel in expected)
 
 
-def test_photo_added_after_the_preview(photo_setup) -> None:
-    batch = photo_setup.roots.darkroom / "Camera" / "2026" / "2026-04 two"
-    batch.mkdir()
-    (batch / "a.jpg").write_bytes(b"a")
-    (batch / "b.jpg").write_bytes(b"b")
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
-    (batch / "c.jpg").write_bytes(b"c")
+def test_a_photo_added_after_the_preview_stays(photo_setup) -> None:
+    batch = _batch_of(photo_setup, "2026-04 two", 2)
+    plan = _prepare(photo_setup, batch)
+    (batch / "late.jpg").write_bytes(b"late")
 
-    result = execute(act, plan)
+    result = _run(plan)
 
     archived = photo_setup.roots.archive / "2026" / "2026-04 two" / "Camera"
-    assert (archived / "a.jpg").is_file()
-    assert (archived / "b.jpg").is_file()
-    assert not (archived / "c.jpg").exists()
-    assert (batch / "c.jpg").is_file()
+    assert len(list(archived.iterdir())) == 2
+    assert (batch / "late.jpg").is_file()
     assert result.outcome == "ok"
-    assert result.left == ()
-    assert [p.name for p in result.remaining] == ["c.jpg"]
-    assert result.node_path == batch
+    assert [p.name for p in result.remaining] == ["late.jpg"]
+    assert not result.source_removed
     assert "1 file(s) left" in result.message
 
 
-def test_cancelled_archive_lists_the_files_left_undone(
-    photo_setup, tmp_path: Path
-) -> None:
-    batch = photo_setup.roots.darkroom / "Camera" / "2026" / "2026-04 four"
-    batch.mkdir()
-    for name in ("a.jpg", "b.jpg", "c.jpg", "d.jpg"):
-        (batch / name).write_bytes(name.encode())
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
+def test_a_cancel_lists_the_files_left_undone(photo_setup, tmp_path: Path) -> None:
+    batch = _batch_of(photo_setup, "2026-04 four", 4)
+    plan = _prepare(photo_setup, batch)
     job = _CancelAfter(2, log_path=tmp_path / "archive.log")
 
     with pytest.raises(JobCancelled) as stopped:
-        act.execute(plan, job=job)
+        archive.run(plan, {}, job)
     job.close()
 
     result = stopped.value.result
-    assert isinstance(result, ExecutionResult)
+    assert isinstance(result, archive.ArchiveResult)
     assert result.outcome == "cancelled"
-    assert result.fingerprint == plan.fingerprint
-    assert [s.source.name for s in result.done if isinstance(s, Move)] == [
-        "a.jpg",
-        "b.jpg",
-    ]
-    assert sorted(p.name for p in result.left) == ["c.jpg", "d.jpg"]
-    assert sorted(p.name for p in result.remaining) == ["c.jpg", "d.jpg"]
+    assert [m.source.name for m in result.moves.moved] == ["000.jpg", "001.jpg"]
+    assert sorted(m.source.name for m in result.moves.left) == ["002.jpg", "003.jpg"]
+    assert sorted(p.name for p in result.remaining) == ["002.jpg", "003.jpg"]
     log = (tmp_path / "archive.log").read_text(encoding="utf-8")
     assert log.count("event='step_done'") == 2
 
 
-def test_partial_archive(photo_setup, monkeypatch: pytest.MonkeyPatch) -> None:
-    batch = photo_setup.roots.darkroom / "Camera" / "2026" / "2026-04 three"
-    batch.mkdir()
-    for name in ("a.jpg", "b.jpg", "c.jpg"):
-        (batch / name).write_bytes(name.encode())
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
+def test_a_failed_file_is_reported_and_remains(
+    photo_setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch = _batch_of(photo_setup, "2026-04 three", 3)
+    plan = _prepare(photo_setup, batch)
     real_move = file_utils.move_file
 
-    def fail_on_c(src: Path, dst: Path, *, replace: bool = False) -> None:
-        if src.name == "c.jpg":
+    def fail_on_last(src: Path, dst: Path, *, replace: bool = False) -> None:
+        if src.name == "002.jpg":
             raise PermissionError("file is locked")
         real_move(src, dst, replace=replace)
 
-    monkeypatch.setattr(file_utils, "move_file", fail_on_c)
-    result = execute(act, plan)
+    monkeypatch.setattr(file_utils, "move_file", fail_on_last)
+    result = _run(plan)
 
     assert result.outcome == "failed"
-    assert [s.source.name for s in result.done if isinstance(s, Move)] == [
-        "a.jpg",
-        "b.jpg",
-    ]
-    assert len(result.failed) == 1
-    failure = result.failed[0]
-    assert isinstance(failure.step, Move)
-    assert failure.step.source.name == "c.jpg"
-    assert "file is locked" in failure.reason
-    assert result.left == ()
-    assert [p.name for p in result.remaining] == ["c.jpg"]
+    assert len(result.moves.moved) == 2
+    ((failed),) = result.moves.failed
+    assert failed.source.name == "002.jpg"
+    assert "file is locked" in (failed.reason or "")
+    assert [p.name for p in result.remaining] == ["002.jpg"]
 
 
-def test_archive_execute_blocked_when_conflict_appears_after_prepare(
-    photo_setup,
-) -> None:
-    """A file appears in the archive before execute: refuse moves nothing."""
-    batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
-    expected_rels = _relative_leaf_paths(batch)
-    block_rel = sorted(expected_rels)[0]
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
-
-    block_at = photo_setup.roots.archive / ARCHIVE_BATCH_BASIC_DEST / block_rel
-    block_at.parent.mkdir(parents=True, exist_ok=True)
-    block_at.write_bytes(b"")
-
-    result = execute(act, plan)
-    assert result.outcome == "refused"
-    assert result.rescan_node_path is None
-    assert "Archive blocked" in result.message
-    assert result.details is not None
-    assert result.done == ()
-    assert (batch / block_rel).exists()
-    assert block_at.read_bytes() == b""
-
-
-def test_late_file_in_the_archive_with_skip(photo_setup) -> None:
+def test_a_file_put_in_the_archive_after_the_preview_is_skipped(photo_setup) -> None:
     batch = _batch_of(photo_setup, "2026-04 late", 3)
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
+    plan = _prepare(photo_setup, batch)
     _already_archived(photo_setup, "2026-04 late", "002.jpg")
 
-    result = execute(act, plan, policy="skip")
+    result = _run(plan)
 
     assert result.outcome == "ok"
-    assert [c.move.source.name for c in result.skipped] == ["002.jpg"]
-    assert [c.move.source.name for c in result.conflicts] == ["002.jpg"]
-    assert len(result.done) == 2
+    assert [m.source.name for m in result.moves.skipped] == ["002.jpg"]
+    assert len(result.moves.moved) == 2
     assert (batch / "002.jpg").read_bytes() == b"new"
+    archived = photo_setup.roots.archive / "2026" / "2026-04 late" / "Camera"
+    assert (archived / "002.jpg").read_bytes() == b"old"
 
 
-def test_folder_held_open_is_kept_and_reported(
+def test_a_folder_held_open_is_kept_and_reported(
     photo_setup, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     batch = photo_setup.darkroom_has_dir(ARCHIVE_BATCH_BASIC_REL)
-    act = _archive(photo_setup, batch)
-    plan = _plan(act)
+    plan = _prepare(photo_setup, batch)
 
     def held_open(top: Path) -> None:
         raise PermissionError("folder is in use")
 
-    monkeypatch.setattr(
-        "photo_darkroom_manager.core.actions._actions.prune_empty_dirs", held_open
-    )
-    result = execute(act, plan)
+    monkeypatch.setattr(archive, "prune_empty_dirs", held_open)
+    result = _run(plan)
 
     assert result.outcome == "ok"
-    assert result.done == plan.steps
-    assert result.details is not None
-    assert "folder is in use" in result.details
-    assert result.node_path == batch
+    assert result.moves.moved == plan.moves
+    assert "folder is in use" in (result.cleanup_problem or "")
+    assert batch.is_dir()
+    assert not result.source_removed
+
+
+def test_preparing_twice_gives_the_same_fingerprint(photo_setup) -> None:
+    batch = _batch_of(photo_setup, "2026-04 same", 2)
+    first = _prepare(photo_setup, batch).fingerprint
+    assert _prepare(photo_setup, batch).fingerprint == first
+    (batch / "late.jpg").write_bytes(b"late")
+    assert _prepare(photo_setup, batch).fingerprint != first

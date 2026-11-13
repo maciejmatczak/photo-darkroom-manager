@@ -6,7 +6,8 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
@@ -15,23 +16,19 @@ from platformdirs import user_config_path, user_log_dir
 from structlog.stdlib import BoundLogger
 
 from photo_darkroom_manager.core.actions import (
-    Action,
     ActionPlan,
-    ActionRequest,
-    ArchiveAction,
-    ConflictPolicy,
-    CullAction,
-    EditAction,
-    ExecutionResult,
-    JobAction,
-    NewBatchAction,
-    OpenFolderAction,
-    ParamValue,
-    PolicyNotSupportedError,
-    PublishAction,
-    RenameAction,
-    TidyAction,
+    ActionRefusedError,
+    ActionResult,
+    Answers,
+    apps,
+    check_answers,
+    new_batch,
+    publish,
+    rename,
+    require_unchanged_plan,
+    tidy,
 )
+from photo_darkroom_manager.core.actions import archive as archive_action
 from photo_darkroom_manager.core.jobs import (
     Job,
     JobBusyError,
@@ -68,14 +65,15 @@ from photo_darkroom_manager.core.user_config import (
 
 __all__ = [
     "ActionNotAllowedError",
+    "ActionRefusedError",
     "Engine",
     "EngineBusyError",
     "EngineNotReadyError",
     "JobCancelled",
     "LibraryNotScannedError",
+    "NodeActionResult",
     "NodeNotFoundError",
     "PathOutsideDarkroomError",
-    "PolicyNotSupportedError",
 ]
 
 log = structlog.get_logger(__name__)
@@ -147,8 +145,7 @@ JOBS_DIR_NAME = "jobs"
 _CHANGES_KEPT = 64
 
 EngineBusyError = JobBusyError
-"""Work that must run alone was requested while a job or an exclusive
-action runs."""
+"""A job, or a configuration change, was requested while a job runs."""
 
 
 class EngineNotReadyError(RuntimeError):
@@ -201,19 +198,56 @@ def _job_description(node_id: NodeId) -> str:
     return node_id or "darkroom root"
 
 
-def _log_result(logger: BoundLogger, result: ExecutionResult) -> None:
-    """Write what an action did, as the last line of its log."""
+@dataclass(frozen=True)
+class NodeActionResult[R: ActionResult]:
+    """The engine's result of an executed plan.
+
+    Args:
+        result: The action's own result, untouched.
+        node_id: The acted-on node afterwards; ``None`` when it is gone.
+        library_refreshed: The id the engine rescanned; ``None`` when no
+            library tree is scanned.
+    """
+
+    result: R
+    node_id: NodeId | None
+    library_refreshed: NodeId | None
+
+
+def _log_action_result(logger: BoundLogger, done: NodeActionResult) -> None:
+    """Write what an executed plan did, as the last line of its log."""
+    result = done.result
+    fields: dict[str, object] = {}
+    moves = getattr(result, "moves", None)
+    if moves is not None:
+        fields = {
+            "moved": len(moves.moved),
+            "replaced": len(moves.replaced),
+            "failed": len(moves.failed),
+            "skipped": len(moves.skipped),
+            "left": [str(m.source) for m in moves.left],
+        }
+    remaining = getattr(result, "remaining", None)
+    if remaining is not None:
+        fields["remaining"] = [str(p) for p in remaining]
     logger.info(
         "action_result",
         outcome=result.outcome,
         message=result.message,
-        done=len(result.done),
-        failed=len(result.failed),
-        skipped=len(result.skipped),
-        conflicts=len(result.conflicts),
-        left=[str(p) for p in result.left],
-        remaining=[str(p) for p in result.remaining],
-        refreshed=result.library_refreshed,
+        node_id=done.node_id,
+        refreshed=done.library_refreshed,
+        **fields,
+    )
+
+
+def _log_direct_result(action: str, node_id: NodeId, result: ActionResult) -> None:
+    """Write what a direct action did to the application log."""
+    log.info(
+        "action_result",
+        action=action,
+        node_id=node_id,
+        outcome=result.outcome,
+        message=result.message,
     )
 
 
@@ -594,13 +628,16 @@ class Engine:
     # Actions
     # ------------------------------------------------------------------
 
-    def _target(
+    def _resolve_action_target(
         self, node_id: NodeId, action: NodeAction, *, creates: bool = False
     ) -> tuple[NodeId, Path]:
-        """Guard a request: *node_id* names a node whose kind lists *action*.
+        """Check *node_id* names a node whose kind lists *action*; return it.
 
         The folder must exist unless the action creates it. Only the id's
         own folders are read; no scanned tree is needed.
+
+        Returns:
+            The canonical node id and its folder.
         """
         self._require_ready()
         node_id, kind = self._node(node_id)
@@ -611,242 +648,285 @@ class Engine:
             raise NodeNotFoundError(node_id)
         return node_id, path
 
-    def _request(
-        self, action: NodeAction, node_id: NodeId, **params: ParamValue
-    ) -> tuple[ActionRequest, Path]:
-        creates = action == NodeAction.NEW_BATCH
-        node_id, path = self._target(node_id, action, creates=creates)
-        return ActionRequest.of(action, node_id, **params), path
+    def _node_id_for_folder(self, folder: Path) -> NodeId:
+        """The node id of a darkroom *folder*; the root for one outside it."""
+        return _node_id(self._root("darkroom"), folder)
 
-    def action_start(
+    def _rescan_folder_if_library_scanned(
+        self, folder: Path, logger: BoundLogger
+    ) -> NodeId | None:
+        """Rescan *folder*, or its nearest existing ancestor, once scanned.
+
+        Returns:
+            The id rescanned; ``None`` when no library tree is scanned.
+        """
+        if self._library is None:
+            return None
+        return self._refresh(self._node_id_for_folder(folder), logger)
+
+    def _execute_planned_action[P: ActionPlan, R: ActionResult](
         self,
-        action: JobAction,
+        action_name: str,
+        node_id: NodeId,
+        plan: P,
+        fresh_plan: P,
+        answers: Answers | None,
         *,
-        confirm: str | None = None,
-        policy: str = "refuse",
+        run_action: Callable[[P, Answers, Job], R],
+        after_run: Callable[[P, R, Job], NodeActionResult[R]],
     ) -> JobView:
-        """Start preparing and executing a heavy *action* as a job; return it.
+        """The steps every execute call shares; return the started job.
 
-        Args:
-            action: The heavy action to run (tidy, archive, publish).
-            confirm: Execute only when the new plan has this fingerprint;
-                otherwise the job ends with a refusal naming both.
-            policy: What to do with conflicts.
+        Checks the plan handed back against *fresh_plan* and the answers
+        against its questions, before any job starts; then runs the action
+        on *fresh_plan* as a job, and *after_run* on its result, whatever
+        its outcome. The job's result is what *after_run* returns.
 
         Raises:
-            PolicyNotSupportedError: The action does not support *policy*.
-            EngineBusyError: A job or an exclusive action runs.
+            ActionRefusedError: The plan changed or an answer is invalid.
+            EngineBusyError: Another job runs.
         """
-        if not isinstance(action, JobAction):
-            raise ValueError(f"{action.action} runs at once; use action_apply")
-        checked = action.check_policy(policy)
+        try:
+            require_unchanged_plan(plan, fresh_plan)
+            checked_answers = check_answers(fresh_plan.questions, answers or {})
+        except ActionRefusedError as refused:
+            log.info(
+                "action_refused",
+                action=action_name,
+                node_id=node_id,
+                message=refused.message,
+            )
+            raise
+
+        def work(job: Job) -> NodeActionResult[R]:
+            job.log.info(
+                "action_request",
+                action=action_name,
+                node_id=node_id,
+                fingerprint=fresh_plan.fingerprint,
+                answers=dict(checked_answers),
+            )
+            try:
+                result = run_action(fresh_plan, checked_answers, job)
+            except JobCancelled as stopped:
+                if not isinstance(stopped.result, ActionResult):
+                    raise
+                cancelled = after_run(fresh_plan, cast(R, stopped.result), job)
+                _log_action_result(job.log, cancelled)
+                raise JobCancelled(cancelled) from None
+            done = after_run(fresh_plan, result, job)
+            _log_action_result(job.log, done)
+            return done
+
         return self._jobs.start(
-            lambda job: self._apply(action, confirm, checked, job),
-            name=str(action.action),
-            description=_job_description(action.request.node_id),
+            work, name=action_name, description=_job_description(node_id)
         )
 
-    def action_apply(
-        self,
-        action: Action,
-        confirm: str | None = None,
-        policy: str = "refuse",
-    ) -> ExecutionResult:
-        """Prepare and execute *action*, waiting for the result.
+    # Direct actions: run at once, return the action's own result
 
-        A heavy action runs as a job. Any other runs at once; an exclusive
-        one (rename, new batch) holds the engine while it runs, the others
-        (open, cull, edit) also run while a job runs.
-
-        Args:
-            action: The action to run.
-            confirm: Execute only when the new plan has this fingerprint.
-            policy: What to do with conflicts; only heavy actions take one
-                other than ``refuse``.
-
-        Raises:
-            PolicyNotSupportedError: The action does not support *policy*.
-            EngineBusyError: The action must run alone and the engine is
-                busy.
-        """
-        if isinstance(action, JobAction):
-            self.action_start(action, confirm=confirm, policy=policy)
-            view = self._wait_finished()
-            assert isinstance(view.result, ExecutionResult)
-            return view.result
-        if policy != "refuse":
-            raise PolicyNotSupportedError(action.action, policy, ("refuse",))
-        if not action.exclusive:
-            return self._apply(action, confirm, "refuse", None)
-        description = _job_description(action.request.node_id)
-        with self._jobs.hold(str(action.action), description):
-            return self._apply(action, confirm, "refuse", None)
-
-    def _apply(
-        self,
-        action: Action,
-        confirm: str | None,
-        policy: ConflictPolicy,
-        job: Job | None,
-    ) -> ExecutionResult:
-        """Prepare, check *confirm*, execute and rescan; log request and result.
-
-        Args:
-            action: The action to run.
-            confirm: Fingerprint the new plan must have, if given.
-            policy: Conflict policy, already checked.
-            job: The job of a heavy action; ``None`` for one run at once,
-                which logs to the application log.
-        """
-        logger = job.log if job is not None else log
-        try:
-            result = self._prepare_and_run(action, confirm, policy, job, logger)
-        except JobCancelled as stopped:
-            if isinstance(stopped.result, ExecutionResult):
-                _log_result(logger, stopped.result)
-            raise
-        _log_result(logger, result)
+    def action_open(self, node_id: NodeId) -> apps.OpenFolderResult:
+        """Show the node's folder in the system file manager."""
+        node_id, folder = self._resolve_action_target(node_id, NodeAction.OPEN)
+        result = apps.open_folder(folder)
+        _log_direct_result("open", node_id, result)
         return result
 
-    def _prepare_and_run(
+    def action_cull(self, node_id: NodeId) -> apps.ExternalAppResult:
+        """Open the node's folder in the configured ``cull_command``."""
+        return self._open_in_external_app(node_id, NodeAction.CULL, "cull_command")
+
+    def action_edit(self, node_id: NodeId) -> apps.ExternalAppResult:
+        """Open the node's folder in the configured ``edit_command``."""
+        return self._open_in_external_app(node_id, NodeAction.EDIT, "edit_command")
+
+    def _open_in_external_app(
+        self, node_id: NodeId, action: NodeAction, config_key: str
+    ) -> apps.ExternalAppResult:
+        node_id, folder = self._resolve_action_target(node_id, action)
+        command = self._user_config.get_valid(config_key)
+        if command is None:
+            raise ActionRefusedError(f"{config_key} is not configured")
+        result = apps.open_external_app(command, folder)
+        _log_direct_result(str(action), node_id, result)
+        return result
+
+    # Planned actions: prepare the plan, then execute it as a job
+
+    def action_prepare_tidy(self, node_id: NodeId) -> tidy.TidyPlan:
+        """Plan tidying the node's folder; change nothing."""
+        _, folder = self._resolve_action_target(node_id, NodeAction.TIDY)
+        return tidy.prepare(folder)
+
+    def action_tidy(
+        self, plan: tidy.TidyPlan, answers: Answers | None = None
+    ) -> JobView:
+        """Execute a tidy *plan* as a job; return the started job."""
+        node_id = self._node_id_for_folder(plan.folder)
+        return self._execute_planned_action(
+            "tidy",
+            node_id,
+            plan,
+            self.action_prepare_tidy(node_id),
+            answers,
+            run_action=tidy.run,
+            after_run=self._after_tidy_run,
+        )
+
+    def _after_tidy_run(
+        self, plan: tidy.TidyPlan, result: tidy.TidyResult, job: Job
+    ) -> NodeActionResult[tidy.TidyResult]:
+        refreshed = self._rescan_folder_if_library_scanned(plan.folder, job.log)
+        return NodeActionResult(
+            result, self._node_id_for_folder(plan.folder), refreshed
+        )
+
+    def action_prepare_archive(self, node_id: NodeId) -> archive_action.ArchivePlan:
+        """Plan archiving the node's folder; change nothing."""
+        _, folder = self._resolve_action_target(node_id, NodeAction.ARCHIVE)
+        return archive_action.prepare(
+            folder, self._root("darkroom"), self._root("archive")
+        )
+
+    def action_archive(
+        self, plan: archive_action.ArchivePlan, answers: Answers | None = None
+    ) -> JobView:
+        """Execute an archive *plan* as a job; return the started job."""
+        node_id = self._node_id_for_folder(plan.source)
+        return self._execute_planned_action(
+            "archive",
+            node_id,
+            plan,
+            self.action_prepare_archive(node_id),
+            answers,
+            run_action=archive_action.run,
+            after_run=self._after_archive_run,
+        )
+
+    def _after_archive_run(
         self,
-        action: Action,
-        confirm: str | None,
-        policy: ConflictPolicy,
-        job: Job | None,
-        logger: BoundLogger,
-    ) -> ExecutionResult:
-        request = action.request
-        if job is not None:
-            job.progress(0)
-        prepared = action.prepare()
-        if not isinstance(prepared, ActionPlan):
-            logger.info(
-                "action_request",
-                action=str(request.action),
-                node_id=request.node_id,
-                params=dict(request.params),
-                policy=policy,
-                prepared=prepared.outcome,
-                message=prepared.message,
-            )
-            return ExecutionResult(prepared.outcome, prepared.message, prepared.details)
-        current = prepared.fingerprint
-        logger.info(
-            "action_request",
-            action=str(request.action),
-            node_id=request.node_id,
-            params=dict(request.params),
-            policy=policy,
-            fingerprint=current,
-            confirm=confirm,
-            summary=prepared.summary,
-            notes=list(prepared.notes),
-            steps=len(prepared.steps),
-            conflicts=len(prepared.conflicts),
+        plan: archive_action.ArchivePlan,
+        result: archive_action.ArchiveResult,
+        job: Job,
+    ) -> NodeActionResult[archive_action.ArchiveResult]:
+        refreshed = self._rescan_folder_if_library_scanned(plan.source.parent, job.log)
+        node_id = (
+            self._node_id_for_folder(plan.source) if plan.source.is_dir() else None
         )
-        if confirm is not None and confirm != current:
-            return ExecutionResult(
-                "refused",
-                f"plan changed since {confirm} (now {current}); preview again",
-                fingerprint=current,
-            )
-        if not isinstance(action, JobAction):
-            return self._after(action.execute(prepared), logger)
-        assert job is not None
-        try:
-            result = action.execute(prepared, policy=policy, job=job)
-        except JobCancelled as stopped:
-            if not isinstance(stopped.result, ExecutionResult):
-                raise
-            raise JobCancelled(self._after(stopped.result, logger)) from None
-        return self._after(result, logger)
+        return NodeActionResult(result, node_id, refreshed)
 
-    def _after(self, result: ExecutionResult, logger: BoundLogger) -> ExecutionResult:
-        """Name the acted-on node and rescan what changed; never cancelled."""
-        darkroom = self.darkroom
-        if result.node_path is not None and darkroom is not None:
-            result = replace(result, node_id=_node_id(darkroom, result.node_path))
-        library = self._library
-        if result.rescan_node_path is None or library is None:
-            return result
-        node_id = _node_id(library.root, result.rescan_node_path)
-        return replace(result, library_refreshed=self._refresh(node_id, logger))
+    def action_prepare_publish(self, node_id: NodeId) -> publish.PublishPlan:
+        """Plan publishing the batch's ``PUBLISH/`` files; change nothing."""
+        _, folder = self._resolve_action_target(node_id, NodeAction.PUBLISH)
+        return publish.prepare(folder, self._root("darkroom"), self._root("showroom"))
 
-    def action_open(self, node_id: NodeId) -> Action:
-        request, path = self._request(NodeAction.OPEN, node_id)
-        return OpenFolderAction(path, request=request)
-
-    def action_tidy(self, node_id: NodeId) -> JobAction:
-        request, path = self._request(NodeAction.TIDY, node_id)
-        return TidyAction(path, request=request)
-
-    def action_cull(self, node_id: NodeId) -> Action:
-        """Launch the configured ``cull_command`` for the node's folder."""
-        request, path = self._request(NodeAction.CULL, node_id)
-        return CullAction(self.cull_command, path, request=request)
-
-    def action_edit(self, node_id: NodeId) -> Action:
-        """Launch the configured ``edit_command`` for the node's folder."""
-        request, path = self._request(NodeAction.EDIT, node_id)
-        return EditAction(self.edit_command, path, request=request)
-
-    def action_archive(self, node_id: NodeId) -> JobAction:
-        request, path = self._request(NodeAction.ARCHIVE, node_id)
-        return ArchiveAction(
-            path,
-            darkroom=self._root("darkroom"),
-            archive=self._root("archive"),
-            request=request,
+    def action_publish(
+        self, plan: publish.PublishPlan, answers: Answers | None = None
+    ) -> JobView:
+        """Execute a publish *plan* as a job; return the started job."""
+        node_id = self._node_id_for_folder(plan.batch)
+        return self._execute_planned_action(
+            "publish",
+            node_id,
+            plan,
+            self.action_prepare_publish(node_id),
+            answers,
+            run_action=publish.run,
+            after_run=self._after_publish_run,
         )
 
-    def action_publish(self, node_id: NodeId) -> JobAction:
-        request, path = self._request(NodeAction.PUBLISH, node_id)
-        return PublishAction(
-            path,
-            darkroom=self._root("darkroom"),
-            showroom=self._root("showroom"),
-            request=request,
-        )
+    def _after_publish_run(
+        self, plan: publish.PublishPlan, result: publish.PublishResult, job: Job
+    ) -> NodeActionResult[publish.PublishResult]:
+        refreshed = self._rescan_folder_if_library_scanned(plan.batch, job.log)
+        return NodeActionResult(result, self._node_id_for_folder(plan.batch), refreshed)
 
-    def action_rename(
+    def action_prepare_rename(
         self,
         node_id: NodeId,
         *,
         date: str | None = None,
         title: str | None = None,
         clear_title: bool = False,
-    ) -> Action:
-        """Rename a batch; an omitted date or title keeps the current one."""
-        request, path = self._request(
-            NodeAction.RENAME, node_id, date=date, title=title, clear_title=clear_title
-        )
-        return RenameAction(
-            path,
+    ) -> rename.RenamePlan:
+        """Plan renaming a batch; an omitted date or title keeps the current one."""
+        _, folder = self._resolve_action_target(node_id, NodeAction.RENAME)
+        return rename.prepare(
+            folder,
             self._root("darkroom"),
             date=date,
             title=title,
             clear_title=clear_title,
-            request=request,
         )
 
-    def action_new_batch(
+    def action_rename(
+        self, plan: rename.RenamePlan, answers: Answers | None = None
+    ) -> JobView:
+        """Execute a rename *plan* as a job; return the started job."""
+        node_id = self._node_id_for_folder(plan.folder)
+        fresh_plan = self.action_prepare_rename(
+            node_id, date=plan.date, title=plan.title, clear_title=plan.clear_title
+        )
+        return self._execute_planned_action(
+            "rename",
+            node_id,
+            plan,
+            fresh_plan,
+            answers,
+            run_action=rename.run,
+            after_run=self._after_rename_run,
+        )
+
+    def _after_rename_run(
+        self, plan: rename.RenamePlan, result: rename.RenameResult, job: Job
+    ) -> NodeActionResult[rename.RenameResult]:
+        refreshed = self._rescan_folder_if_library_scanned(plan.folder.parent, job.log)
+        return NodeActionResult(
+            result, self._node_id_for_folder(result.folder), refreshed
+        )
+
+    def action_prepare_new_batch(
         self, device_id: NodeId, *, date: str, title: str | None = None
-    ) -> Action:
-        """Create a batch dated *date* (``YYYY-MM[-DD]``) under a device.
+    ) -> new_batch.NewBatchPlan:
+        """Plan a batch dated *date* (``YYYY-MM[-DD]``) under a device.
 
         The device folder is created too when it does not exist yet.
         """
-        request, _ = self._request(
-            NodeAction.NEW_BATCH, device_id, date=date, title=title
+        device_id, _ = self._resolve_action_target(
+            device_id, NodeAction.NEW_BATCH, creates=True
         )
-        return NewBatchAction(
-            self._root("darkroom"),
-            request.node_id,
-            date=date,
-            title=title,
-            request=request,
+        return new_batch.prepare(
+            self._root("darkroom"), device_id, date=date, title=title
         )
+
+    def action_new_batch(
+        self, plan: new_batch.NewBatchPlan, answers: Answers | None = None
+    ) -> JobView:
+        """Execute a new batch *plan* as a job; return the started job."""
+        fresh_plan = self.action_prepare_new_batch(
+            plan.device, date=plan.date, title=plan.title
+        )
+        return self._execute_planned_action(
+            "new_batch",
+            plan.device,
+            plan,
+            fresh_plan,
+            answers,
+            run_action=new_batch.run,
+            after_run=self._after_new_batch_run,
+        )
+
+    def _after_new_batch_run(
+        self,
+        plan: new_batch.NewBatchPlan,
+        result: new_batch.NewBatchResult,
+        job: Job,
+    ) -> NodeActionResult[new_batch.NewBatchResult]:
+        refreshed = self._rescan_folder_if_library_scanned(
+            plan.batch_folder.parent, job.log
+        )
+        batch = result.batch_folder
+        node_id = self._node_id_for_folder(batch) if batch.is_dir() else None
+        return NodeActionResult(result, node_id, refreshed)
 
     # ------------------------------------------------------------------
     # Paths between areas
