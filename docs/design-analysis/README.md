@@ -25,7 +25,7 @@ how the app is built, and these phases ask what it must do.
 | 1. Product brief | Done |
 | 2. System context | Done |
 | 3. Use-case walkthroughs | Done |
-| 4. Knowledge inventory | Collected while walking through; to review |
+| 4. Knowledge inventory | Reviewed: split, typed and completed |
 | 5-9 | Not started |
 
 ## Working rules
@@ -36,3 +36,12 @@ how the app is built, and these phases ask what it must do.
   design is tested on how few modules each one touches.
 - Use the domain's words. Design words (action, service, port) wait for the
   phases that decide them.
+
+## Ideas parked for later phases
+
+- **rclone for heavy file moves** (Phase 7): hand tidy, publish and archive
+  moves to rclone as a subprocess, keeping them auditable without the app
+  owning the movement. If adopted, rclone is a new external system: we hand
+  it moves and read back a report.
+- **Settings vs runtime values seeded from settings** (Phase 8): depends on
+  the client's lifetime, for example the log level.
