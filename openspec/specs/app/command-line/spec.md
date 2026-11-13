@@ -86,15 +86,16 @@ folders of its ancestors, never sibling subtrees.
 - **THEN** no folder of another device SHALL be read
 
 ### Requirement: Preview by default
-Without `--apply` or `--confirm`, a command for an action that changes
-files SHALL print its summary of intent, its conflicts, the plan's
-fingerprint and the command that confirms it, and change nothing. An
-action that changes no files SHALL run at once.
+Without `--apply` or `--confirm`, a command for a planned action SHALL
+print what that action will do, in its own terms, what the user must
+decide, the fingerprint and the command that confirms it, and change
+nothing. A command for a direct action SHALL
+run at once.
 
 #### Scenario: Archive preview
 - **WHEN** a user runs `darkroom archive .` inside a batch
-- **THEN** the files to move, `plan` with the fingerprint, and the
-  `--confirm` command SHALL be printed
+- **THEN** where the batch goes and how many files move, `plan` with the
+  fingerprint, and the `--confirm` command SHALL be printed
 - **AND** no file SHALL be moved
 
 #### Scenario: Open runs at once
@@ -104,7 +105,7 @@ action that changes no files SHALL run at once.
 #### Scenario: Preview with conflicts
 - **WHEN** a user previews archive of a batch with 10 files already in
   the archive
-- **THEN** the preview SHALL count the 10 conflicts and list them
+- **THEN** the preview SHALL say that 10 files are already in the archive
 - **AND** the printed `--confirm` command SHALL carry the conflict option
   the user gave, if any
 

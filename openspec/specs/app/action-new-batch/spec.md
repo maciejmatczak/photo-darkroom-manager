@@ -1,9 +1,11 @@
-# app/action-create-batch Specification
+# app/action-new-batch Specification
 
 ## Purpose
-Defines creating a batch for a device: creating missing device and year folders,
-the batch, and its PUBLISH folder; validating names before any write; and
-failing without changes on conflicts.
+
+Defines creating a new batch for a device: creating missing device and
+year folders, the batch and its `PUBLISH` folder, showing them before
+creating any, and refusing without writes when names are invalid or a
+folder is in the way.
 
 ## Requirements
 
@@ -24,30 +26,31 @@ and `PUBLISH/`, and SHALL NOT create `PHOTOS/` or `VIDEOS/`.
 
 ### Requirement: Validate before writing
 Device and batch names SHALL be validated against the library naming
-rules before any folder is created. A device path resolving outside the
-darkroom SHALL be rejected before writes.
+rules before any folder is created. Creating SHALL be refused, with no
+folder created, when a name is invalid, when the device path resolves
+outside the darkroom, when the batch already exists, or when a file
+stands where a folder on its path must go. These checks SHALL hold at the
+preview and again when the creation runs.
 
 #### Scenario: Invalid device
 - **WHEN** the device name is not a valid device name
-- **THEN** the action SHALL fail and no files SHALL be created
+- **THEN** creating SHALL be refused and no folder SHALL be created
 
 #### Scenario: Symlink escape
 - **WHEN** a device folder is a symlink resolving outside darkroom
-- **THEN** the action SHALL fail without writes
-
-### Requirement: Creation conflicts
-The action SHALL fail without altering data when the batch exists or a
-file blocks a folder on its path.
+- **THEN** creating SHALL be refused without writes
 
 #### Scenario: Batch already exists
 - **WHEN** the target batch folder exists
-- **THEN** the action SHALL report failure and existing data SHALL be
-  unchanged
+- **THEN** creating SHALL be refused and existing data SHALL be unchanged
+
+#### Scenario: File in the way
+- **WHEN** a file named like the year folder exists in the device folder
+- **THEN** creating SHALL be refused, naming that file
 
 ### Requirement: Preview before creating
 Creating a batch SHALL show the folders it will create before creating
-any. An invalid device or batch name, or a batch that already exists,
-SHALL be refused at the preview.
+any.
 
 #### Scenario: New year for a device
 - **WHEN** a user previews a new batch `2027-01` for device Camera and

@@ -8,24 +8,6 @@ every client sees running work the same way.
 
 ## Requirements
 
-### Requirement: What runs as a job
-The heavy actions that change files (tidy, archive and publish) and every
-library scan and refresh SHALL run as a job. All other actions (open,
-cull, edit, rename and new batch) SHALL run at once and never as a job.
-
-#### Scenario: Archive is a job
-- **WHEN** a client applies archive of a batch
-- **THEN** the archive SHALL run as a job of kind archive for that batch
-
-#### Scenario: Opening a folder is not a job
-- **WHEN** a client opens a batch's folder
-- **THEN** the folder SHALL open and no job SHALL be started
-
-#### Scenario: Rename is not a job
-- **WHEN** a client applies rename of a batch
-- **THEN** the batch SHALL be renamed and no job SHALL be started
-- **AND** the engine's job SHALL be the one it had before, if any
-
 ### Requirement: Starting a job returns at once
 Starting a job SHALL return before its work is done; the work SHALL run
 in the background, and the client SHALL stay free to read the engine
@@ -78,8 +60,9 @@ three, and a finished job's state SHALL never change.
 - **AND** its result SHALL have the `failed` outcome and name the file
 
 #### Scenario: Nothing to do
-- **WHEN** a tidy job finds nothing to tidy
-- **THEN** the job SHALL end `done` with a `noop` result
+- **WHEN** a client executes a tidy plan that has nothing to do
+- **THEN** the job SHALL end `done` with an `ok` result that moved
+  nothing
 
 ### Requirement: Progress is optional
 A running job SHALL report progress as a count of finished units, a total
@@ -118,26 +101,45 @@ file, and end `cancelled`. Cancelling when no job runs SHALL do nothing.
 - **THEN** the job SHALL stay `done`
 
 ### Requirement: Blocking calls run as jobs
-The engine's blocking calls for scanning, refreshing and applying a heavy
-action SHALL start a job and wait for it, so they follow the same busy
-rule and leave the same job, state and log as a job started directly.
+The engine's blocking calls for scanning and refreshing SHALL start a job
+and wait for it, so they follow the same busy rule and leave the same
+job, state and log as a job started directly.
 
 #### Scenario: Blocking scan
 - **WHEN** a client calls the blocking scan and it returns
 - **THEN** the engine's job SHALL be a finished scan
 
-### Requirement: A job's final state follows from its run
+### Requirement: How a job ends
 A job's final state SHALL follow from how its work ended, never from the
 content of its result: `failed` when the work raised an error,
 `cancelled` when a cancel was asked and the work stopped for it, and
 `done` otherwise. What the work did to each file SHALL be reported in its
-result.
+result. A refused request SHALL start no job.
 
 #### Scenario: Work raises an error
 - **WHEN** a scan stops because of an unexpected error
 - **THEN** the job SHALL end `failed` with the error
 
-#### Scenario: Refused at run time
-- **WHEN** a tidy job finds at run time that its conflicts block it and
-  moves nothing
-- **THEN** the job SHALL end `done` with a `refused` result
+#### Scenario: File in the way at run time
+- **WHEN** a tidy job finds a file at one of its targets that was not
+  there when the plan was checked
+- **THEN** the job SHALL end `done`
+- **AND** its result SHALL report that file as skipped and the others as
+  moved
+
+### Requirement: Work that runs as a job
+Every planned action (rename, new batch, tidy, archive and publish) and
+every library scan and refresh SHALL run as a job. Direct actions (open,
+cull and edit) SHALL run at once and never as a job.
+
+#### Scenario: Archive is a job
+- **WHEN** a client executes an archive plan for a batch
+- **THEN** the archive SHALL run as a job of kind archive for that batch
+
+#### Scenario: Opening a folder is not a job
+- **WHEN** a client opens a batch's folder
+- **THEN** the folder SHALL open and no job SHALL be started
+
+#### Scenario: Rename is a job
+- **WHEN** a client executes a rename plan for a batch
+- **THEN** the rename SHALL run as a job of kind rename for that batch

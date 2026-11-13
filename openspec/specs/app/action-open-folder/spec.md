@@ -1,4 +1,4 @@
-# app/action-open Specification
+# app/action-open-folder Specification
 
 ## Purpose
 
