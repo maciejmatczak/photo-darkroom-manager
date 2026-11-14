@@ -18,6 +18,7 @@ how the app is built, and these phases ask what it must do.
 | [03-walkthroughs.md](03-walkthroughs.md) | 3 | One walkthrough per use case, with what each revealed |
 | [knowledge.md](knowledge.md) | 4 | Living inventory of knowledge, updated in every phase |
 | [05-ownership.md](05-ownership.md) | 5 | Who decides each piece, the grouping, change scenarios |
+| [06-external.md](06-external.md) | 6 | Outside systems and where the boundaries go |
 
 From Phase 5 on, the phases follow the design-by-knowledge-and-roles skill,
 which merges the guide's "sort" and "group" phases into one: 5 ownership,
@@ -32,8 +33,9 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 3. Use-case walkthroughs | Done |
 | 4. Knowledge inventory | Reviewed; keeps growing |
 | 5. Ownership | Done |
-| 6. External systems | Next |
-| 7-9 | Not started |
+| 6. External systems | Done; rclone adoption check open |
+| 7. Interfaces | Next |
+| 8-9 | Not started |
 
 ## Working rules
 
@@ -49,6 +51,13 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 - **rclone for heavy file moves** (Phase 6): hand tidy, publish and archive
   moves to rclone as a subprocess, keeping them auditable without the app
   owning the movement. If adopted, rclone is a new external system: we hand
-  it moves and read back a report.
+  it moves and read back a report. *Phase 6: moves get a port with an
+  rclone adapter; adoption waits on whether rclone keeps the promises.*
 - **Settings vs runtime values seeded from settings** (Phase 7): depends on
   the client's lifetime, for example the log level.
+- **Folders by role** (Phase 8): lay out `core` by architecture role
+  (`domain`, `application`, `ports`, `infrastructure`, adapters, a
+  composition root) so one `lint-imports` layers contract enforces it.
+  Every folder must hold something real.
+- **A "Justified by" column** (Phases 6-8): each pattern names the cost it
+  removes; anything kept only for practice is marked "exercise only".
