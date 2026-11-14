@@ -29,7 +29,8 @@ different), **sequence** (steps in an order).
 | A batch sits in the year folder of its date | Rule | New batch, rename |
 | Every new batch gets a `PUBLISH` folder | Rule | New batch |
 | Every folder the app creates has a safe name | Rule | New batch |
-| Names within one parent are unique regardless of letter case; for folders and files | Rule | New batch, rename, tidy, publish, archive |
+| Names within one parent are unique on every supported system (Windows, Unix, possibly macOS); for folders and files *(refined in Phase 5)* | Rule | New batch, rename, tidy, publish, archive |
+| When two names count as the same on each system: letter case, possibly Unicode forms *(Phase 5)* | Rule | New batch, rename, tidy, publish, archive |
 | A batch's name is shared across areas; renaming may later need to follow in the showroom and archive | Rule | Rename, publish, archive |
 
 ## The darkroom view
@@ -62,7 +63,7 @@ different), **sequence** (steps in an order).
 | Which use cases show what will happen and wait for the user; easy to add or drop per use case | Policy | New batch (open), rename, tidy, publish, archive |
 | Pre-checks before a run (e.g. unpublished files before archive); none today, easy to add | Policy | Archive |
 | Clash choices in the user's words: stop if anything clashes, or skip the clashing files; publish may also replace, archive never | Policy | Tidy, publish, archive |
-| Each target is re-checked just before its file moves | Rule | Tidy, publish, archive |
+| The plan is honoured: anything off the plan by the time it runs (a target taken since the preview) is caught *(refined in Phase 5)* | Rule | Tidy, publish, archive |
 | How files are moved safely, across drives too | Sequence | Tidy, publish, archive |
 | A file never appears half-written in any area the app writes into | Rule | Publish, archive |
 | A long run can be watched and stopped between files | Sequence | Tidy, publish, archive |

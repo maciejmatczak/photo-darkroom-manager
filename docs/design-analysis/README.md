@@ -16,7 +16,12 @@ how the app is built, and these phases ask what it must do.
 | [01-brief.md](01-brief.md) | 1 | What the app does, in the user's words |
 | [02-context.md](02-context.md) | 2 | External systems, and the tags used in walkthroughs |
 | [03-walkthroughs.md](03-walkthroughs.md) | 3 | One walkthrough per use case, with what each revealed |
-| [knowledge.md](knowledge.md) | 4 | Running inventory of knowledge, filled as we go |
+| [knowledge.md](knowledge.md) | 4 | Living inventory of knowledge, updated in every phase |
+| [05-ownership.md](05-ownership.md) | 5 | Who decides each piece, the grouping, change scenarios |
+
+From Phase 5 on, the phases follow the design-by-knowledge-and-roles skill,
+which merges the guide's "sort" and "group" phases into one: 5 ownership,
+6 external systems, 7 interfaces, 8 structure, 9 complexity review.
 
 ## Status
 
@@ -25,23 +30,25 @@ how the app is built, and these phases ask what it must do.
 | 1. Product brief | Done |
 | 2. System context | Done |
 | 3. Use-case walkthroughs | Done |
-| 4. Knowledge inventory | Reviewed: split, typed and completed |
-| 5-9 | Not started |
+| 4. Knowledge inventory | Reviewed; keeps growing |
+| 5. Ownership | Done |
+| 6. External systems | Next |
+| 7-9 | Not started |
 
 ## Working rules
 
 - Use cases hold for any client (a stateless CLI or a long-running GUI).
   What follows from one client's lifetime is a design question for later.
-- Decisions marked "easy to change" are change scenarios for Phase 6: the
+- Decisions marked "easy to change" are change scenarios for Phase 5: the
   design is tested on how few modules each one touches.
 - Use the domain's words. Design words (action, service, port) wait for the
   phases that decide them.
 
 ## Ideas parked for later phases
 
-- **rclone for heavy file moves** (Phase 7): hand tidy, publish and archive
+- **rclone for heavy file moves** (Phase 6): hand tidy, publish and archive
   moves to rclone as a subprocess, keeping them auditable without the app
   owning the movement. If adopted, rclone is a new external system: we hand
   it moves and read back a report.
-- **Settings vs runtime values seeded from settings** (Phase 8): depends on
+- **Settings vs runtime values seeded from settings** (Phase 7): depends on
   the client's lifetime, for example the log level.
