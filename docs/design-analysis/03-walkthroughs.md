@@ -147,10 +147,12 @@ Decided:
   - files anywhere inside a bucket, its subfolders included, are tidy;
   - `PUBLISH` is not tidied: exports stay flat for publish;
   - unrecognised folders are not looked into, as in see.
+- Clean what the recipe knows how to clean. Files it cannot place are
+  left alone and shown to the user, not counted as tidy *(Phase 7)*.
 - Known gaps in the recipe, to tweak later:
   - a video inside a subfolder of `PHOTOS` (or a photo inside one of
-    `VIDEOS`) counts as tidy for now; how to move it without flattening its
-    folders is unclear;
+    `VIDEOS`) is left alone and shown; how to move it without flattening
+    its folders is unclear;
   - whether files in a batch's subfolder belong in that subfolder's buckets
     or in the batch's own buckets.
 

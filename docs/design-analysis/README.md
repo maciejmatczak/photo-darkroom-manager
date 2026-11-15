@@ -19,6 +19,7 @@ how the app is built, and these phases ask what it must do.
 | [knowledge.md](knowledge.md) | 4 | Living inventory of knowledge, updated in every phase |
 | [05-ownership.md](05-ownership.md) | 5 | Who decides each piece, the grouping, change scenarios |
 | [06-external.md](06-external.md) | 6 | Outside systems and where the boundaries go |
+| [07-interfaces.md](07-interfaces.md) | 7 | What each piece offers its callers |
 
 From Phase 5 on, the phases follow the design-by-knowledge-and-roles skill,
 which merges the guide's "sort" and "group" phases into one: 5 ownership,
@@ -34,7 +35,7 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 4. Knowledge inventory | Reviewed; keeps growing |
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
-| 7. Interfaces | Next |
+| 7. Interfaces | 7a-7d agreed (tidy preview, plan, report; the mover, watch, run log); publish and archive checked against tidy next |
 | 8-9 | Not started |
 
 ## Working rules
@@ -61,3 +62,11 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
   Every folder must hold something real.
 - **A "Justified by" column** (Phases 6-8): each pattern names the cost it
   removes; anything kept only for practice is marked "exercise only".
+
+## Lessons learned
+
+- **Code in the context anchors the design.** In Phase 7 the "new" publish
+  interface matched today's implementation, which had been read earlier in
+  the same session. When independent alternatives matter, design in a
+  fresh context that holds only these docs; otherwise, keep an option only
+  if its reasons hold against a real alternative.
