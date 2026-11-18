@@ -719,3 +719,93 @@ Decided:
   log earns its place. Only `Renaming` changes.
 - A year folder emptied by the move is left in place (walkthrough 4);
   removing it later is one more step in `run`.
+
+## 7h. New batch: assembled from rename's pieces
+
+New batch reuses what rename settled (`path_for`, `folders`, `NameTaken`,
+the preview as the whole plan) and adds three small pieces.
+
+**What the user needs to see:**
+
+| Need | Kind | Detail |
+|---|---|---|
+| Where the new batch will be | Normal | One path, e.g. `Phone/2025/2025-01-03 Lisbon` |
+| A new device will be created | Warning | The device name |
+
+```python
+class Darkroom:                          # domain service
+    def batch_at(self, path: Path) -> Batch: ...
+    def path_for(self, batch: Batch) -> Path: ...         # DEVICE/YEAR/BATCH
+    def device_named(self, name: str) -> str | None: ...  # existing spelling
+    def new_batch_folders(self, batch: Batch) -> list[Path]: ...
+                                         # the batch folder and PUBLISH
+
+
+@dataclass(frozen=True)
+class NewBatchPreview:                   # the whole plan
+    path: Path                           # where the batch will be
+    new_device: bool                     # a warning: a new top folder
+    batch: Batch                         # what was asked, to plan again
+
+
+class StartingBatch:                     # application service
+    def prepare(self, device: str, date: BatchDate,
+                title: str | None = None) -> NewBatchPreview:
+        return self._plan(device, date, title)
+
+    def run(self, preview: NewBatchPreview) -> Path:
+        batch = preview.batch
+        if self._plan(batch.device, batch.date, batch.title) != preview:
+            raise PlanChanged(preview)
+        for folder in self.darkroom.new_batch_folders(batch):
+            folders.create(folder)                      # infrastructure
+        log.info("new batch", path=...)                 # app log
+        return preview.path
+
+    def _plan(self, device, date, title) -> NewBatchPreview:
+        known = self.darkroom.device_named(device)      # None: a new device
+        batch = Batch.new(known or device, date, title) # InvalidName
+        path = self.darkroom.path_for(batch)
+        # a folder or file with the same name, ignoring case, at the batch,
+        # year or device level: NameTaken
+        return NewBatchPreview(path, new_device=known is None, batch=batch)
+```
+
+On the caller side:
+
+```python
+preview = core.starting_batch.prepare("Phone", BatchDate(2025, 1, 3),
+                                      "Lisbon")
+if not preview.new_device or confirmed(preview):        # GUI: always confirm
+    path = core.starting_batch.run(preview)             # select it
+```
+
+Decided:
+
+- **New batch shows a preview** (closes the open item in walkthrough 3).
+  The user typed everything on it except one consequence: a new device, a
+  folder at the top of the darkroom that every device list shows from then
+  on. A typo such as `Phnoe` is caught by one confirmation. A new year
+  folder is routine and not shown.
+- **A device name that matches an existing one ignoring case is that
+  device**, not a clash: `phone` means `Phone`, and the batch goes under
+  the existing spelling with no warning. The shared same-name rule answers
+  "are these the same name?"; each use case decides what that means (a
+  clash for files, a refusal for batch names, the same thing for devices).
+- **Refusals as in rename**: an unsafe device name is `InvalidName`; a
+  batch name taken in that year, or a file where the device or year folder
+  must go, is `NameTaken(path, taken_by)`.
+- **The batch is the request.** Rename needs `NameChange` because parts
+  are kept; here the user describes the whole batch, which owns its name
+  format (`Batch.new`).
+- **`new_batch_folders(batch)` belongs to the darkroom**: "a new batch gets
+  `PUBLISH`" is darkroom layout (Phase 5). The use case does not create
+  `publish_folder(batch)` itself, which would encode the layout rule there.
+- **`StartingBatch`**: application services are named after the activity,
+  and the brief says "start a batch for a device". `CreatingBatch` was
+  rejected as technical: every use case creates something.
+- **No fingerprint, no watch, no run log**, as in rename: the preview is
+  the whole plan, creating folders is one quick step, and it either
+  happened or did not.
+- New pieces: `folders.create`, `Darkroom.device_named` and
+  `Darkroom.new_batch_folders`. Everything else is reused unchanged.

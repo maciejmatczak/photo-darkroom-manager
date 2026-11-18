@@ -70,8 +70,9 @@ Decided:
 6. Refuse if the batch name clashes with an existing one under the same
    year, ignoring letter case, or if a file sits where the device or year
    folder must be. `[darkroom]`
-7. *(Open)* Whether new batch shows what it will create and waits for the
-   user. It must be cheap to change either way. `[user]`
+7. Show where the batch will be, and warn when a new device would be
+   created; wait for the user. It must be cheap to change either way
+   *(decided in Phase 7h)*. `[user]`
 8. Create the missing folders. `[darkroom]`
 9. The darkroom view now shows the new batch.
 

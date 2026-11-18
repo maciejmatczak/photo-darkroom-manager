@@ -60,7 +60,7 @@ different), **sequence** (steps in an order).
 
 | Knowledge | Kind | Seen in |
 |---|---|---|
-| Which use cases show what will happen and wait for the user; easy to add or drop per use case | Policy | New batch (open), rename, tidy, publish, archive |
+| Which use cases show what will happen and wait for the user; easy to add or drop per use case | Policy | New batch, rename, tidy, publish, archive |
 | Pre-checks before a run (e.g. unpublished files before archive); none today, easy to add | Policy | Archive |
 | Clash choices in the user's words: stop if anything clashes, or skip the clashing files; publish may also replace, archive never | Policy | Tidy, publish, archive |
 | The plan is honoured: anything off the plan by the time it runs (a target taken since the preview) is caught *(refined in Phase 5)* | Rule | Tidy, publish, archive |
