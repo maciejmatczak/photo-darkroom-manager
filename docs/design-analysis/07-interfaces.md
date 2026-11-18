@@ -1014,3 +1014,105 @@ Decided:
   quoting is the template author's. On Windows a path cannot contain `"`;
   on Unix a folder name with a quote breaks the command. A candidate for
   Phase 9.
+
+## 7k. Set up, settings storage, and rebuilding the core
+
+**What the user needs to see:**
+
+| Need | Kind | Detail |
+|---|---|---|
+| Not set up yet | Normal, first run | One message |
+| Ready or not | Normal | One state |
+| What is wrong with a required setting | Exception | Per setting: missing, not a folder, overlapping |
+| What is wrong with an optional setting | Warning | Per command: why it cannot be rendered |
+
+```python
+@dataclass(frozen=True)
+class Settings:                          # value object (domain)
+    darkroom: Path
+    showroom: Path
+    archive: Path
+    cull_command: CommandTemplate | None = None
+    edit_command: CommandTemplate | None = None
+    transfer: TransferKind = TransferKind.INTERNAL   # or RCLONE (Phase 6)
+
+
+class SettingsStore(Protocol):           # port
+    def load(self) -> Settings | None: ...           # None: not set up
+    def save(self, settings: Settings) -> None: ...
+
+
+@dataclass(frozen=True)
+class SetupState:                        # what the user sees
+    ready: bool
+    problems: dict[Setting, str]         # required: why not ready
+    warnings: dict[Setting, str]         # optional: works without them
+
+
+class SettingUp:                         # application service
+    def current(self) -> Settings | None: ...        # to fill the form
+    def check(self, settings: Settings) -> SetupState: ...
+    def store(self, settings: Settings) -> SetupState: ...  # AreasOverlap
+```
+
+The adapter is a TOML file in the user's config folder (`platformdirs`).
+
+The composition root, shared by both clients:
+
+```python
+store = SettingsFile(user_config_dir(...))
+setting_up = SettingUp(store)                        # works before set up
+
+settings = store.load()
+state = setting_up.check(settings) if settings else NOT_SET_UP
+core = build_core(settings) if state.ready else None
+```
+
+In the GUI, after the user saves:
+
+```python
+state = setting_up.store(new_settings)
+if state.ready:
+    core = build_core(new_settings)                  # a new core
+    view = core.overview.darkroom()                  # and a new view (7i)
+```
+
+The CLI runs one process per command: it builds once and never rebuilds.
+
+Decided:
+
+- **`store` refuses only overlapping areas** (critical, walkthrough 1). A
+  missing folder is stored and reported "not ready": the showroom and
+  archive live on a NAS that is sometimes offline, which must not stop the
+  user from configuring. The app is ready once the NAS is back.
+- **A settings change means a new core.** Designed twice:
+
+  | Option | How | Verdict |
+  |---|---|---|
+  | A shared, mutable "current settings" read by every service on each call | Nothing to rebuild | Rejected: a run during a darkroom change would read two roots |
+  | The core is immutable once built; `build_core(settings)` again | The client swaps its `core` | Chosen |
+
+  "Nothing learned about the old darkroom applies any more" (walkthrough
+  1, step 10) holds by construction: nothing survives the rebuild. A run
+  in progress keeps its old core and finishes consistently. With 7i (no
+  view held between calls), this closes the client-lifetime question.
+- **`SettingUp` lives outside the core it builds.** It needs only the
+  store and the checks, not the areas, so it works before set up, and the
+  first run can say "not set up yet" instead of failing. Its lifetime is
+  the process; the core's is one version of the settings (the test of 7d).
+- **Loading the devices leaves set up** (walkthrough 1, step 6): the
+  darkroom reads its top folders when it needs them (`device_named`, 7h);
+  the core keeps nothing between calls.
+- **The log level is not a setting** (the parked item). It belongs to the
+  client: a CLI flag, or a GUI menu that changes it at runtime. A client
+  that remembers it keeps its own preference; the core's `Settings` holds
+  only what the core needs.
+- **The rclone choice is a setting** (`transfer`); `build_core` picks the
+  `FileTransfer` adapter from it, the one place a setting chooses an
+  adapter (scenario 7).
+- **`SettingUp`, not `SettingsService`.** A `Service` suffix names the
+  pattern, which every application service shares, so it tells nothing
+  apart; next to the `SettingsStore` port, `SettingsService` would blur a
+  check-and-refuse use case with a file writer. Services are named after
+  the activity (7a; Evans, ch. 5); "set up" is walkthrough 1's title. The
+  suffix would be right where it is the team's convention.

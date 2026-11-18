@@ -14,7 +14,8 @@ One walkthrough per use case, each step tagged with the system it touches
 5. Check that each optional command that is set can be rendered. A broken
    one gives a warning; the app is still ready.
 6. Load the existing devices; today, the darkroom's top folders.
-   `[darkroom]`
+   `[darkroom]` *(Phase 7k: dropped from set up; the darkroom reads its
+   devices when it needs them.)*
 7. Show the state: ready or not, what is wrong with the required settings,
    warnings for the optional ones. `[user]`
 8. The user changes a setting; the app checks the value. `[user]`
@@ -32,6 +33,7 @@ Decided:
   change).
 - Whether a value is a lasting setting or a runtime value seeded from one
   (like the log level) depends on the client's lifetime. Parked for design.
+  *Phase 7k: the log level belongs to the client, not to the settings.*
 
 ## 2. See the darkroom
 

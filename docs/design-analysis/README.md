@@ -35,7 +35,7 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 4. Knowledge inventory | Reviewed; keeps growing |
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
-| 7. Interfaces | 7a-7j agreed (tidy; file transfer, watch, run log; publish, archive, rename and new batch checked against tidy; see as a query; cull, edit and open); set up and `SettingsStore` next |
+| 7. Interfaces | 7a-7k agreed: every use case and port designed; review before closing |
 | 8-9 | Not started |
 
 ## Working rules
@@ -55,7 +55,11 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
   it moves and read back a report. *Phase 6: moves get a port with an
   rclone adapter; adoption waits on whether rclone keeps the promises.*
 - **Settings vs runtime values seeded from settings** (Phase 7): depends on
-  the client's lifetime, for example the log level.
+  the client's lifetime, for example the log level. *Phase 7k: the log
+  level belongs to the client, not to the core's settings.*
+- **The "name after the domain" rule in AGENTS.md** (Phase 8): written
+  before this analysis; check that its wording fits the architecture
+  settled here.
 - **Folders by role** (Phase 8): lay out `core` by architecture role
   (`domain`, `application`, `ports`, `infrastructure`, adapters, a
   composition root) so one `lint-imports` layers contract enforces it.

@@ -28,7 +28,7 @@ domain areas, each a root path in the filesystem plus its own layout.
 | **No port for the filesystem.** The areas are folder organisations; the filesystem is what the domain is made of, not something foreign to translate. Tests use real temporary folders | A port would be a shallow proxy with nothing to swap |
 | **No port per area.** | A move between two areas would have no owner |
 | **A port for moving files**, with an internal adapter and an rclone adapter chosen by a setting | Scenario 7 (rclone) |
-| **A port for settings storage** (`SettingsStore`: load, save), with a file adapter. Set up is a use case: its application service checks the new settings and stores them through the port. The composition root reads them through the same port at startup | A resource with a location and a format; the core never depends on either |
+| **A port for settings storage** (`SettingsStore`: load, save), with a file adapter. Set up is a use case: its application service checks the new settings and stores them through the port. The composition root reads them through the same port at startup. *Phase 7k: `SettingUp` checks and stores; the core is rebuilt after a change* | A resource with a location and a format; the core never depends on either |
 | **A port for the run log** (`RunLog`), with a file adapter. *Phase 7d: its one call starts a run and hands out that run's own logger; the app's diagnostic log is separate* | A resource; where and how records are written stays outside the core (Phase 5 sort) |
 | **A port for external apps** (`ExternalApps`), with an OS adapter. *Phase 7j: `start` a rendered command, `show_folder` in the file manager; templates stay in the domain* | A resource; how to start a program or the file manager differs per OS, and tests never start real programs |
 | **Plan and carry out.** Domain services only decide and answer in paths. Every change to the disk (create folders, rename, move files, remove emptied folders) is planned, then carried out by one infrastructure mechanism, which re-checks the plan before acting | Scenario 8 (add or drop a preview) and "the plan is honoured", across five use cases |
@@ -52,4 +52,5 @@ a folder rename is not one of its jobs).
 - After settings change in a long-running client, what is built from the
   old settings is stale and must be rebuilt (Phase 7, client lifetime).
   *Phase 7i: the core holds no view between calls, so only what is built
-  from the settings remains to rebuild.*
+  from the settings remains to rebuild. Closed in 7k: a settings change
+  builds a new core.*
