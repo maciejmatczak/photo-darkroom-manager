@@ -34,7 +34,9 @@ Decided:
 - **The preview is plain data with a fingerprint** *(corrected in 7c)*.
   What crosses to the client and back is the preview; the plan stays in
   the core. `run` plans again, compares the fingerprint, and carries out
-  the plan only if nothing changed.
+  the plan only if nothing changed. When the preview is the whole plan
+  (rename, new batch), the plans are compared directly, with no
+  fingerprint (7g).
 - **Each use case has its own preview and report types**, in its own words
   (see 7c for tidy). The plan, the work file by file, stays hidden inside
   the core.
@@ -49,12 +51,15 @@ was kept; see the lesson in the [README](README.md).
 What publish asks of the domain:
 
 ```python
+DarkroomPath = NewType("DarkroomPath", PurePosixPath)  # relative: the id
+
 class Darkroom:
-    def batch_at(self, path: Path) -> Batch: ...         # or refuses
-    def publish_folder(self, batch: Batch) -> Path: ...  # see 7e
+    def batch_at(self, path: DarkroomPath) -> Batch: ...  # or refuses
+    def publish_folder(self, batch: Batch) -> Path: ...  # full; 7e
+    def on_disk(self, path: DarkroomPath) -> Path: ...    # full (7j)
 
 class Showroom:
-    def path_for(self, batch: Batch) -> Path: ...
+    def path_for(self, batch: Batch) -> Path: ...  # full path
 ```
 
 Decided:
@@ -62,6 +67,16 @@ Decided:
 - **A caller names a folder by its path inside the darkroom.** A person
   types it in the CLI, a GUI uses it as the id of a node, and it means the
   same in a second process.
+- **Two kinds of path, told apart by type** *(Phase 7 review)*:
+  - `DarkroomPath` is relative to the darkroom: the id that crosses to and
+    from clients. A pure path with forward slashes, so it is the same on
+    every OS and in a second process.
+  - `Path` is always a full path on disk. Everything that touches physical
+    items takes one: `Move`, `folders`, `FileTransfer`, `ExternalApps`.
+    `darkroom.on_disk(path)` turns an id into one.
+  - `Showroom.path_for` and `Archive.path_for` return full paths. Those
+    areas have no ids today; when they are indexed, they get their own
+    relative type, and the signatures say which is which.
 - **Two directions, one pair of names** *(renamed in 7f)*: `x_at(path)`
   recognises what is at a path (`batch_at`); `path_for(x)` says where it
   goes in an area (`Showroom.path_for`). First named with "place"
@@ -102,7 +117,7 @@ given to `run`, and its set is fixed for tidy.
 ```python
 @dataclass(frozen=True)
 class TidyPlan:                  # the work; never leaves the core
-    folder: Path
+    path: DarkroomPath
     photos: list[Move]
     videos: list[Move]
     clashes: list[TidyClash]
@@ -111,7 +126,7 @@ class TidyPlan:                  # the work; never leaves the core
 
 @dataclass(frozen=True)
 class TidyPreview:               # what the user agrees to
-    folder: Path
+    path: DarkroomPath
     photos: int
     videos: int
     clashes: list[TidyClash]
@@ -120,11 +135,11 @@ class TidyPreview:               # what the user agrees to
 
 
 class Tidying:
-    def prepare(self, path: Path) -> TidyPreview:
+    def prepare(self, path: DarkroomPath) -> TidyPreview:
         return TidyPreview.of(self.recipe.plan(path))
 
     def run(self, preview, choice: StopOrSkip, watch) -> TidyReport:
-        plan = self.recipe.plan(preview.folder)  # planning again: the check
+        plan = self.recipe.plan(preview.path)  # planning again: the check
         if fingerprint(plan) != preview.fingerprint:
             raise PlanChanged(preview)
         ...                                      # carried out: see 7d
@@ -163,7 +178,7 @@ the only news, so they are the one group shown file by file.
 ```python
 @dataclass(frozen=True)
 class TidyReport:
-    folder: Path
+    path: DarkroomPath
     photos_moved: int
     videos_moved: int
     failed: list[Failure]        # file and reason
@@ -172,7 +187,7 @@ class TidyReport:
     stopped: str | None          # "you stopped it", "clashes, as chosen"
     left_alone: list[LeftAlone]
     log: Path | None             # this run's record (7d)
-    changed: list[Path]          # folders to read again (7i)
+    changed: list[DarkroomPath]  # folders to read again (7i)
 ```
 
 - **`stopped` says why files were not reached**: the user stopped the run,
@@ -189,7 +204,7 @@ The port was first called `Mover`; 7g renamed it `FileTransfer`.
 ```python
 @dataclass(frozen=True)
 class Move:
-    source: Path
+    source: Path                         # full paths on disk (7b)
     target: Path
     replace: bool = False                # set by publish only
 
@@ -215,7 +230,7 @@ class RunWatch(Protocol):                # given by the client
 
 class RunLog(Protocol):                  # port: one log per run
     def start(self, action: str,
-              path: Path) -> ContextManager[RunLogger]: ...
+              path: PurePath) -> ContextManager[RunLogger]: ...
 ```
 
 The use case:
@@ -226,12 +241,12 @@ log = structlog.get_logger(__name__)     # app log: global, classic
 
 class Tidying:                           # application service
     def run(self, preview, choice: StopOrSkip, watch) -> TidyReport:
-        plan = self.recipe.plan(preview.folder)
+        plan = self.recipe.plan(preview.path)
         if fingerprint(plan) != preview.fingerprint:
             raise PlanChanged(preview)
         if plan.clashes and choice is StopOrSkip.STOP:
             return TidyReport.stopped_on_clashes(plan)
-        with self.run_log.start("tidy", plan.folder) as run_log:
+        with self.run_log.start("tidy", plan.path) as run_log:
             run_log.info("tidy started", photos=preview.photos,
                          videos=preview.videos, choice=choice.name)
             result = self.transfer.run(plan.photos + plan.videos,
@@ -247,12 +262,12 @@ The file adapter of the run log:
 class FileRunLog:                        # adapter
     @contextmanager
     def start(self, action, path):
-        path = self.folder / f"{stamp()}-{action}.log"
-        handler = logging.FileHandler(path)       # flushes every line
+        log_file = self.folder / f"{stamp()}-{action}.log"
+        handler = logging.FileHandler(log_file)   # flushes every line
         base = logging.Logger(f"run.{action}")    # not getLogger: isolated
         base.addHandler(handler)
         try:
-            yield RunLogger(structlog.wrap_logger(base), path)
+            yield RunLogger(structlog.wrap_logger(base), log_file)
         finally:
             handler.close()
 ```
@@ -276,7 +291,7 @@ Decided:
   | Lifetime | One run | The whole process |
   | Created by | The `RunLog` adapter, per run | The composition root, at startup |
   | Reached through | An instance passed as an argument | `get_logger(__name__)` in each module |
-  | Config | Fixed: a new file, every line flushed | Level and output, from settings |
+  | Config | Fixed: a new file, every line flushed | Level and output, set by the client (7k) |
 
 - **`RunLog.start()` hands out an isolated logger for one run.** It is
   built with `logging.Logger`, not `getLogger`: it is not cached for the
@@ -345,7 +360,7 @@ class PublishPlan:                       # the work; never leaves the core
 
 @dataclass(frozen=True)
 class PublishPreview:                    # what the user agrees to
-    batch: Path                          # its path in the darkroom
+    path: DarkroomPath                   # the batch, in the darkroom
     showroom_path: Path
     new: int
     clashes: list[PublishClash]          # a warning; no moves inside
@@ -355,7 +370,7 @@ class PublishPreview:                    # what the user agrees to
 
 @dataclass(frozen=True)
 class PublishReport:
-    batch: Path
+    path: DarkroomPath
     showroom_path: Path
     published: int
     replaced: int
@@ -365,16 +380,17 @@ class PublishReport:
     stopped: str | None
     left_alone: list[LeftAlone]
     log: Path | None
+    changed: list[DarkroomPath]          # the batch (7i)
 ```
 
 ```python
 class Publishing:                        # application service
-    def prepare(self, path: Path) -> PublishPreview:
+    def prepare(self, path: DarkroomPath) -> PublishPreview:
         return PublishPreview.of(self._plan(path))
 
     def run(self, preview, choice: StopSkipOrReplace,
             watch) -> PublishReport:
-        plan = self._plan(preview.batch)
+        plan = self._plan(preview.path)
         if fingerprint(plan) != preview.fingerprint:
             raise PlanChanged(preview)
         if plan.clashes and choice is StopSkipOrReplace.STOP:
@@ -386,7 +402,7 @@ class Publishing:                        # application service
             result = self.transfer.run(moves, watch, run_log)
         return PublishReport.of(plan, result, log=run_log.path)
 
-    def _plan(self, path: Path) -> PublishPlan:
+    def _plan(self, path: DarkroomPath) -> PublishPlan:
         batch = self.darkroom.batch_at(path)
         source = self.darkroom.publish_folder(batch)
         showroom_path = self.showroom.path_for(batch)
@@ -457,21 +473,21 @@ archive:   2024/2024-05-01 Trip/Phone/Selects/Day1
 @dataclass(frozen=True)
 class BatchFolder:                       # value object
     batch: Batch
-    subfolder: Path                      # "Selects/Day1"; empty for the batch
+    subfolder: PurePosixPath             # "Selects/Day1"; empty: the batch
 
 
 class Darkroom:                          # domain service
-    def batch_at(self, path: Path) -> Batch: ...         # or refuses
-    def folder_at(self, path: Path) -> BatchFolder: ...  # or refuses
-    def publish_folder(self, batch: Batch) -> Path: ...
+    def batch_at(self, path: DarkroomPath) -> Batch: ...  # or refuses
+    def folder_at(self, path: DarkroomPath) -> BatchFolder: ...
+    def publish_folder(self, batch: Batch) -> Path: ...  # full
 
 
 class Showroom:                          # domain service
-    def path_for(self, batch: Batch) -> Path: ...
+    def path_for(self, batch: Batch) -> Path: ...  # full path
 
 
 class Archive:                           # domain service
-    def path_for(self, folder: BatchFolder) -> Path: ...
+    def path_for(self, folder: BatchFolder) -> Path: ...  # full path
 ```
 
 **Clashes hold both sides.** A clash is two items: our file and the one in
@@ -493,7 +509,7 @@ class ArchiveBlocker:
 @dataclass(frozen=True)
 class ArchivePlan:                       # the work; never leaves the core
     folder: BatchFolder
-    path: Path                           # in the darkroom
+    path: DarkroomPath                   # in the darkroom
     archive_path: Path
     moves: list[Move]                    # subfolders kept
     clashes: list[ArchiveClash]
@@ -502,7 +518,7 @@ class ArchivePlan:                       # the work; never leaves the core
 
 @dataclass(frozen=True)
 class ArchivePreview:                    # what the user agrees to
-    path: Path                           # in the darkroom
+    path: DarkroomPath                   # in the darkroom
     archive_path: Path
     files: int
     clashes: list[ArchiveClash]
@@ -512,7 +528,7 @@ class ArchivePreview:                    # what the user agrees to
 
 @dataclass(frozen=True)
 class ArchiveReport:
-    path: Path
+    path: DarkroomPath
     archive_path: Path
     archived: int
     failed: list[Failure]
@@ -521,6 +537,7 @@ class ArchiveReport:
     stopped: str | None
     kept_folders: list[Path]             # emptied, but held open elsewhere
     log: Path | None
+    changed: list[DarkroomPath]          # the parent folder (7i)
 ```
 
 **Removing emptied folders goes to the file transfer**, as a second method:
@@ -533,7 +550,7 @@ class FileTransfer(Protocol):            # port
 
 
 class Archiving:                         # application service
-    def prepare(self, path: Path) -> ArchivePreview:
+    def prepare(self, path: DarkroomPath) -> ArchivePreview:
         return ArchivePreview.of(self._plan(path))
 
     def run(self, preview, choice: StopOrSkip, watch) -> ArchiveReport:
@@ -544,10 +561,11 @@ class Archiving:                         # application service
             return ArchiveReport.stopped_on_clashes(plan)
         with self.run_log.start("archive", plan.archive_path) as run_log:
             result = self.transfer.run(plan.moves, watch, run_log)
-            kept = self.transfer.remove_empty_folders(plan.path, run_log)
+            kept = self.transfer.remove_empty_folders(
+                self.darkroom.on_disk(plan.path), run_log)
         return ArchiveReport.of(plan, result, kept, log=run_log.path)
 
-    def _plan(self, path: Path) -> ArchivePlan:
+    def _plan(self, path: DarkroomPath) -> ArchivePlan:
         folder = self.darkroom.folder_at(path)
         archive_path = self.archive.path_for(folder)
         # every file under path, its subfolders kept below archive_path;
@@ -588,9 +606,12 @@ Decided:
 - **Removing emptied folders is the transfer's**, a change to the disk under
   "plan and carry out". rclone does it as part of a move
   (`--delete-empty-src-dirs`). A second method leaves tidy and publish
-  untouched. It takes one folder, not a planned list: which folders end up
-  empty depends on what moved. Folders held open elsewhere are returned
-  and reported; the cleanup may fail without anything being wrong.
+  untouched. *Kept here at the Phase 7 review*, although 7g puts folder
+  changes in `folders`: this cleanup follows a transfer and is left to
+  rclone's own cleanup when rclone transfers. It takes one folder, not a
+  planned list: which folders end up empty depends on what moved. Folders
+  held open elsewhere are returned and reported; the cleanup may fail
+  without anything being wrong.
 - **The pre-check for unpublished files** (change scenario 3) becomes one
   more warning group on `ArchivePreview` later, touching only the archive
   use case.
@@ -617,8 +638,8 @@ class NameChange:                        # value object: what the user asked
 
 @dataclass(frozen=True)
 class RenamePreview:                     # the whole plan, small enough to show
-    path: Path                           # the batch now
-    new_path: Path
+    path: DarkroomPath                   # the batch now
+    new_path: DarkroomPath
     change: NameChange
 
     @property
@@ -627,23 +648,27 @@ class RenamePreview:                     # the whole plan, small enough to show
 
 
 class Darkroom:                          # domain service
-    def batch_at(self, path: Path) -> Batch: ...         # or refuses
-    def path_for(self, batch: Batch) -> Path: ...        # DEVICE/YEAR/BATCH
+    def batch_at(self, path: DarkroomPath) -> Batch: ...  # or refuses
+    def path_for(self, batch: Batch) -> DarkroomPath: ...
 
 
 class Renaming:                          # application service
-    def prepare(self, path: Path, change: NameChange) -> RenamePreview:
+    def prepare(self, path: DarkroomPath,
+                change: NameChange) -> RenamePreview:
         return self._plan(path, change)
 
     def run(self, preview: RenamePreview) -> RenameReport:
         if self._plan(preview.path, preview.change) != preview:
             raise PlanChanged(preview)
-        folders.rename(preview.path, preview.new_path)  # infrastructure
+        old = self.darkroom.on_disk(preview.path)
+        new = self.darkroom.on_disk(preview.new_path)
+        folders.rename(old, new)                        # infrastructure
         log.info("renamed", path=..., new_path=...)     # app log
         return RenameReport(new_path=preview.new_path,
                             changed=[...])  # old and new year (7i)
 
-    def _plan(self, path: Path, change: NameChange) -> RenamePreview:
+    def _plan(self, path: DarkroomPath,
+              change: NameChange) -> RenamePreview:
         batch = self.darkroom.batch_at(path)
         new_path = self.darkroom.path_for(batch.renamed(change))
         # another folder there with the same name, ignoring case: NameTaken;
@@ -673,7 +698,7 @@ if not preview.unchanged and confirmed(preview):
 
 ```python
 result = self.transfer.run(plan.moves, watch, run_log)  # Archiving: port
-folders.rename(preview.path, preview.new_path)          # Renaming:
+folders.rename(old, new)                                # Renaming:
                                                         # infrastructure
 ```
 
@@ -707,6 +732,9 @@ Decided:
   (a metaphor to translate).
 - **A folder rename is a plain kernel call** in an infrastructure module,
   `folders` (`rename`, later `create` for new batch), not on the port.
+  The line is drawn by what the change belongs to: a folder change on its
+  own goes to `folders`; removing the folders a transfer emptied is part of
+  the transfer (7f), so rclone can do it with its own cleanup.
   rclone justifies a port for transferring files, not for folder renames;
   on the port, every adapter would carry a method it does not need.
   `folders` hides two OS details: creating a missing parent, and a rename
@@ -737,16 +765,16 @@ the preview as the whole plan) and adds three small pieces.
 
 ```python
 class Darkroom:                          # domain service
-    def batch_at(self, path: Path) -> Batch: ...
-    def path_for(self, batch: Batch) -> Path: ...         # DEVICE/YEAR/BATCH
+    def batch_at(self, path: DarkroomPath) -> Batch: ...
+    def path_for(self, batch: Batch) -> DarkroomPath: ...
     def device_named(self, name: str) -> str | None: ...  # existing spelling
-    def new_batch_folders(self, batch: Batch) -> list[Path]: ...
+    def new_batch_folders(self, batch: Batch) -> list[Path]: ...  # full
                                          # the batch folder and PUBLISH
 
 
 @dataclass(frozen=True)
 class NewBatchPreview:                   # the whole plan
-    path: Path                           # where the batch will be
+    path: DarkroomPath                   # where the batch will be
     new_device: bool                     # a warning: a new top folder
     batch: Batch                         # what was asked, to plan again
 
@@ -843,7 +871,7 @@ class Counts:                            # value object
 
 @dataclass(frozen=True)
 class FolderView:                        # value object: one node of the tree
-    path: Path                           # in the darkroom: the id (7b)
+    path: DarkroomPath                   # the id (7b)
     kind: FolderKind                     # .allows: what can be done
     here: Counts | None                  # None: unrecognised
     total: Counts | None                 # this folder and below
@@ -858,7 +886,7 @@ class FolderView:                        # value object: one node of the tree
 
 class Overview:                          # application service, a query
     def darkroom(self) -> FolderView: ...            # the whole tree
-    def folder(self, path: Path) -> FolderView: ...  # one folder and below
+    def folder(self, path: DarkroomPath) -> FolderView: ...
 ```
 
 Every report says which folders it changed:
@@ -867,7 +895,7 @@ Every report says which folders it changed:
 @dataclass(frozen=True)
 class TidyReport:
     ...
-    changed: list[Path]                  # read these folders again
+    changed: list[DarkroomPath]          # read these folders again
 ```
 
 On the caller side:
@@ -900,8 +928,8 @@ Decided:
   different lifetimes to worry about, and bring a stale cache with it. The
   GUI owns what it shows; the core reads the disk each time and does the
   arithmetic. Half of the client-lifetime question is answered: nothing in
-  the core goes stale between calls. Rebuilding after settings change
-  waits for `SettingsStore`.
+  the core goes stale between calls. Rebuilding after settings change is
+  the other half *(closed in 7k)*.
 - **What a kind allows is a property of the kind** (`FolderKind.allows`),
   a fixed domain table: clients enable menus from it and never hard-code
   it. Kind, not state (walkthrough 2).
@@ -948,20 +976,21 @@ class ExternalApps(Protocol):            # port
 
 
 class Opening:                           # application service
-    def in_file_manager(self, path: Path) -> None:
+    def in_file_manager(self, path: DarkroomPath) -> None:
         self.apps.show_folder(self.darkroom.on_disk(path))
 
-    def for_culling(self, path: Path) -> None:
+    def for_culling(self, path: DarkroomPath) -> None:
         self._start(self.settings.cull_command, path)
 
-    def for_editing(self, path: Path) -> None:
+    def for_editing(self, path: DarkroomPath) -> None:
         self._start(self.settings.edit_command, path)
 
     @property
     def culling_enabled(self) -> bool:   # and editing_enabled
         return self.settings.cull_command is not None
 
-    def _start(self, template: CommandTemplate | None, path: Path) -> None:
+    def _start(self, template: CommandTemplate | None,
+               path: DarkroomPath) -> None:
         if template is None:
             raise NotConfigured
         values = {"folder": self.darkroom.on_disk(path)}
@@ -969,7 +998,7 @@ class Opening:                           # application service
             values["first_image"] = self._first_image(path)  # NoImageFound
         self.apps.start(template.render(values))
 
-    def _first_image(self, path: Path) -> Path: ...
+    def _first_image(self, path: DarkroomPath) -> Path: ...
         # a best guess: directly in the folder, then in its PHOTOS
 ```
 
@@ -1116,3 +1145,65 @@ Decided:
   check-and-refuse use case with a file writer. Services are named after
   the activity (7a; Evans, ch. 5); "set up" is walkthrough 1's title. The
   suffix would be right where it is the team's convention.
+
+## Phase 7 at a glance
+
+Collected from 7a-7k after the review; where a checkpoint's sketch and
+this list differ, this list holds. `DarkroomPath` is the relative id;
+`Path` is a full path on disk (7b).
+
+**Application services** (the use cases):
+
+| Service | Calls | Checkpoint |
+|---|---|---|
+| `Tidying` | `prepare(path) -> TidyPreview`; `run(preview, StopOrSkip, watch) -> TidyReport` | 7c, 7d |
+| `Publishing` | `prepare(path) -> PublishPreview`; `run(preview, StopSkipOrReplace, watch) -> PublishReport` | 7e |
+| `Archiving` | `prepare(path) -> ArchivePreview`; `run(preview, StopOrSkip, watch) -> ArchiveReport` | 7f |
+| `Renaming` | `prepare(path, NameChange) -> RenamePreview`; `run(preview) -> RenameReport` | 7g |
+| `StartingBatch` | `prepare(device, date, title) -> NewBatchPreview`; `run(preview) -> NewBatchReport` | 7h |
+| `Overview` | `darkroom() -> FolderView`; `folder(path) -> FolderView` | 7i |
+| `Opening` | `in_file_manager(path)`; `for_culling(path)`; `for_editing(path)`; `culling_enabled`; `editing_enabled` | 7j |
+| `SettingUp` | `current()`; `check(settings) -> SetupState`; `store(settings) -> SetupState` | 7k |
+
+**Domain services:**
+
+| Service | Calls | Checkpoint |
+|---|---|---|
+| `Darkroom` | `batch_at(path) -> Batch`; `folder_at(path) -> BatchFolder`; `path_for(batch) -> DarkroomPath`; `on_disk(path) -> Path`; `publish_folder(batch) -> Path`; `device_named(name)`; `new_batch_folders(batch) -> list[Path]` | 7b, 7f, 7g, 7h, 7j |
+| `Showroom` | `path_for(batch) -> Path` | 7b |
+| `Archive` | `path_for(folder) -> Path` | 7f |
+| The tidy recipe | `plan(path) -> TidyPlan` | 7c |
+
+**Ports and their adapters:**
+
+| Port | Calls | Adapters | Checkpoint |
+|---|---|---|---|
+| `FileTransfer` | `run(moves, watch, run_log) -> TransferResult`; `remove_empty_folders(under, run_log) -> list[Path]` | `InternalTransfer`, `RcloneTransfer` | 7d, 7f, 7g |
+| `RunLog` | `start(action, path) -> RunLogger` (a context manager) | `FileRunLog` | 7d |
+| `ExternalApps` | `start(command)`; `show_folder(path)` | An OS adapter | 7j |
+| `SettingsStore` | `load() -> Settings or None`; `save(settings)` | `SettingsFile` (TOML) | 7k |
+
+Infrastructure without a port: `folders` (`rename`, `create`), and the app
+log (`structlog.get_logger(__name__)`). Composition root: `build_core
+(settings)`, called again after a settings change (7k).
+
+**Value objects:** `DarkroomPath`, `Batch`, `BatchDate`, `BatchFolder`,
+`NameChange`, `Move`, `TransferResult`, `Failure`, `LeftAlone`,
+`TidyClash`, `PublishClash`, `ArchiveClash`, `ArchiveBlocker`, `Counts`,
+`FolderView`, `FolderKind`, `CommandTemplate`, `Settings`, `SetupState`,
+the choices `StopOrSkip` and `StopSkipOrReplace`, and each use case's plan,
+preview and report.
+
+**The client passes in:** a `RunWatch` (`progress`, `cancelled`).
+
+**Refusals** (raised before anything changes):
+
+| Refusal | Raised by | Checkpoint |
+|---|---|---|
+| `NotABatch` | `Darkroom.batch_at`, `Darkroom.folder_at` | 7b, 7f |
+| `PlanChanged` | Every `run`, when planning again differs | 7a |
+| `NameTaken(path, taken_by)` | Rename, new batch | 7g, 7h |
+| `InvalidName` | New batch (an unsafe device name) | 7h |
+| `NotConfigured`, `TemplateBroken`, `NoImageFound` | Opening | 7j |
+| `AppFailed` | `ExternalApps` | 7j |
+| `AreasOverlap` | `SettingUp.store` | 7k |

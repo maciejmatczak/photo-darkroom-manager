@@ -35,7 +35,7 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 4. Knowledge inventory | Reviewed; keeps growing |
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
-| 7. Interfaces | 7a-7k agreed: every use case and port designed; review before closing |
+| 7. Interfaces | Done (7a-7k, reviewed; see "Phase 7 at a glance") |
 | 8-9 | Not started |
 
 ## Working rules
