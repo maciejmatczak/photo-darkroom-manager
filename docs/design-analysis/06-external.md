@@ -51,3 +51,5 @@ a folder rename is not one of its jobs).
   port.
 - After settings change in a long-running client, what is built from the
   old settings is stale and must be rebuilt (Phase 7, client lifetime).
+  *Phase 7i: the core holds no view between calls, so only what is built
+  from the settings remains to rebuild.*

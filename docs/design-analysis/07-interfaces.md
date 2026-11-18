@@ -172,6 +172,7 @@ class TidyReport:
     stopped: str | None          # "you stopped it", "clashes, as chosen"
     left_alone: list[LeftAlone]
     log: Path | None             # this run's record (7d)
+    changed: list[Path]          # folders to read again (7i)
 ```
 
 - **`stopped` says why files were not reached**: the user stopped the run,
@@ -634,12 +635,13 @@ class Renaming:                          # application service
     def prepare(self, path: Path, change: NameChange) -> RenamePreview:
         return self._plan(path, change)
 
-    def run(self, preview: RenamePreview) -> Path:
+    def run(self, preview: RenamePreview) -> RenameReport:
         if self._plan(preview.path, preview.change) != preview:
             raise PlanChanged(preview)
         folders.rename(preview.path, preview.new_path)  # infrastructure
         log.info("renamed", path=..., new_path=...)     # app log
-        return preview.new_path
+        return RenameReport(new_path=preview.new_path,
+                            changed=[...])  # old and new year (7i)
 
     def _plan(self, path: Path, change: NameChange) -> RenamePreview:
         batch = self.darkroom.batch_at(path)
@@ -655,7 +657,7 @@ On the caller side:
 change = NameChange(title="Trip to Lisbon")             # date kept
 preview = core.renaming.prepare(path, change)
 if not preview.unchanged and confirmed(preview):
-    new_path = core.renaming.run(preview)               # select it in the GUI
+    report = core.renaming.run(preview)          # select report.new_path
 ```
 
 **Two kinds of change to the disk:**
@@ -689,7 +691,8 @@ Decided:
   again from the preview's own request and compares the plans directly.
 - **`run` takes no choice and no watch**: nothing to choose, and one step
   with no progress or stop. It returns the new path, so whatever referred
-  to the batch (a GUI selection) can follow it.
+  to the batch (a GUI selection) can follow it, and the folders it changed
+  (a `RenameReport`, 7i).
 - **`batch.renamed(change)` and `Darkroom.path_for(batch)`.** The batch
   owns its name format (Phase 5, scenario 5); the darkroom says where a
   batch belongs, completing the `batch_at` / `path_for` pair (7f). New
@@ -753,14 +756,16 @@ class StartingBatch:                     # application service
                 title: str | None = None) -> NewBatchPreview:
         return self._plan(device, date, title)
 
-    def run(self, preview: NewBatchPreview) -> Path:
+    def run(self, preview: NewBatchPreview) -> NewBatchReport:
         batch = preview.batch
         if self._plan(batch.device, batch.date, batch.title) != preview:
             raise PlanChanged(preview)
         for folder in self.darkroom.new_batch_folders(batch):
             folders.create(folder)                      # infrastructure
         log.info("new batch", path=...)                 # app log
-        return preview.path
+        return NewBatchReport(path=preview.path,
+                              changed=[...])  # the year, or the darkroom
+                                              # for a new device (7i)
 
     def _plan(self, device, date, title) -> NewBatchPreview:
         known = self.darkroom.device_named(device)      # None: a new device
@@ -777,7 +782,7 @@ On the caller side:
 preview = core.starting_batch.prepare("Phone", BatchDate(2025, 1, 3),
                                       "Lisbon")
 if not preview.new_device or confirmed(preview):        # GUI: always confirm
-    path = core.starting_batch.run(preview)             # select it
+    report = core.starting_batch.run(preview)           # select report.path
 ```
 
 Decided:
@@ -809,3 +814,101 @@ Decided:
   happened or did not.
 - New pieces: `folders.create`, `Darkroom.device_named` and
   `Darkroom.new_batch_folders`. Everything else is reused unchanged.
+
+## 7i. See: a query, and a tree the client owns
+
+See only reads: no preview, no plan, no `run`. Its shape comes from the
+clients instead: a GUI keeps a tree on screen and refreshes parts of it; a
+CLI prints it once.
+
+**What the user needs to see, for each folder:**
+
+| Need | Detail |
+|---|---|
+| Its name and kind | Device, year, batch, `PUBLISH`, bucket, subfolder, unrecognised |
+| Its counts | Photos, videos, other: directly in it, and in total below it |
+| Attention | Untidy here, or somewhere below |
+| What can be done | Fixed by its kind |
+
+An unrecognised folder shows its name and kind only: no counts, and it is
+not walked into (walkthrough 2).
+
+```python
+@dataclass(frozen=True)
+class Counts:                            # value object
+    photos: int
+    videos: int
+    other: int
+
+
+@dataclass(frozen=True)
+class FolderView:                        # value object: one node of the tree
+    path: Path                           # in the darkroom: the id (7b)
+    kind: FolderKind                     # .allows: what can be done
+    here: Counts | None                  # None: unrecognised
+    total: Counts | None                 # this folder and below
+    untidy: bool                         # here
+    needs_attention: bool                # here or below
+    children: tuple[FolderView, ...]
+
+    def replaced(self, part: FolderView) -> FolderView: ...
+        # the same tree with `part` swapped in at its path, totals and
+        # attention added up again along the way
+
+
+class Overview:                          # application service, a query
+    def darkroom(self) -> FolderView: ...            # the whole tree
+    def folder(self, path: Path) -> FolderView: ...  # one folder and below
+```
+
+Every report says which folders it changed:
+
+```python
+@dataclass(frozen=True)
+class TidyReport:
+    ...
+    changed: list[Path]                  # read these folders again
+```
+
+On the caller side:
+
+```python
+view = core.overview.darkroom()                       # GUI, at start
+
+report = core.tidying.run(preview, choice, watch)
+for path in report.changed:
+    view = view.replaced(core.overview.folder(path))  # only those parts
+
+print_tree(core.overview.darkroom())                  # CLI, or .folder(p)
+```
+
+Decided:
+
+- **The tree is an immutable value, and the totals rule stays in it.**
+  "How counts and attention marks add up the tree" is a domain rule; a GUI
+  that refreshed one folder and summed the ancestors itself would hold it.
+  `replaced(part)` rebuilds the totals in the core while the client holds
+  the tree.
+- **The use case says what changed**, in its report's `changed`: tidy the
+  folder, publish the batch, archive the parent, rename the old and the new
+  year, new batch the year (or the darkroom when a device is new). Named
+  `changed`, not `stale`: it states a fact about the disk; "stale"
+  describes the client's copy, which the core does not know. Rename and new
+  batch therefore return a small report, not a bare path (7g, 7h).
+- **The core holds no tree between calls.** A core that cached the view
+  and patched it after each run would be stateful, give the GUI and CLI
+  different lifetimes to worry about, and bring a stale cache with it. The
+  GUI owns what it shows; the core reads the disk each time and does the
+  arithmetic. Half of the client-lifetime question is answered: nothing in
+  the core goes stale between calls. Rebuilding after settings change
+  waits for `SettingsStore`.
+- **What a kind allows is a property of the kind** (`FolderKind.allows`),
+  a fixed domain table: clients enable menus from it and never hard-code
+  it. Kind, not state (walkthrough 2).
+- **`Overview`**: the brief's own word ("no overview of what is untidy").
+  A query is named by what it gives, not by an activity. Rejected:
+  `Seeing` (reads oddly), `DarkroomView` (the result, not the service),
+  `Browsing` (a GUI word; the CLI does not browse).
+- Commands and queries differ in shape because their problems differ:
+  commands need a preview, a plan and a check before acting; a query needs
+  a result that is cheap to refresh in parts.
