@@ -41,7 +41,8 @@ copy of the same.
 
 Ports so far: `MoveFiles`, `SettingsStore`, `RunLog`, `ExternalApps`.
 Names are working labels; their methods are decided in Phase 7 (`MoveFiles`
-became `Mover` in 7d).
+became `Mover` in 7d, then `FileTransfer` in 7g: it transfers files, and
+a folder rename is not one of its jobs).
 
 ## Still open
 

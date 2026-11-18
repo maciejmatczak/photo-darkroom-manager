@@ -35,7 +35,7 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 4. Knowledge inventory | Reviewed; keeps growing |
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
-| 7. Interfaces | 7a-7f agreed (tidy; the mover, watch, run log; publish and archive checked against tidy); the remaining use cases and ports next |
+| 7. Interfaces | 7a-7g agreed (tidy; file transfer, watch, run log; publish, archive and rename checked against tidy); new batch, see, open and the remaining ports next |
 | 8-9 | Not started |
 
 ## Working rules

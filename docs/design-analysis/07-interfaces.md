@@ -138,14 +138,14 @@ Decided:
   file left alone. Counts cannot prove the files are the same. Planning
   again at `run` is the check, not waste: nothing proves the disk is
   unchanged without looking again.
-- **The per-file re-check stays inside the mover**, for the moments during
-  the run, after the fingerprint has passed.
-- **`Move` (a source and a target) is the mover's whole input**, shared by
-  every use case *(7d adds a replace flag, for publish only)*.
+- **The per-file re-check stays inside the file transfer**, for the moments
+  during the run, after the fingerprint has passed.
+- **`Move` (a source and a target) is the file transfer's whole input**,
+  shared by every use case *(7d adds a replace flag, for publish only)*.
 - **Tidy never replaces**: its `run` takes `StopOrSkip`.
 - Clashes are kept in full; the client decides how many to show.
 - **A tidy clash is a `TidyClash`**, never a move: tidy cannot hand a
-  clash to the mover *(named in 7e; both sides of the clash added in 7f)*.
+  clash to the file transfer *(named in 7e; both sides added in 7f)*.
 - "Where they land" was dropped: the recipe fixes it, so it says nothing
   new.
 
@@ -179,10 +179,11 @@ class TidyReport:
 - The counts add up to the preview's total, so a test can assert it and a
   GUI can show a bar that sums to what was agreed.
 
-## 7d. The mover, the watch and the run log
+## 7d. The file transfer, the watch and the run log
 
-What the mover is given and hands back, how the client follows and stops a
-run, and how each run gets its own record. Tidy is the example.
+What the file transfer is given and hands back, how the client follows and
+stops a run, and how each run gets its own record. Tidy is the example.
+The port was first called `Mover`; 7g renamed it `FileTransfer`.
 
 ```python
 @dataclass(frozen=True)
@@ -193,7 +194,7 @@ class Move:
 
 
 @dataclass(frozen=True)
-class MoveResult:                        # stays in the core
+class TransferResult:                    # stays in the core
     moved: list[Move]
     replaced: list[Move]
     failed: list[Failure]                # incl. "taken since the preview"
@@ -201,9 +202,9 @@ class MoveResult:                        # stays in the core
     cancelled: bool                      # the watch said stop
 
 
-class Mover(Protocol):                   # port (MoveFiles in Phase 6)
-    def move(self, moves: list[Move], watch: RunWatch,
-             run_log: RunLogger) -> MoveResult: ...
+class FileTransfer(Protocol):            # port (MoveFiles in Phase 6)
+    def run(self, moves: list[Move], watch: RunWatch,
+            run_log: RunLogger) -> TransferResult: ...
 
 
 class RunWatch(Protocol):                # given by the client
@@ -232,8 +233,8 @@ class Tidying:                           # application service
         with self.run_log.start("tidy", plan.folder) as run_log:
             run_log.info("tidy started", photos=preview.photos,
                          videos=preview.videos, choice=choice.name)
-            result = self.mover.move(plan.photos + plan.videos,
-                                     watch, run_log)
+            result = self.transfer.run(plan.photos + plan.videos,
+                                       watch, run_log)
             run_log.info("tidy finished", moved=len(result.moved),
                          failed=len(result.failed))
         return TidyReport.of(plan, result, log=run_log.path)
@@ -257,12 +258,13 @@ class FileRunLog:                        # adapter
 
 Decided:
 
-- **The clash choice stays in the use case.** On stop, the mover is not
-  called; on skip, only the moves without a clash reach it. The mover knows
-  no choices: replacing is a flag on each `Move`, set only by publish.
-- **The mover answers with a `MoveResult`**, which stays in the core; each
-  use case turns it into its own report. A file taken since the preview is
-  a failure, found by the mover's per-file re-check.
+- **The clash choice stays in the use case.** On stop, the file transfer is
+  not called; on skip, only the moves without a clash reach it. The file
+  transfer knows no choices: replacing is a flag on each `Move`, set only
+  by publish.
+- **The file transfer answers with a `TransferResult`**, which stays in the
+  core; each use case turns it into its own report. A file taken since the
+  preview is a failure, found by the transfer's per-file re-check.
 - **The watch** reports progress and is asked `cancelled()` between files.
   "Cancelled" is the usual word for a cooperative stop (asyncio, .NET).
 - **Two logs, two loggers:**
@@ -282,11 +284,11 @@ Decided:
 - **The run logger is passed explicitly**, like the watch: a value that
   lives for one run travels as an argument. Each piece writes what it
   knows: the use case the start (what was agreed, the choice) and the end,
-  the mover each file.
+  the file transfer each file.
 - **The report gains `log`**, where to find this run's record. A run
   stopped on clashes moves nothing and opens no log.
-- Mover adapters: an internal one (copy, verify, rename) and an rclone one
-  (Phase 6).
+- File transfer adapters: `InternalTransfer` (copy, verify, swap in) and
+  `RcloneTransfer` (Phase 6).
 
 Rejected:
 
@@ -380,7 +382,7 @@ class Publishing:                        # application service
         if choice is StopSkipOrReplace.REPLACE:
             moves += [clash.replacing() for clash in plan.clashes]
         with self.run_log.start("publish", plan.showroom_path) as run_log:
-            result = self.mover.move(moves, watch, run_log)
+            result = self.transfer.run(moves, watch, run_log)
         return PublishReport.of(plan, result, log=run_log.path)
 
     def _plan(self, path: Path) -> PublishPlan:
@@ -402,7 +404,7 @@ Decided:
   after their use case like their plans. Not shared: the fields look alike,
   but the rules differ (tidy never moves a clash; publish may replace it).
   Only `PublishClash` can make a `Move` (`replacing`), so tidy cannot hand
-  a clash to the mover *(revised in 7f: clashes hold both sides, no
+  a clash to the transfer *(revised in 7f: clashes hold both sides, no
   `Move`)*. "Already published" was rejected: the same name does not mean
   the same edit.
 - `PublishClash` is where anything that helps the user judge a clash would
@@ -520,11 +522,11 @@ class ArchiveReport:
     log: Path | None
 ```
 
-**Removing emptied folders goes to the mover**, as a second method:
+**Removing emptied folders goes to the file transfer**, as a second method:
 
 ```python
-class Mover(Protocol):                   # port
-    def move(self, moves, watch, run_log) -> MoveResult: ...
+class FileTransfer(Protocol):            # port
+    def run(self, moves, watch, run_log) -> TransferResult: ...
     def remove_empty_folders(self, under: Path,
                              run_log) -> list[Path]: ...  # the kept ones
 
@@ -540,8 +542,8 @@ class Archiving:                         # application service
         if (plan.clashes or plan.blockers) and choice is StopOrSkip.STOP:
             return ArchiveReport.stopped_on_clashes(plan)
         with self.run_log.start("archive", plan.archive_path) as run_log:
-            result = self.mover.move(plan.moves, watch, run_log)
-            kept = self.mover.remove_empty_folders(plan.path, run_log)
+            result = self.transfer.run(plan.moves, watch, run_log)
+            kept = self.transfer.remove_empty_folders(plan.path, run_log)
         return ArchiveReport.of(plan, result, kept, log=run_log.path)
 
     def _plan(self, path: Path) -> ArchivePlan:
@@ -582,7 +584,7 @@ Decided:
 - **`StopOrSkip` is shared with tidy**, unlike the clash types. It is named
   by its content (the set {stop, skip}), not by a role whose meaning
   depends on the use case. If tidy gains a choice, tidy takes a new type.
-- **Removing emptied folders is the mover's**, a change to the disk under
+- **Removing emptied folders is the transfer's**, a change to the disk under
   "plan and carry out". rclone does it as part of a move
   (`--delete-empty-src-dirs`). A second method leaves tidy and publish
   untouched. It takes one folder, not a planned list: which folders end up
@@ -591,3 +593,129 @@ Decided:
 - **The pre-check for unpublished files** (change scenario 3) becomes one
   more warning group on `ArchivePreview` later, touching only the archive
   use case.
+
+## 7g. Rename: a folder change, not a file transfer
+
+Rename keeps the shape (`prepare`, a preview, `run`) and drops the parts
+that solve problems it does not have.
+
+**What the user needs to see:**
+
+| Need | Kind | Detail |
+|---|---|---|
+| The batch now and after | Normal | Two paths, e.g. `Phone/2024/2024-05-01 Trip` to `Phone/2025/2025-01-03 Trip` |
+| The name does not change | Normal | "Nothing to change" |
+
+```python
+@dataclass(frozen=True)
+class NameChange:                        # value object: what the user asked
+    date: BatchDate | None = None        # None: keep
+    title: str | None = None             # None: keep
+    drop_title: bool = False             # refused together with a title
+
+
+@dataclass(frozen=True)
+class RenamePreview:                     # the whole plan, small enough to show
+    path: Path                           # the batch now
+    new_path: Path
+    change: NameChange
+
+    @property
+    def unchanged(self) -> bool:
+        return self.new_path == self.path
+
+
+class Darkroom:                          # domain service
+    def batch_at(self, path: Path) -> Batch: ...         # or refuses
+    def path_for(self, batch: Batch) -> Path: ...        # DEVICE/YEAR/BATCH
+
+
+class Renaming:                          # application service
+    def prepare(self, path: Path, change: NameChange) -> RenamePreview:
+        return self._plan(path, change)
+
+    def run(self, preview: RenamePreview) -> Path:
+        if self._plan(preview.path, preview.change) != preview:
+            raise PlanChanged(preview)
+        folders.rename(preview.path, preview.new_path)  # infrastructure
+        log.info("renamed", path=..., new_path=...)     # app log
+        return preview.new_path
+
+    def _plan(self, path: Path, change: NameChange) -> RenamePreview:
+        batch = self.darkroom.batch_at(path)
+        new_path = self.darkroom.path_for(batch.renamed(change))
+        # another folder there with the same name, ignoring case: NameTaken;
+        # changing only the case of this batch's own name is allowed
+        return RenamePreview(path, new_path, change)
+```
+
+On the caller side:
+
+```python
+change = NameChange(title="Trip to Lisbon")             # date kept
+preview = core.renaming.prepare(path, change)
+if not preview.unchanged and confirmed(preview):
+    new_path = core.renaming.run(preview)               # select it in the GUI
+```
+
+**Two kinds of change to the disk:**
+
+| | Renaming a folder | Carrying files into another area |
+|---|---|---|
+| What happens | One directory entry changes; no data moves | Each file is copied, checked and swapped in; the source is removed |
+| How | One kernel call (`os.rename`), atomic | Many steps per file, across drives |
+| Duration | Instant | Long: progress, cancel between files |
+| Swappable | No reason to | Yes: rclone (scenario 7) |
+| Run log | No | Yes, each file |
+| Carried out by | `folders`, an infrastructure module | `FileTransfer`, a port |
+
+```python
+result = self.transfer.run(plan.moves, watch, run_log)  # Archiving: port
+folders.rename(preview.path, preview.new_path)          # Renaming:
+                                                        # infrastructure
+```
+
+Decided:
+
+- **A clash is a refusal, not a choice.** A batch cannot skip half of its
+  own name, so the user has nothing to choose. `prepare` raises
+  `NameTaken(path, taken_by)`, as it refuses a path that is not a batch.
+- **"Nothing to change" is a normal preview** (`unchanged`), not an error,
+  as with an empty publish.
+- **The year move is not a line of its own**: the new path shows it.
+  Creating a missing year folder is part of carrying out the rename.
+- **No fingerprint.** A fingerprint stands in for a plan too large to send;
+  rename's whole plan is two paths, and the preview holds them. `run` plans
+  again from the preview's own request and compares the plans directly.
+- **`run` takes no choice and no watch**: nothing to choose, and one step
+  with no progress or stop. It returns the new path, so whatever referred
+  to the batch (a GUI selection) can follow it.
+- **`batch.renamed(change)` and `Darkroom.path_for(batch)`.** The batch
+  owns its name format (Phase 5, scenario 5); the darkroom says where a
+  batch belongs, completing the `batch_at` / `path_for` pair (7f). New
+  batch will use the same method.
+- **The port is `FileTransfer`, not `Mover`.** "Mover" claimed every move
+  and then left out the most expected one, a folder to a new name. Named
+  after how it works (copy, check, swap in), the port has a boundary its
+  users and adapters recognise. `Move` stays as the value object: it is
+  the user's intent, and the transfer is one way of carrying it out.
+  `MoveResult` became `TransferResult`. Rejected names: `Mover` (claims
+  every move), `Copier` (it removes the source), `Courier` or `Carrier`
+  (a metaphor to translate).
+- **A folder rename is a plain kernel call** in an infrastructure module,
+  `folders` (`rename`, later `create` for new batch), not on the port.
+  rclone justifies a port for transferring files, not for folder renames;
+  on the port, every adapter would carry a method it does not need.
+  `folders` hides two OS details: creating a missing parent, and a rename
+  that only changes letter case (through a temporary name). Tests use real
+  temporary folders.
+- **This refines Phase 6's "plan and carry out"**: planning and checking
+  stay shared, and how a change is carried out depends on its kind.
+- **The app log, not a run log.** A rename either happened or did not, and
+  the darkroom view shows which.
+- **When rename follows into the showroom and archive** (scenario 4), the
+  preview gains `showroom` and `archive` fields (fixed groups, 7c) and
+  `run` gains steps across areas. Then a run can stop halfway, and a run
+  log earns its place. Only `Renaming` changes.
+- A year folder emptied by the move is left in place (walkthrough 4);
+  removing it later is one more step in `run`.
