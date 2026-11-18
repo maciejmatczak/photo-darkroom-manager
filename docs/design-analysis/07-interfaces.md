@@ -912,3 +912,105 @@ Decided:
 - Commands and queries differ in shape because their problems differ:
   commands need a preview, a plan and a check before acting; a query needs
   a result that is cheap to refresh in parts.
+
+## 7j. Cull, edit and open: a folder opened in another program
+
+All three hand a folder to another program and read nothing back: no
+preview, no plan, no report, nothing changed on disk.
+
+**What the user needs to see:**
+
+| Need | When |
+|---|---|
+| Nothing; the program starts | Normal |
+| Disabled | Cull or edit not configured: known before asking, for every client |
+| Why it cannot start | A broken template, or no image found |
+| That the program failed | It did not start, or exited with an error at once |
+
+**The port knows no templates.** Which tokens exist and how a template is
+rendered for a folder is domain knowledge; how to start a program or the
+file manager is the OS's (Phase 5). The use case renders the command; the
+port is handed something ready to run.
+
+```python
+@dataclass(frozen=True)
+class CommandTemplate:                   # value object (domain)
+    text: str                            # 'frv.exe "{{ folder }}"'
+
+    @property
+    def tokens(self) -> set[str]: ...    # TemplateBroken on an unknown one
+    def render(self, values: dict[str, Path]) -> str: ...
+
+
+class ExternalApps(Protocol):            # port
+    def start(self, command: str) -> None: ...      # AppFailed
+    def show_folder(self, path: Path) -> None: ...  # AppFailed
+
+
+class Opening:                           # application service
+    def in_file_manager(self, path: Path) -> None:
+        self.apps.show_folder(self.darkroom.on_disk(path))
+
+    def for_culling(self, path: Path) -> None:
+        self._start(self.settings.cull_command, path)
+
+    def for_editing(self, path: Path) -> None:
+        self._start(self.settings.edit_command, path)
+
+    @property
+    def culling_enabled(self) -> bool:   # and editing_enabled
+        return self.settings.cull_command is not None
+
+    def _start(self, template: CommandTemplate | None, path: Path) -> None:
+        if template is None:
+            raise NotConfigured
+        values = {"folder": self.darkroom.on_disk(path)}
+        if "first_image" in template.tokens:
+            values["first_image"] = self._first_image(path)  # NoImageFound
+        self.apps.start(template.render(values))
+
+    def _first_image(self, path: Path) -> Path: ...
+        # a best guess: directly in the folder, then in its PHOTOS
+```
+
+On the caller side:
+
+```python
+core.opening.in_file_manager(folder.path)
+if folder.kind.allows(CULL) and core.opening.culling_enabled:
+    core.opening.for_culling(folder.path)              # NoImageFound, ...
+```
+
+Decided:
+
+- **One port, two methods.** The cull app, the edit app and the file
+  manager share a role (Phase 2), so they share a port. Only `start` takes
+  a user-given command; `show_folder` hides the OS's file manager
+  (`explorer`, `open`, `xdg-open`). `start` also hides how a command string
+  is split into arguments on each OS, and how long to wait to catch "exits
+  with an error straight away". Tests use a fake that records commands.
+- **The first image is looked up only when the template asks for it.**
+  Otherwise a template with only `{{ folder }}` would refuse on a folder
+  without images, for something it never needed.
+- **The first-image guess stays with the use case** (Phase 5): a policy
+  for cull and edit, not a layout rule, independent of the tidy recipe.
+- **Disabled is a property** (`culling_enabled`, `editing_enabled`), known
+  before asking; `NotConfigured` is only a guard. Clients combine it with
+  `FolderKind.allows`: the kind says whether it makes sense here, the
+  settings whether it is set up.
+- **`darkroom.on_disk(path)`** turns a path in the darkroom (7b) into the
+  full path an outside program needs; the darkroom knows its root.
+- **One service, `Opening`.** Each of the three opens a folder in a
+  program; "open" is walkthrough 8's word and the user's. The activity is
+  the class, and the methods say where or what for. A hard name was first
+  checked as a grouping smell: cull and edit share everything, open shares
+  the port, and a service of its own for open would be one call. Rejected:
+  `Handoff` (not the user's word), `Culling`, `Editing` and `Opening` as
+  three services (one flow), `Tools` (says nothing). Considered:
+  `ExternalApps` as the service name, after the outside system the three
+  use cases serve; kept for the port, so one word does not name both the
+  use case and the system it talks to.
+- **Known limit**: token values go into the command as they are, and
+  quoting is the template author's. On Windows a path cannot contain `"`;
+  on Unix a folder name with a quote breaks the command. A candidate for
+  Phase 9.

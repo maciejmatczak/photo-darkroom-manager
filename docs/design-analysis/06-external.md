@@ -30,7 +30,7 @@ domain areas, each a root path in the filesystem plus its own layout.
 | **A port for moving files**, with an internal adapter and an rclone adapter chosen by a setting | Scenario 7 (rclone) |
 | **A port for settings storage** (`SettingsStore`: load, save), with a file adapter. Set up is a use case: its application service checks the new settings and stores them through the port. The composition root reads them through the same port at startup | A resource with a location and a format; the core never depends on either |
 | **A port for the run log** (`RunLog`), with a file adapter. *Phase 7d: its one call starts a run and hands out that run's own logger; the app's diagnostic log is separate* | A resource; where and how records are written stays outside the core (Phase 5 sort) |
-| **A port for external apps** (`ExternalApps`), with an OS adapter | A resource; how to start a program or the file manager differs per OS, and tests never start real programs |
+| **A port for external apps** (`ExternalApps`), with an OS adapter. *Phase 7j: `start` a rendered command, `show_folder` in the file manager; templates stay in the domain* | A resource; how to start a program or the file manager differs per OS, and tests never start real programs |
 | **Plan and carry out.** Domain services only decide and answer in paths. Every change to the disk (create folders, rename, move files, remove emptied folders) is planned, then carried out by one infrastructure mechanism, which re-checks the plan before acting | Scenario 8 (add or drop a preview) and "the plan is honoured", across five use cases |
 
 Under "plan and carry out", a domain service like the darkroom's never
