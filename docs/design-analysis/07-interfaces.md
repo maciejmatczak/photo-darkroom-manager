@@ -51,7 +51,7 @@ What publish asks of the domain:
 ```python
 class Darkroom:
     def batch_from_place(self, place: Path) -> Batch: ...  # or refuses
-    def publishable(self, batch: Batch) -> list[Path]: ...
+    def publish_folder(self, batch: Batch) -> Path: ...    # see 7e
 
 class Showroom:
     def place_for_batch(self, batch: Batch) -> Path: ...
@@ -68,6 +68,9 @@ Decided:
   (`Path`) says how it is represented, so a place can stay a place if the
   showroom later maps batches to albums.
 - "Place" over "location": shorter, and already the walkthroughs' word.
+- *(Corrected in 7e)* The darkroom answers only where a batch's `PUBLISH`
+  folder is (`publish_folder`). What in it is publishable belongs to the
+  publish use case (Phase 5), so `publishable(batch)` was dropped.
 
 ## 7c. Tidy: the preview and the plan
 
@@ -102,7 +105,7 @@ class TidyPlan:                  # the work; never leaves the core
     folder: Path
     photos: list[Move]
     videos: list[Move]
-    clashes: list[Clash]
+    clashes: list[TidyClash]
     left_alone: list[LeftAlone]
 
 
@@ -111,7 +114,7 @@ class TidyPreview:               # what the user agrees to
     folder: Path
     photos: int
     videos: int
-    clashes: list[Clash]
+    clashes: list[TidyClash]
     left_alone: list[LeftAlone]
     fingerprint: str             # of the plan
 
@@ -141,6 +144,8 @@ Decided:
   every use case *(7d adds a replace flag, for publish only)*.
 - **Tidy never replaces**: its `run` takes `StopOrSkip`.
 - Clashes are kept in full; the client decides how many to show.
+- **A tidy clash is a `TidyClash`** (a file and a reason), never a move:
+  tidy cannot hand a clash to the mover *(named in 7e)*.
 - "Where they land" was dropped: the recipe fixes it, so it says nothing
   new.
 
@@ -292,3 +297,123 @@ Rejected:
   has a reader and becomes a journal, a domain record.
 - **A handler added to the global logging config for the run.** Hidden
   global state, and two runs at once would write into each other's files.
+
+## 7e. Publish, checked against tidy
+
+Publish follows tidy's shape: `run` takes the same steps, and publish has
+its own preview, plan, report and clash type.
+
+**What the user needs to see:**
+
+| Need | Kind | Detail |
+|---|---|---|
+| New files | Normal | A count |
+| Where they land | Normal | The showroom place |
+| Clashes: the name is taken in the showroom | Warning | A count; the names for the client to show |
+| Left alone: subfolders of `PUBLISH`, same-name pairs in it | Exception | Each, with its reason |
+
+```python
+@dataclass(frozen=True)
+class TidyClash:                         # never moved
+    file: Path
+    reason: str                          # "taken", "wanted twice"
+
+
+@dataclass(frozen=True)
+class PublishClash:                      # replaced only if the user chooses
+    move: Move                           # the name is taken in the showroom
+
+
+@dataclass(frozen=True)
+class PublishPlan:                       # the work; never leaves the core
+    batch: Batch
+    showroom_place: Path
+    new: list[Move]
+    clashes: list[PublishClash]
+    left_alone: list[LeftAlone]
+
+
+@dataclass(frozen=True)
+class PublishPreview:                    # what the user agrees to
+    batch: Path                          # its place in the darkroom
+    showroom_place: Path
+    new: int
+    clashes: list[Path]                  # a warning: names, not moves
+    left_alone: list[LeftAlone]
+    fingerprint: str                     # of the plan
+
+
+@dataclass(frozen=True)
+class PublishReport:
+    batch: Path
+    showroom_place: Path
+    published: int
+    replaced: int
+    failed: list[Failure]
+    skipped: int
+    not_reached: int
+    stopped: str | None
+    left_alone: list[LeftAlone]
+    log: Path | None
+```
+
+```python
+class Publishing:                        # application service
+    def prepare(self, place: Path) -> PublishPreview:
+        return PublishPreview.of(self._plan(place))
+
+    def run(self, preview, choice: StopSkipOrReplace,
+            watch) -> PublishReport:
+        plan = self._plan(preview.batch)
+        if fingerprint(plan) != preview.fingerprint:
+            raise PlanChanged(preview)
+        if plan.clashes and choice is StopSkipOrReplace.STOP:
+            return PublishReport.stopped_on_clashes(plan)
+        moves = plan.new
+        if choice is StopSkipOrReplace.REPLACE:
+            moves += [clash.move.replacing() for clash in plan.clashes]
+        with self.run_log.start("publish", plan.showroom_place) as run_log:
+            result = self.mover.move(moves, watch, run_log)
+        return PublishReport.of(plan, result, log=run_log.path)
+
+    def _plan(self, place: Path) -> PublishPlan:
+        batch = self.darkroom.batch_from_place(place)
+        source = self.darkroom.publish_folder(batch)
+        showroom_place = self.showroom.place_for_batch(batch)
+        # the files directly in source; subfolders are left alone;
+        # names compared with showroom_place by the shared same-name rule
+        ...
+```
+
+Decided:
+
+- **Clashes are a warning, not an exception.** Publishing an edit again
+  makes them normal. They are still shown, because replacing deletes the
+  showroom copy, and the same name may hold a different edit: only the user
+  can tell.
+- **One word, two kinds of clash: `TidyClash` and `PublishClash`**, named
+  after their use case like their plans. Not shared: the fields look alike,
+  but the rules differ (tidy never moves a clash; publish may replace it).
+  Only `PublishClash` holds a `Move`, so tidy cannot hand a clash to the
+  mover. "Already published" was rejected: the same name does not mean the
+  same edit.
+- `PublishClash` is thin today. It is where anything that helps the user
+  judge a clash would go, such as the showroom copy's date or size.
+- **The showroom place is shown** (`showroom_place`). Tidy dropped "where
+  they land", but publish crosses into an area the darkroom view does not
+  show and Immich reads; with albums it becomes the thing to check.
+  Rejected names: `in_showroom` (reads as a yes/no flag), `target` and
+  `destination` (technical, and `Move.target` exists).
+- **One count of new files**, no photo and video split: publish treats
+  every file in `PUBLISH` the same.
+- **Left alone: subfolders of `PUBLISH`**, one line each, and pairs of
+  names in it that differ only in letter case. A subfolder has nowhere to
+  go in the showroom, but ignoring it silently could drop photos unseen,
+  and refusing the whole publish is too harsh for a rare slip. A same-name
+  pair is a darkroom problem, not a clash, so replace never picks between
+  two files of one run.
+- **Nothing to publish is an empty preview**, not an error. A place that is
+  not a batch is refused in `prepare`, by `batch_from_place`.
+- **What is publishable belongs to the use case** (Phase 5); the darkroom
+  only answers where `PUBLISH` is (7b, corrected).
+- The report is tidy's, with `published` and `replaced` counts.
