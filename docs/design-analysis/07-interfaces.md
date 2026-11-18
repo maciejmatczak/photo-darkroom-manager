@@ -12,7 +12,7 @@ follow the same shape. Application services are named after the activity
 (`Publishing`, `Tidying`, `Archiving`).
 
 ```python
-preview = core.publishing.prepare(place)
+preview = core.publishing.prepare(path)
 # the client shows the preview and gets the user's choice
 report = core.publishing.run(preview, choice, watch=progress)
 ```
@@ -44,17 +44,17 @@ Decided:
 This matches today's code. The reasons above, not familiarity, are why it
 was kept; see the lesson in the [README](README.md).
 
-## 7b. Domain services: from a place to a batch, and back
+## 7b. Domain services: from a path to a batch, and back
 
 What publish asks of the domain:
 
 ```python
 class Darkroom:
-    def batch_from_place(self, place: Path) -> Batch: ...  # or refuses
-    def publish_folder(self, batch: Batch) -> Path: ...    # see 7e
+    def batch_at(self, path: Path) -> Batch: ...         # or refuses
+    def publish_folder(self, batch: Batch) -> Path: ...  # see 7e
 
 class Showroom:
-    def place_for_batch(self, batch: Batch) -> Path: ...
+    def path_for(self, batch: Batch) -> Path: ...
 ```
 
 Decided:
@@ -62,12 +62,12 @@ Decided:
 - **A caller names a folder by its path inside the darkroom.** A person
   types it in the CLI, a GUI uses it as the id of a node, and it means the
   same in a second process.
-- **"Place" names both directions.** Given a place, recognise the batch
-  there (`batch_from_place`); given a batch, get its place in an area
-  (`place_for_batch`). The names say what the result means; the type
-  (`Path`) says how it is represented, so a place can stay a place if the
-  showroom later maps batches to albums.
-- "Place" over "location": shorter, and already the walkthroughs' word.
+- **Two directions, one pair of names** *(renamed in 7f)*: `x_at(path)`
+  recognises what is at a path (`batch_at`); `path_for(x)` says where it
+  goes in an area (`Showroom.path_for`). First named with "place"
+  (`batch_from_place`, `place_for_batch`) to survive a move to albums; but
+  albums would change the return type too, so the abstract word protected
+  nothing and made every call read oddly.
 - *(Corrected in 7e)* The darkroom answers only where a batch's `PUBLISH`
   folder is (`publish_folder`). What in it is publishable belongs to the
   publish use case (Phase 5), so `publishable(batch)` was dropped.
@@ -120,8 +120,8 @@ class TidyPreview:               # what the user agrees to
 
 
 class Tidying:
-    def prepare(self, place: Path) -> TidyPreview:
-        return TidyPreview.of(self.recipe.plan(place))
+    def prepare(self, path: Path) -> TidyPreview:
+        return TidyPreview.of(self.recipe.plan(path))
 
     def run(self, preview, choice: StopOrSkip, watch) -> TidyReport:
         plan = self.recipe.plan(preview.folder)  # planning again: the check
@@ -144,8 +144,8 @@ Decided:
   every use case *(7d adds a replace flag, for publish only)*.
 - **Tidy never replaces**: its `run` takes `StopOrSkip`.
 - Clashes are kept in full; the client decides how many to show.
-- **A tidy clash is a `TidyClash`** (a file and a reason), never a move:
-  tidy cannot hand a clash to the mover *(named in 7e)*.
+- **A tidy clash is a `TidyClash`**, never a move: tidy cannot hand a
+  clash to the mover *(named in 7e; both sides of the clash added in 7f)*.
 - "Where they land" was dropped: the recipe fixes it, so it says nothing
   new.
 
@@ -213,7 +213,7 @@ class RunWatch(Protocol):                # given by the client
 
 class RunLog(Protocol):                  # port: one log per run
     def start(self, action: str,
-              place: Path) -> ContextManager[RunLogger]: ...
+              path: Path) -> ContextManager[RunLogger]: ...
 ```
 
 The use case:
@@ -244,7 +244,7 @@ The file adapter of the run log:
 ```python
 class FileRunLog:                        # adapter
     @contextmanager
-    def start(self, action, place):
+    def start(self, action, path):
         path = self.folder / f"{stamp()}-{action}.log"
         handler = logging.FileHandler(path)       # flushes every line
         base = logging.Logger(f"run.{action}")    # not getLogger: isolated
@@ -308,26 +308,33 @@ its own preview, plan, report and clash type.
 | Need | Kind | Detail |
 |---|---|---|
 | New files | Normal | A count |
-| Where they land | Normal | The showroom place |
-| Clashes: the name is taken in the showroom | Warning | A count; the names for the client to show |
+| Where they land | Normal | The showroom path |
+| Clashes: the name is taken in the showroom | Warning | A count; each file and what takes its name, for the client to show |
 | Left alone: subfolders of `PUBLISH`, same-name pairs in it | Exception | Each, with its reason |
 
 ```python
 @dataclass(frozen=True)
 class TidyClash:                         # never moved
-    file: Path
-    reason: str                          # "taken", "wanted twice"
+    file: Path                           # ours
+    target: Path                         # where the recipe sends it
+    taken_by: Path                       # a file already there, or another
+    reason: str                          # file of this run: "taken",
+                                         # "wanted twice"
 
 
 @dataclass(frozen=True)
 class PublishClash:                      # replaced only if the user chooses
-    move: Move                           # the name is taken in the showroom
+    file: Path                           # ours, in PUBLISH
+    taken_by: Path                       # in the showroom
+
+    def replacing(self) -> Move:
+        return Move(self.file, self.taken_by, replace=True)
 
 
 @dataclass(frozen=True)
 class PublishPlan:                       # the work; never leaves the core
     batch: Batch
-    showroom_place: Path
+    showroom_path: Path
     new: list[Move]
     clashes: list[PublishClash]
     left_alone: list[LeftAlone]
@@ -335,10 +342,10 @@ class PublishPlan:                       # the work; never leaves the core
 
 @dataclass(frozen=True)
 class PublishPreview:                    # what the user agrees to
-    batch: Path                          # its place in the darkroom
-    showroom_place: Path
+    batch: Path                          # its path in the darkroom
+    showroom_path: Path
     new: int
-    clashes: list[Path]                  # a warning: names, not moves
+    clashes: list[PublishClash]          # a warning; no moves inside
     left_alone: list[LeftAlone]
     fingerprint: str                     # of the plan
 
@@ -346,7 +353,7 @@ class PublishPreview:                    # what the user agrees to
 @dataclass(frozen=True)
 class PublishReport:
     batch: Path
-    showroom_place: Path
+    showroom_path: Path
     published: int
     replaced: int
     failed: list[Failure]
@@ -359,8 +366,8 @@ class PublishReport:
 
 ```python
 class Publishing:                        # application service
-    def prepare(self, place: Path) -> PublishPreview:
-        return PublishPreview.of(self._plan(place))
+    def prepare(self, path: Path) -> PublishPreview:
+        return PublishPreview.of(self._plan(path))
 
     def run(self, preview, choice: StopSkipOrReplace,
             watch) -> PublishReport:
@@ -371,17 +378,17 @@ class Publishing:                        # application service
             return PublishReport.stopped_on_clashes(plan)
         moves = plan.new
         if choice is StopSkipOrReplace.REPLACE:
-            moves += [clash.move.replacing() for clash in plan.clashes]
-        with self.run_log.start("publish", plan.showroom_place) as run_log:
+            moves += [clash.replacing() for clash in plan.clashes]
+        with self.run_log.start("publish", plan.showroom_path) as run_log:
             result = self.mover.move(moves, watch, run_log)
         return PublishReport.of(plan, result, log=run_log.path)
 
-    def _plan(self, place: Path) -> PublishPlan:
-        batch = self.darkroom.batch_from_place(place)
+    def _plan(self, path: Path) -> PublishPlan:
+        batch = self.darkroom.batch_at(path)
         source = self.darkroom.publish_folder(batch)
-        showroom_place = self.showroom.place_for_batch(batch)
+        showroom_path = self.showroom.path_for(batch)
         # the files directly in source; subfolders are left alone;
-        # names compared with showroom_place by the shared same-name rule
+        # names compared with showroom_path by the shared same-name rule
         ...
 ```
 
@@ -394,12 +401,13 @@ Decided:
 - **One word, two kinds of clash: `TidyClash` and `PublishClash`**, named
   after their use case like their plans. Not shared: the fields look alike,
   but the rules differ (tidy never moves a clash; publish may replace it).
-  Only `PublishClash` holds a `Move`, so tidy cannot hand a clash to the
-  mover. "Already published" was rejected: the same name does not mean the
-  same edit.
-- `PublishClash` is thin today. It is where anything that helps the user
-  judge a clash would go, such as the showroom copy's date or size.
-- **The showroom place is shown** (`showroom_place`). Tidy dropped "where
+  Only `PublishClash` can make a `Move` (`replacing`), so tidy cannot hand
+  a clash to the mover *(revised in 7f: clashes hold both sides, no
+  `Move`)*. "Already published" was rejected: the same name does not mean
+  the same edit.
+- `PublishClash` is where anything that helps the user judge a clash would
+  go, such as the showroom copy's date or size.
+- **The showroom path is shown** (`showroom_path`). Tidy dropped "where
   they land", but publish crosses into an area the darkroom view does not
   show and Immich reads; with albums it becomes the thing to check.
   Rejected names: `in_showroom` (reads as a yes/no flag), `target` and
@@ -412,8 +420,174 @@ Decided:
   and refusing the whole publish is too harsh for a rare slip. A same-name
   pair is a darkroom problem, not a clash, so replace never picks between
   two files of one run.
-- **Nothing to publish is an empty preview**, not an error. A place that is
-  not a batch is refused in `prepare`, by `batch_from_place`.
+- **Nothing to publish is an empty preview**, not an error. A path that is
+  not a batch is refused in `prepare`, by `batch_at`.
 - **What is publishable belongs to the use case** (Phase 5); the darkroom
   only answers where `PUBLISH` is (7b, corrected).
 - The report is tidy's, with `published` and `replaced` counts.
+
+## 7f. Archive, checked against tidy and publish
+
+Archive follows the same shape. It differs in what it takes (a batch or a
+subfolder in it), in what blocks it, and in cleaning up after itself.
+
+**What the user needs to see:**
+
+| Need | Kind | Detail |
+|---|---|---|
+| Files to archive | Normal | A count |
+| Where they land | Normal | The archive path |
+| Clashes: the name is taken in the archive | Exception | Each file and what takes its name |
+| Blockers: a file in the archive where a folder must go | Exception | Each blocker, with how many files it holds back |
+
+**A batch or a subfolder in it.** The domain recognises a path as a
+folder in a batch, and the archive says where that folder goes:
+
+```
+darkroom:  Phone/2024/2024-05-01 Trip/Selects/Day1      <- the user picks
+archive:   2024/2024-05-01 Trip/Phone/Selects/Day1
+                                     └─ the batch's path, then the same
+                                        subfolder as in the darkroom
+```
+
+```python
+@dataclass(frozen=True)
+class BatchFolder:                       # value object
+    batch: Batch
+    subfolder: Path                      # "Selects/Day1"; empty for the batch
+
+
+class Darkroom:                          # domain service
+    def batch_at(self, path: Path) -> Batch: ...         # or refuses
+    def folder_at(self, path: Path) -> BatchFolder: ...  # or refuses
+    def publish_folder(self, batch: Batch) -> Path: ...
+
+
+class Showroom:                          # domain service
+    def path_for(self, batch: Batch) -> Path: ...
+
+
+class Archive:                           # domain service
+    def path_for(self, folder: BatchFolder) -> Path: ...
+```
+
+**Clashes hold both sides.** A clash is two items: our file and the one in
+the way.
+
+```python
+@dataclass(frozen=True)
+class ArchiveClash:                      # never moved
+    file: Path                           # ours, in the darkroom
+    taken_by: Path                       # in the archive
+
+
+@dataclass(frozen=True)
+class ArchiveBlocker:
+    archive_file: Path                   # a file where a folder must go
+    holds_back: int                      # darkroom files it keeps out
+
+
+@dataclass(frozen=True)
+class ArchivePlan:                       # the work; never leaves the core
+    folder: BatchFolder
+    path: Path                           # in the darkroom
+    archive_path: Path
+    moves: list[Move]                    # subfolders kept
+    clashes: list[ArchiveClash]
+    blockers: list[ArchiveBlocker]
+
+
+@dataclass(frozen=True)
+class ArchivePreview:                    # what the user agrees to
+    path: Path                           # in the darkroom
+    archive_path: Path
+    files: int
+    clashes: list[ArchiveClash]
+    blockers: list[ArchiveBlocker]
+    fingerprint: str                     # of the plan
+
+
+@dataclass(frozen=True)
+class ArchiveReport:
+    path: Path
+    archive_path: Path
+    archived: int
+    failed: list[Failure]
+    skipped: int                         # clashes and blocked files
+    not_reached: int
+    stopped: str | None
+    kept_folders: list[Path]             # emptied, but held open elsewhere
+    log: Path | None
+```
+
+**Removing emptied folders goes to the mover**, as a second method:
+
+```python
+class Mover(Protocol):                   # port
+    def move(self, moves, watch, run_log) -> MoveResult: ...
+    def remove_empty_folders(self, under: Path,
+                             run_log) -> list[Path]: ...  # the kept ones
+
+
+class Archiving:                         # application service
+    def prepare(self, path: Path) -> ArchivePreview:
+        return ArchivePreview.of(self._plan(path))
+
+    def run(self, preview, choice: StopOrSkip, watch) -> ArchiveReport:
+        plan = self._plan(preview.path)
+        if fingerprint(plan) != preview.fingerprint:
+            raise PlanChanged(preview)
+        if (plan.clashes or plan.blockers) and choice is StopOrSkip.STOP:
+            return ArchiveReport.stopped_on_clashes(plan)
+        with self.run_log.start("archive", plan.archive_path) as run_log:
+            result = self.mover.move(plan.moves, watch, run_log)
+            kept = self.mover.remove_empty_folders(plan.path, run_log)
+        return ArchiveReport.of(plan, result, kept, log=run_log.path)
+
+    def _plan(self, path: Path) -> ArchivePlan:
+        folder = self.darkroom.folder_at(path)
+        archive_path = self.archive.path_for(folder)
+        # every file under path, its subfolders kept below archive_path;
+        # names compared by the shared same-name rule; blockers found
+        ...
+```
+
+Decided:
+
+- **Clashes are an exception here**, not a warning as in publish. The
+  archive holds source material and only grows: the same name there is two
+  originals with one name, or a copy left by an earlier run. Each is shown;
+  nothing is replaced.
+- **Every clash holds both sides**: our `file` and what it is `taken_by`.
+  `taken_by` is the file really there, not the target recomputed: names
+  match ignoring letter case, so `IMG_1.jpg` can clash with `img_1.JPG`.
+  Tidy keeps `target` too, because a "wanted twice" clash is between two
+  of our own files. No clash holds a `Move`; only `PublishClash` can make
+  one, and its replace writes over `taken_by` itself, so no pair of names
+  differing in case is created. With no moves inside, every preview
+  carries its clashes as they are (7c and 7e updated).
+- **A blocker is shown once**, with how many files it holds back, not as
+  every file below it: the user fixes the one file.
+- **Nothing is left alone**: archive asks no questions about the folders.
+- **Merging is not shown.** A clean merge looks like a fresh archive to the
+  user; anything that can go wrong in one is a clash or a blocker. The
+  archive path is shown, as in publish: it is another area.
+- **`BatchFolder`** names "a folder in a batch": the batch, and its
+  `subfolder` (empty for the batch itself). It replaces a tuple of a batch
+  and a leftover path. "Everything below keeps its folders" stays inside
+  `Archive.path_for`.
+- **Paths, not places.** `x_at(path)` recognises what is at a path;
+  `path_for(x)` says where it goes in an area. The area called says which
+  area, the argument's type says what for. 7a-7e renamed to match.
+- **`StopOrSkip` is shared with tidy**, unlike the clash types. It is named
+  by its content (the set {stop, skip}), not by a role whose meaning
+  depends on the use case. If tidy gains a choice, tidy takes a new type.
+- **Removing emptied folders is the mover's**, a change to the disk under
+  "plan and carry out". rclone does it as part of a move
+  (`--delete-empty-src-dirs`). A second method leaves tidy and publish
+  untouched. It takes one folder, not a planned list: which folders end up
+  empty depends on what moved. Folders held open elsewhere are returned
+  and reported; the cleanup may fail without anything being wrong.
+- **The pre-check for unpublished files** (change scenario 3) becomes one
+  more warning group on `ArchivePreview` later, touching only the archive
+  use case.
