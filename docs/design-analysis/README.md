@@ -20,6 +20,7 @@ how the app is built, and these phases ask what it must do.
 | [05-ownership.md](05-ownership.md) | 5 | Who decides each piece, the grouping, change scenarios |
 | [06-external.md](06-external.md) | 6 | Outside systems and where the boundaries go |
 | [07-interfaces.md](07-interfaces.md) | 7 | What each piece offers its callers |
+| [08-structure.md](08-structure.md) | 8 | Where each piece lives, the rules between them |
 
 From Phase 5 on, the phases follow the design-by-knowledge-and-roles skill,
 which merges the guide's "sort" and "group" phases into one: 5 ownership,
@@ -36,7 +37,8 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
 | 7. Interfaces | Done (7a-7k, reviewed; see "Phase 7 at a glance") |
-| 8-9 | Not started |
+| 8. Structure | 8a agreed (roles inside `core/`); naming next |
+| 9. Complexity review | Not started |
 
 ## Working rules
 
@@ -63,7 +65,9 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 - **Folders by role** (Phase 8): lay out `core` by architecture role
   (`domain`, `application`, `ports`, `infrastructure`, adapters, a
   composition root) so one `lint-imports` layers contract enforces it.
-  Every folder must hold something real.
+  Every folder must hold something real. *Phase 8a: adopted, inside a
+  `core/` package with a narrow front door; `filesystem/` as the bottom
+  layer.*
 - **A "Justified by" column** (Phases 6-8): each pattern names the cost it
   removes; anything kept only for practice is marked "exercise only".
 
