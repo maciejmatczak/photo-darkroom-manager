@@ -37,7 +37,7 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
 | 7. Interfaces | Done (7a-7k, reviewed; see "Phase 7 at a glance") |
-| 8. Structure | 8a-8d agreed (roles inside `core/`; naming; rules; import-linter contracts); maintenance guidance and migration next |
+| 8. Structure | 8a-8e agreed (roles inside `core/`; naming; rules; contracts; composition root); maintenance guidance and migration next |
 | 9. Complexity review | Not started |
 
 ## Working rules

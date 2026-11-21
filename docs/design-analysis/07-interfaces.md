@@ -1026,7 +1026,9 @@ Decided:
 - **Disabled is a property** (`culling_enabled`, `editing_enabled`), known
   before asking; `NotConfigured` is only a guard. Clients combine it with
   `FolderKind.allows`: the kind says whether it makes sense here, the
-  settings whether it is set up.
+  settings whether it is set up. *(8e: `Opening` is given the two
+  commands, not the whole settings; `self.settings.cull_command` above
+  reads `self.cull_command`.)*
 - **`darkroom.on_disk(path)`** turns a path in the darkroom (7b) into the
   full path an outside program needs; the darkroom knows its root.
 - **One service, `Opening`.** Each of the three opens a folder in a

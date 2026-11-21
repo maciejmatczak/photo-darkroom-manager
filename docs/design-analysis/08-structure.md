@@ -274,3 +274,81 @@ Decided:
   by default in 2.15, and stays off.
 - **No CLI library to forbid**: the CLI uses `argparse` from the standard
   library.
+
+## 8e. The composition root
+
+`core/compose.py` is the one place that knows every concrete class.
+
+```python
+APP = "photo-darkroom-manager"
+
+
+@dataclass(frozen=True)
+class Core:                              # what build_core hands a client
+    tidying: Tidying
+    publishing: Publishing
+    archiving: Archiving
+    renaming: Renaming
+    starting_batch: StartingBatch
+    overview: Overview
+    opening: Opening
+
+
+def open_setup(config_dir: Path | None = None) -> SettingUp:
+    store = TomlSettingsStore(config_dir or Path(user_config_dir(APP)))
+    return SettingUp(store)
+
+
+def build_core(settings: Settings,
+               log_dir: Path | None = None) -> Core:
+    darkroom = Darkroom(settings.darkroom)              # domain services
+    showroom = Showroom(settings.showroom)
+    archive = Archive(settings.archive)
+    recipe = TidyRecipe(darkroom)
+
+    transfer = (RcloneTransfer() if settings.transfer is TransferKind.RCLONE
+                else BuiltinTransfer())                 # adapters
+    run_log = FileRunLog(log_dir or Path(user_log_dir(APP)) / "runs")
+    apps = OsExternalApps()
+
+    return Core(                                        # application services
+        tidying=Tidying(recipe, transfer, run_log),
+        publishing=Publishing(darkroom, showroom, transfer, run_log),
+        archiving=Archiving(darkroom, archive, transfer, run_log),
+        renaming=Renaming(darkroom),
+        starting_batch=StartingBatch(darkroom),
+        overview=Overview(darkroom, recipe),
+        opening=Opening(darkroom, apps,
+                        settings.cull_command, settings.edit_command),
+    )
+```
+
+| Built by | Lives as long as |
+|---|---|
+| `open_setup()` | The process |
+| `build_core(settings)` | One version of the settings: built again after a change in the GUI, once per command in the CLI (7k) |
+
+Decided:
+
+- **Each service gets only what it needs**, never the whole `Settings`:
+  `Opening` is given the two commands (7j corrected). A service holding
+  all the settings depends on every setting, and its tests must build all
+  of them. Explicit values and injected services, not a shared bag
+  (Phase 7 of the method).
+- **One transfer and one run log, shared** by tidying, publishing and
+  archiving: they hold no per-run state (each run opens its own logger,
+  7d), and the rclone choice stays one line.
+- **`Core` is a frozen holder of services**, with no state of its own:
+  dropping it releases everything, which the rebuild after a settings
+  change relies on.
+- **Where run logs go is wiring knowledge**: `user_log_dir(APP)/runs`,
+  decided here, not a setting (Phase 5: where records are written is
+  infrastructure). `config_dir` and `log_dir` can be overridden for tests
+  or a portable install.
+- **No hooks for test fakes.** Unit tests build a service directly
+  (`Tidying(recipe, FakeTransfer(), FakeRunLog())`); a few integration
+  tests run the real `build_core` on temporary folders. The composition
+  root stays production wiring only.
+- **The order reads as the architecture**: domain services, then
+  adapters, then the application services that combine them. Needing a
+  loop in that order would mean a dependency rule was broken.
