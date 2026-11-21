@@ -197,4 +197,80 @@ Decided:
   is adopted, until a second user appears. A `clients/` folder for one
   file would hold nothing real.
 - R1 needs an indirect-import allowance in its contract:
-  `cli -> core -> compose -> adapters` is a legitimate chain.
+  `cli -> core -> compose -> adapters` is a legitimate chain. *(Corrected
+  in 8d: a `protected` contract checks direct imports only, so no
+  allowance is needed.)*
+
+## 8d. Enforcement: import-linter contracts
+
+Option names checked against the installed import-linter 2.15 source (the
+version this project pins); the readthedocs pages returned 404. These
+contracts apply once the layout exists; until then, today's two contracts
+stay as they are.
+
+```toml
+[tool.importlinter]
+root_package = "photo_darkroom_manager"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]              # R1 (part), R2
+name = "Frontends sit on the core; the core knows no frontend"
+type = "layers"
+layers = ["cli | gui", "core"]
+containers = ["photo_darkroom_manager"]
+
+[[tool.importlinter.contracts]]              # R2
+name = "The core imports no UI library"
+type = "forbidden"
+source_modules = ["photo_darkroom_manager.core"]
+forbidden_modules = ["nicegui", "webview"]
+
+[[tool.importlinter.contracts]]              # R1: the front door
+name = "Only the core reaches inside the core"
+type = "protected"
+protected_modules = ["photo_darkroom_manager.core.*"]
+allowed_importers = ["photo_darkroom_manager.core"]
+
+[[tool.importlinter.contracts]]              # R3-R7
+name = "Inside the core, imports point down"
+type = "layers"
+layers = ["compose", "application | adapters", "ports", "domain",
+          "filesystem"]
+containers = ["photo_darkroom_manager.core"]
+exhaustive = true
+
+[[tool.importlinter.contracts]]              # R8
+name = "Use cases never import each other"
+type = "independence"
+modules = ["photo_darkroom_manager.core.application.*"]
+
+[[tool.importlinter.contracts]]              # R6 (part)
+name = "Adapters never import each other"
+type = "independence"
+modules = ["photo_darkroom_manager.core.adapters.*"]
+```
+
+| Rule | Enforced by |
+|---|---|
+| R1 frontends use only the front door | `protected`: only `core`, as a package with its descendants, may import `core.*`. It checks direct imports, so `cli -> core -> compose` passes with no indirect-import allowance |
+| R2 no UI library, no frontend in the core | The two contracts that exist today, kept |
+| R3-R7 direction; application never adapters; only `compose` sees adapters | The inner layers contract: `\|` makes `application` and `adapters` independent siblings; a higher layer may skip down to any lower one (8c) |
+| R6, R8 no imports among siblings | Two `independence` contracts with wildcards (`*` matches one level) |
+
+Decided:
+
+- **The smell test passes**: no contract lists individual modules; each
+  names a folder or a wildcard, so a new use case or adapter needs no
+  config change. **`exhaustive = true`** is the other half: a new folder
+  inside `core/` fails the check until it is placed in a layer.
+- **`protected` for the front door**, not the `forbidden` contract with
+  `allow_indirect_imports` planned in 8c: it states the rule positively
+  ("only the core may reach in") and checks direct imports only, so the
+  legitimate chain through `compose` needs no workaround.
+- **R4 is looser in config than in words**: the layers contract lets
+  `ports/` import `filesystem/`. Accepted rather than adding a contract: a
+  port has no reason to touch the OS, and review catches it.
+- **Type-only imports count** (8c): `exclude_type_checking_imports` is off
+  by default in 2.15, and stays off.
+- **No CLI library to forbid**: the CLI uses `argparse` from the standard
+  library.
