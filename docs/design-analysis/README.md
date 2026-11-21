@@ -37,7 +37,7 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
 | 5. Ownership | Done |
 | 6. External systems | Done; rclone adoption check open |
 | 7. Interfaces | Done (7a-7k, reviewed; see "Phase 7 at a glance") |
-| 8. Structure | 8a agreed (roles inside `core/`); naming next |
+| 8. Structure | 8a-8b agreed (roles inside `core/`; naming per level); dependency rules next |
 | 9. Complexity review | Not started |
 
 ## Working rules
@@ -68,6 +68,9 @@ which merges the guide's "sort" and "group" phases into one: 5 ownership,
   Every folder must hold something real. *Phase 8a: adopted, inside a
   `core/` package with a narrow front door; `filesystem/` as the bottom
   layer.*
+- **The insides of `cli/` and `gui/`** (when the frontends are rebuilt on
+  the core): they follow their frameworks; Phase 8 stops at the core's
+  front door.
 - **A "Justified by" column** (Phases 6-8): each pattern names the cost it
   removes; anything kept only for practice is marked "exercise only".
 

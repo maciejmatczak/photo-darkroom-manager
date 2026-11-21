@@ -86,3 +86,49 @@ Rejected:
   First recommended, then dropped: a `core/` wrapper was wrongly judged to
   carry no rule of its own.
 - **B**, by feature: see the table.
+
+## 8b. Naming per level
+
+One strategy per level: **folders encode the role, files encode the
+knowledge they own.**
+
+| Folder | A file is named after | Files |
+|---|---|---|
+| `domain/` | The decision it owns | `batch`, `darkroom`, `showroom`, `archive`, `tidy_recipe`, `folder_view`, `command_template`, `settings`, `move` |
+| `application/` | The activity: the use case's policy | `tidying`, `publishing`, `archiving`, `renaming`, `starting_batch`, `overview`, `opening`, `setting_up` |
+| `ports/` | The role: the port's name | `file_transfer`, `run_log`, `external_apps`, `settings_store` |
+| `adapters/` | How it works, then the port | `builtin_transfer`, `rclone_transfer`, `file_run_log`, `os_external_apps`, `toml_settings_store` |
+| `filesystem/` | The OS fact | `folders` (create, rename), `names` (safe names, the same-name rule) |
+
+Across all folders:
+
+- **A file is the snake-case name of its main class** (`tidying.py` holds
+  `Tidying`).
+- **A use case's own value objects live in its file** (`TidyPreview`,
+  `PublishClash`, ...).
+- **A file that outgrows itself becomes a package of the same name**
+  (`domain/darkroom/`), whose `__init__.py` is its interface.
+
+Decided:
+
+- **The tidy recipe's plan lives in the domain.** `recipe.plan(path)`
+  returns a `TidyPlan` holding `TidyClash` and `LeftAlone` (7c); the recipe
+  is in `domain/`, and the domain cannot import `application/`. So those
+  three go in `domain/tidy_recipe.py`, as the recipe's output, and
+  `Tidying` turns the plan into its preview and report. Publish and archive
+  plan inside their use cases, so their plan types stay in
+  `application/`. The rule: a type lives with whoever builds it.
+- **Adapters are named how it works, then the port** (a contract by role,
+  an implementation by technology):
+
+  | Phase 7 name | Becomes | Why |
+  |---|---|---|
+  | `InternalTransfer` | `BuiltinTransfer` | "Internal" says nothing about how; it is the copy, check and swap built into the app |
+  | `SettingsFile` | `TomlSettingsStore` | The technology (TOML) and the port it implements |
+  | "an OS adapter" | `OsExternalApps` | It had no name yet |
+  | `RcloneTransfer`, `FileRunLog` | Unchanged | Already follow the pattern |
+
+- **The insides of `cli/` and `gui/` are not designed here.** They follow
+  their frameworks (commands; windows and widgets), and this design stops
+  at the core's front door. Parked for when the frontends are rebuilt on
+  it.

@@ -303,8 +303,8 @@ Decided:
   the file transfer each file.
 - **The report gains `log`**, where to find this run's record. A run
   stopped on clashes moves nothing and opens no log.
-- File transfer adapters: `InternalTransfer` (copy, verify, swap in) and
-  `RcloneTransfer` (Phase 6).
+- File transfer adapters: `BuiltinTransfer` (copy, verify, swap in;
+  named in 8b) and `RcloneTransfer` (Phase 6).
 
 Rejected:
 
@@ -1089,7 +1089,7 @@ The adapter is a TOML file in the user's config folder (`platformdirs`).
 The composition root, shared by both clients:
 
 ```python
-store = SettingsFile(user_config_dir(...))
+store = TomlSettingsStore(user_config_dir(...))  # named in 8b
 setting_up = SettingUp(store)                        # works before set up
 
 settings = store.load()
@@ -1150,7 +1150,8 @@ Decided:
 
 Collected from 7a-7k after the review; where a checkpoint's sketch and
 this list differ, this list holds. `DarkroomPath` is the relative id;
-`Path` is a full path on disk (7b).
+`Path` is a full path on disk (7b). Adapter names follow Phase 8b; where
+each piece lives is in [08-structure.md](08-structure.md).
 
 **Application services** (the use cases):
 
@@ -1178,10 +1179,10 @@ this list differ, this list holds. `DarkroomPath` is the relative id;
 
 | Port | Calls | Adapters | Checkpoint |
 |---|---|---|---|
-| `FileTransfer` | `run(moves, watch, run_log) -> TransferResult`; `remove_empty_folders(under, run_log) -> list[Path]` | `InternalTransfer`, `RcloneTransfer` | 7d, 7f, 7g |
+| `FileTransfer` | `run(moves, watch, run_log) -> TransferResult`; `remove_empty_folders(under, run_log) -> list[Path]` | `BuiltinTransfer`, `RcloneTransfer` | 7d, 7f, 7g |
 | `RunLog` | `start(action, path) -> RunLogger` (a context manager) | `FileRunLog` | 7d |
-| `ExternalApps` | `start(command)`; `show_folder(path)` | An OS adapter | 7j |
-| `SettingsStore` | `load() -> Settings or None`; `save(settings)` | `SettingsFile` (TOML) | 7k |
+| `ExternalApps` | `start(command)`; `show_folder(path)` | `OsExternalApps` | 7j |
+| `SettingsStore` | `load() -> Settings or None`; `save(settings)` | `TomlSettingsStore` | 7k |
 
 Infrastructure without a port: `folders` (`rename`, `create`), and the app
 log (`structlog.get_logger(__name__)`). Composition root: `build_core
