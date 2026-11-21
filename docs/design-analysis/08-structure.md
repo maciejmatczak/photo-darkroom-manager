@@ -132,3 +132,69 @@ Decided:
   their frameworks (commands; windows and widgets), and this design stops
   at the core's front door. Parked for when the frontends are rebuilt on
   it.
+
+## 8c. Dependency rules, in plain words
+
+| # | Rule |
+|---|---|
+| R1 | `cli` and `gui` import only `core`'s front door, never anything inside it, and never each other |
+| R2 | Nothing in `core` imports `cli`, `gui`, or a UI or CLI library |
+| R3 | `domain/` imports only `filesystem/` (and the standard library) |
+| R4 | `ports/` imports only `domain/`, for the types in its signatures (`Move`, `Settings`, `DarkroomPath`) |
+| R5 | `application/` imports `ports/`, `domain/` and `filesystem/`, never `adapters/` |
+| R6 | `adapters/` import `ports/`, `domain/` and `filesystem/`, never `application/`, and never each other |
+| R7 | Only `compose.py` imports `adapters/`; nothing inside `core` imports `compose.py` except the front door |
+| R8 | Use cases never import each other: what two of them share goes down into `domain/` or `filesystem/` |
+
+**The front door** (`core/__init__.py`) exports what clients pass in or
+read back, and nothing else:
+
+- `build_core(settings) -> Core` and `open_setup() -> SettingUp`; the
+  application services are reached through `Core` (`core.tidying`, ...);
+- the values: `DarkroomPath`, `BatchDate`, `NameChange`, `StopOrSkip`,
+  `StopSkipOrReplace`, every preview and report, `FolderView`,
+  `FolderKind`, `Counts`, `Settings`, `SetupState`, `CommandTemplate`;
+- the refusals, and `RunWatch`, which the client implements.
+
+Not exported: the domain services, the plans, the ports other than
+`RunWatch`, the adapters, `filesystem/`.
+
+On the caller side:
+
+```python
+from photo_darkroom_manager.core import build_core, open_setup  # a client
+
+setup = open_setup()                    # builds TomlSettingsStore inside
+settings = setup.current()
+state = setup.check(settings) if settings else NOT_SET_UP
+core = build_core(settings) if state.ready else None
+```
+
+Decided:
+
+- **A layer may skip the ones below it.** `Renaming` calls
+  `folders.rename`, past the domain. Forbidding that would force a domain
+  method whose only job is to call it: a pass-through method, a red flag
+  in Ousterhout's book (an interface that hides nothing). `filesystem/` is
+  the medium every layer stands on.
+- **The application types against ports, never adapters** (R5), type
+  hints included. A port is a `typing.Protocol`, so adapters implement it
+  without inheriting and the application names only the port; the
+  concrete class is chosen in `compose.py` alone (dependency inversion,
+  Martin). Imports under `if TYPE_CHECKING:` count too: they couple all
+  the same. If the application seems to need an adapter, the port is
+  missing a method or a setting; widen the port.
+- **Errors are part of the port.** Each adapter translates its failures
+  into what the port declares (a `Failure` in `TransferResult`,
+  `AppFailed`); the application never catches an adapter's exception.
+- **The composition root builds every adapter**, the settings store
+  included: `open_setup()` replaces the client building
+  `TomlSettingsStore` itself in 7k, which broke R1.
+- **Use cases never import each other** (R8). When two need the same
+  check, importing one from the other is the easy drift; pushing the
+  shared part down keeps each use case changeable on its own (Phase 5).
+- **The rclone client stays inside `adapters/rclone_transfer`** if rclone
+  is adopted, until a second user appears. A `clients/` folder for one
+  file would hold nothing real.
+- R1 needs an indirect-import allowance in its contract:
+  `cli -> core -> compose -> adapters` is a legitimate chain.

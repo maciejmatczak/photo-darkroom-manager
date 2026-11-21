@@ -1086,13 +1086,14 @@ class SettingUp:                         # application service
 
 The adapter is a TOML file in the user's config folder (`platformdirs`).
 
-The composition root, shared by both clients:
+The composition root, shared by both clients. *Corrected in 8c*: the
+client first built `TomlSettingsStore` itself, which let a frontend import
+an adapter; `open_setup()` builds it inside the core.
 
 ```python
-store = TomlSettingsStore(user_config_dir(...))  # named in 8b
-setting_up = SettingUp(store)                        # works before set up
-
-settings = store.load()
+setting_up = open_setup()               # builds TomlSettingsStore inside
+                                        # works before set up
+settings = setting_up.current()
 state = setting_up.check(settings) if settings else NOT_SET_UP
 core = build_core(settings) if state.ready else None
 ```
@@ -1185,8 +1186,9 @@ each piece lives is in [08-structure.md](08-structure.md).
 | `SettingsStore` | `load() -> Settings or None`; `save(settings)` | `TomlSettingsStore` | 7k |
 
 Infrastructure without a port: `folders` (`rename`, `create`), and the app
-log (`structlog.get_logger(__name__)`). Composition root: `build_core
-(settings)`, called again after a settings change (7k).
+log (`structlog.get_logger(__name__)`). Composition root: `open_setup()`
+and `build_core(settings) -> Core`, the latter called again after a
+settings change (7k, 8c).
 
 **Value objects:** `DarkroomPath`, `Batch`, `BatchDate`, `BatchFolder`,
 `NameChange`, `Move`, `TransferResult`, `Failure`, `LeftAlone`,
